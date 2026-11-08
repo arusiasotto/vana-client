@@ -16,9 +16,8 @@ sub set fills a blue one. Clearing a slot of a sub set the main set fills blanks
 - **Keys:** bar 1 takes `1`..`0`, `-`, `=`; bar 2 the same with Ctrl, bar 3 with Alt. The manager's Config page picks
   each bar's modifier and the key row (number row, function keys or the numpad), and any slot's own key. A slot shows
   its key in its corner.
-- **Click** a slot to run it; **right-click** for its menu: a spell, an ability, an existing macro or one from the
-  library, Edit the macro (in the manager's Builder), Clear, its own key, the manager; **drag** a slot onto another to
-  swap them (in the sub set when either comes from it).
+- **Click** a slot to run it; **right-click** to clear it or open the manager; **drag** a slot onto another to swap
+  them (in the sub set when either comes from it).
 - **Hover** a slot for its name and lines.
 - The jobs over the top bar open the manager.
 
@@ -40,8 +39,7 @@ names it.
 The **Builder** makes one: pick a type (spell, job ability, weapon skill, pet command, item, equipment, a system
 command such as `/attack`, `/heal`, `/assist` or `/lockon`, or Macro for typed lines only), search, pick, choose
 the target, and add lines to run after it. System commands show a game icon standing in for them (a sword for
-`/attack`, Regen for `/heal`). Edit the macro on a slot opens the Builder on it; Save puts it in the library and on
-that slot.
+`/attack`, Regen for `/heal`).
 
 The **palette** (`//hb palette`, or Palette on the Library page) shows the main job's library as tiles on the screen;
 drag its background to move it. Drag a tile onto a slot of the bars to put that macro there; click one to edit it.

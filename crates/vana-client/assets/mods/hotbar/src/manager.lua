@@ -1,10 +1,8 @@
 -- The macro manager window.
 --
---   Library  a main job's macros: new, edit, copy, delete, and the palette, from which they are dragged onto the bars
---            (or a slot's menu, From the library).
+--   Library  a main job's macros as tiles, dragged onto the bars: new, edit, copy, delete, and the palette.
 --   Builder  one macro: an action of a type (spell, job ability, weapon skill, pet command, item, equipment, system
 --            command) and its target build the first line; lines typed under it run after it. A "Macro" is typed only.
---            Opened from a slot's menu (Edit the macro), it saves into the library and puts the macro on that slot.
 --   Config   the hotkey modifier of each bar, the key row, and a slot's own key (changes apply at once).
 
 local data = require("src.data")
@@ -503,7 +501,7 @@ local function define()
   ui.window(WIN, {
     title = "Hotbars",
     width = 520,
-    help = "Drag a macro from the palette onto a slot, or right-click a slot: From the library.",
+    help = "Drag a macro onto a slot of the bars. Right-click a slot to clear it.",
     elements = {
       { type = "tabs", id = "tabs", items = { "Library", "Builder", "Config" }, at = 1 },
 
@@ -665,28 +663,6 @@ function M.edit_entry(id)
   S.mj = jobs.current() or S.mj
   refresh_all(id)
   open_builder(id)
-  ui.open(WIN)
-end
-
--- Opens the builder on a slot of the current jobs (its menu's Edit the macro): on its library entry, or on its own
--- macro (or a blank one) that Save puts into the library and on the slot. `from` is "sub" when the slot shows the
--- sub job's set (so that is the set it goes into).
-function M.edit_slot(bar, slot, from)
-  ensure()
-  local main, sub = jobs.current()
-  if not main then
-    say("jobs are not loaded yet.")
-    return
-  end
-  S.mj = main
-  refresh_all()
-  local macro = data.resolve(main, sub, bar, slot)
-  local at = { bar = bar, slot = slot, main = main, sub = from == "sub" and sub or nil }
-  if macro and macro.ref then
-    open_builder(macro.ref, at)
-  else
-    open_builder(nil, at, macro)
-  end
   ui.open(WIN)
 end
 

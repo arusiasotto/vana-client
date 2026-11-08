@@ -36,9 +36,7 @@ bar.hooks.changed = function()
   manager.refresh()
   palette.set_job(jobs.current())
 end
-menu.hooks.edit_slot = manager.edit_slot
 menu.hooks.open_manager = manager.open
-menu.hooks.rebind = bar.rebind
 menu.hooks.changed = changed
 manager.hooks.changed = function()
   bar.rebuild()
