@@ -264,6 +264,8 @@ pub(super) struct State {
     hud_press: Option<HudPress>,
     /// The HUD element under the pointer (one with a handler or a tip) and since when.
     pub hud_hover: Option<(String, String, std::time::Instant)>,
+    /// The pointer is over a modern panel (as of the last frame): the HUD under it gets no presses or hover.
+    pub over_ui: bool,
     /// The game controller: buttons held (bits by PAD_BUTTONS' order), those a mod took, sticks and triggers
     /// (lx, ly, rx, ry -1..1 up positive, lt, rt 0..1), and whether one plays.
     pad: u32,
@@ -444,9 +446,14 @@ pub(super) fn hud_drag(host: &mut super::Host, x: f64, y: f64) {
 }
 
 /// A left or right press at the pointer on a HUD element with a handler: the element's (true), and its release too.
+/// Not over a modern panel, nor while a modal window or menu is open: the press is theirs.
 pub(super) fn hud_press(host: &mut super::Host, button: MouseButton) -> bool {
     let st = host.input.clone();
-    if !matches!(button, MouseButton::Left | MouseButton::Right) || st.borrow().hud_press.is_some() {
+    if !matches!(button, MouseButton::Left | MouseButton::Right)
+        || st.borrow().hud_press.is_some()
+        || st.borrow().over_ui
+        || host.modal().is_some()
+    {
         return false;
     }
     let (x, y) = st.borrow().cursor;

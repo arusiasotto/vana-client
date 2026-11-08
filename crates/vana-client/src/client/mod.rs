@@ -13803,6 +13803,9 @@ impl App {
         // Over a modern panel the pointer is egui's: the game's windows get no clicks or wheel there.
         let mine = !(matches!(&self.phase, Phase::World(w) if w.modern)
             && (ctx.is_pointer_over_egui() || ctx.egui_is_using_pointer()));
+        if let Phase::World(w) = &self.phase {
+            w.lua.set_over_ui(!mine);
+        }
         let input = ctx.input(|i| UiInput {
             wheel: if mine { notches as i32 } else { 0 },
             pointer: i.pointer.hover_pos().map(|p| (p.x * ppp * k.0, p.y * ppp * k.1 + ptr_dy)),

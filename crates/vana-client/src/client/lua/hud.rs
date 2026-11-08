@@ -1123,9 +1123,10 @@ pub(super) fn drop_target(host: &super::Host, m: &str, dragged: &str, x: f64, y:
 }
 
 /// The element under the pointer (one with a handler or a tooltip): mouse_leave and mouse_enter as it changes.
+/// None under a modern panel.
 pub(super) fn hover(host: &mut super::Host) {
     let (x, y) = host.input.borrow().cursor;
-    let now = under(host, x, y, true);
+    let now = if host.input.borrow().over_ui { None } else { under(host, x, y, true) };
     let mut s = host.input.borrow_mut();
     let was = s.hud_hover.as_ref().map(|h| (h.0.clone(), h.1.clone()));
     if was == now {

@@ -1988,6 +1988,11 @@ impl Host {
         f.window = [window[0] as f32, window[1] as f32];
         f.k = k;
     }
+
+    /// Whether the pointer is over a modern panel (egui's), which the HUD under it then leaves alone.
+    pub(in crate::client) fn set_over_ui(&self, over: bool) {
+        self.input.borrow_mut().over_ui = over;
+    }
 }
 
 /// LuaLS stubs for the whole mod API (`vana-client lua-stubs`).
@@ -2203,6 +2208,15 @@ mod tests {
         hud::hover(&mut host);
         assert_eq!(kinds(&take(&mut host)), ["b mouse_enter", "b mouse_leave", "a mouse_enter"]);
         assert_eq!(hud::tip(&host).map(|t| (t.0, t.1)), Some((String::new(), "A".into())));
+        // Under a modern panel the element is neither pressed nor hovered.
+        host.set_over_ui(true);
+        assert!(!input::hud_press(&mut host, Left));
+        hud::hover(&mut host);
+        assert_eq!(kinds(&take(&mut host)), ["a mouse_leave"]);
+        host.set_over_ui(false);
+        // Nor while a menu is open.
+        host.vms.last().unwrap().lua.load(r#"ui.menu({"x", "y"}, function() end)"#).exec().unwrap();
+        assert!(!input::hud_press(&mut host, Left));
     }
 
     /// The bundled Battle Text's short lines: the common forms; an unknown one stays as printed; names in their colours.
