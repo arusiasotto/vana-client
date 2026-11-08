@@ -47,6 +47,7 @@ end
 manager.hooks.rebind = bar.rebind
 manager.hooks.palette = palette.toggle
 palette.hooks.edit = manager.edit_entry
+palette.hooks.drag_ended = bar.tile_drag_ended
 
 -- The game's macro palette hides (its drawing only) while the bars show.
 local function apply_stock_palette()

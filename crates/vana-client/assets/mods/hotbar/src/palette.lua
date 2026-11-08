@@ -8,8 +8,11 @@ local ghost = require("src.ghost")
 
 local M = {}
 
--- Set by init.lua: edit(id) opens the builder on an entry.
+-- Set by init.lua: edit(id) opens the builder on an entry, drag_ended() when a tile's drag ends.
 M.hooks = {}
+
+-- The tile being dragged ({act, label}), for the bars' window to draw over itself: the HUD's ghost is under it.
+M.dragging = nil
 
 local COLS, ROWS = 8, 2
 local open = false
@@ -143,6 +146,12 @@ function M.draw()
         ghost.follow(e, id, TILE_BG, TILE_DIM, function()
           return math.floor(settings.get("size") * u), act, label
         end)
+        if e.kind == "drag_start" then
+          M.dragging = { act = act, label = label }
+        elseif e.kind == "drag_end" then
+          M.dragging = nil
+          if M.hooks.drag_ended then M.hooks.drag_ended() end
+        end
       end
     end)
     if act then
