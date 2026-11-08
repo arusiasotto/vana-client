@@ -300,6 +300,8 @@ pub struct Host {
     ui_events: Vec<(String, String, window::Event)>,
     /// Where the mods' canvases were last drawn (the modern UI), for a HUD drag let go over one.
     canvases: Vec<CanvasAt>,
+    /// The canvas a HUD drag is over now: (mod, window, canvas, the dragged element).
+    drag_over: Option<(String, String, String, String)>,
     /// `/lua watch`: mods reloaded when their files are saved.
     watch: Option<Watch>,
     /// The keys and mouse, shared with every mod (input.held, input.mouse).
@@ -2248,25 +2250,35 @@ mod tests {
         host.info.borrow_mut().hud_rects = vec![("t".into(), "a".into(), [0.0, 0.0, 10.0, 10.0])];
         // Drawn at (100, 0) in window pixels, 2 pixels to the point: 200 by 100 pixels.
         host.canvas_at("t", "w", 0, [100.0, 0.0], [100.0, 0.0, 300.0, 100.0], 2.0);
-        let drag = |host: &mut Host, to: f64| {
+        let drag = |host: &mut Host, path: &[f64]| {
             host.input.borrow_mut().cursor = (5.0, 5.0);
             assert!(input::hud_press(host, Left));
-            for x in [20.0, to] {
+            for &x in path {
                 host.input.borrow_mut().cursor = (x, 5.0);
                 input::hud_drag(host, x, 5.0);
             }
+            let window = host.hud_events.iter().rev().find(|e| e.2["kind"] == "drag").map(|e| e.2["window"].clone());
             input::hud_release(host, Left);
             host.hud_events.clear();
-            std::mem::take(&mut host.ui_events)
+            let ev = std::mem::take(&mut host.ui_events);
+            assert!(ev.iter().all(|e| e.0 == "t" && e.1 == "w"));
+            (ev.into_iter().map(|e| e.2.json()).collect::<Vec<_>>(), window)
         };
-        let ev = drag(&mut host, 150.0);
-        assert_eq!(ev.len(), 1);
-        assert_eq!((ev[0].0.as_str(), ev[0].1.as_str()), ("t", "w"));
-        assert_eq!(ev[0].2.json(), serde_json::json!({"kind": "drop", "id": "c", "x": 25, "y": 3, "from": "a"}));
-        // Off the canvas: nothing.
-        assert!(drag(&mut host, 320.0).is_empty());
+        let (ev, window) = drag(&mut host, &[20.0, 150.0]);
+        assert_eq!(
+            ev,
+            [
+                serde_json::json!({"kind": "drag_over", "id": "c", "x": 25, "y": 3, "from": "a"}),
+                serde_json::json!({"kind": "drop", "id": "c", "x": 25, "y": 3, "from": "a"})
+            ]
+        );
+        assert_eq!(window, Some(serde_json::json!("w")));
+        // Over it and off again: drag_out and no drop; the last drag names no window.
+        let (ev, window) = drag(&mut host, &[150.0, 320.0]);
+        assert_eq!(ev.iter().map(|e| e["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["drag_over", "drag_out"]);
+        assert_eq!(window, Some(serde_json::Value::Null));
         host.vms[0].lua.load(r#"ui.close("w")"#).exec().unwrap();
-        assert!(drag(&mut host, 150.0).is_empty());
+        assert!(drag(&mut host, &[20.0, 150.0]).0.is_empty());
     }
 
     /// The bundled Battle Text's short lines: the common forms; an unknown one stays as printed; names in their colours.

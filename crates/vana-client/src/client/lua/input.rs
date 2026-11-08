@@ -504,10 +504,40 @@ pub(super) fn hud_drag(host: &mut super::Host, x: f64, y: f64) {
         *dragging = true;
         host.hud_events.push((m.clone(), id.clone(), hud_event("drag_start", *button, *start, *start)));
     }
-    let e = hud_event("drag", *button, (x, y), *start);
+    let mut e = hud_event("drag", *button, (x, y), *start);
+    let (m, id) = (m.clone(), id.clone());
+    drop(s);
+    // Over a canvas of the mod's windows: its window gets drag_over (and drag_out as it leaves), and the drag event
+    // names the window (drawn over the HUD: a ghost the mod draws on the HUD is hidden there).
+    let over = host.canvas_drop(&m, x, y, &id).and_then(|(win, ev)| match ev {
+        super::window::Event::Drop { id: c, x, y, from } => {
+            Some((win, c.clone(), super::window::Event::DragOver { id: c, x, y, from }))
+        }
+        _ => None,
+    });
+    let now = over.as_ref().map(|(win, c, _)| (m.clone(), win.clone(), c.clone(), id.clone()));
+    if let Some((pm, pwin, pc, pfrom)) = host.drag_over.take()
+        && now.as_ref().is_none_or(|n| n.1 != pwin || n.2 != pc)
+    {
+        host.ui_events.push((pm, pwin, super::window::Event::DragOver { id: pc, x: -1.0, y: -1.0, from: pfrom }));
+    }
+    host.drag_over = now;
+    if let Some((win, _, ev)) = over {
+        e["window"] = win.clone().into();
+        match host.ui_events.last_mut() {
+            Some(last)
+                if last.0 == m
+                    && last.1 == win
+                    && matches!(last.2, super::window::Event::DragOver { x, .. } if x >= 0.0) =>
+            {
+                last.2 = ev
+            }
+            _ => host.ui_events.push((m.clone(), win, ev)),
+        }
+    }
     match host.hud_events.last_mut() {
-        Some(last) if last.0 == *m && last.1 == *id && last.2["kind"] == "drag" => last.2 = e,
-        _ => host.hud_events.push((m.clone(), id.clone(), e)),
+        Some(last) if last.0 == m && last.1 == id && last.2["kind"] == "drag" => last.2 = e,
+        _ => host.hud_events.push((m, id, e)),
     }
 }
 
@@ -535,6 +565,7 @@ pub(super) fn hud_release(host: &mut super::Host, button: MouseButton) {
     let st = host.input.clone();
     let Some((m, id, _, start, dragging)) = st.borrow_mut().hud_press.take_if(|p| p.2 == button) else { return };
     let at = st.borrow().cursor;
+    host.drag_over = None;
     if !dragging {
         host.hud_events.push((m, id, hud_event("click", button, at, at)));
         return;

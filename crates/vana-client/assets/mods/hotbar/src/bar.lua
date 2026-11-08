@@ -360,12 +360,14 @@ local function on_event(_, e)
     if M.hooks.changed then M.hooks.changed() end
   elseif e.kind == "hover" or e.kind == "leave" then
     local now = e.kind == "hover" and key_of(hit(e.x, e.y)) or nil
-    local was_tile = tile_at ~= nil
-    tile_at = e.kind == "hover" and palette.dragging and { x = e.x, y = e.y } or nil
-    if now ~= hover or tile_at or was_tile then
+    if now ~= hover then
       hover = now
       draw()
     end
+  elseif e.kind == "drag_over" or e.kind == "drag_out" then
+    -- A palette tile dragged over the bars (or off them): its copy follows the pointer here.
+    tile_at = e.kind == "drag_over" and palette.dragged_id(e.from) and { x = e.x, y = e.y } or nil
+    draw()
   elseif e.kind == "click" then
     local c = hit(e.x, e.y)
     if c == "plus" then

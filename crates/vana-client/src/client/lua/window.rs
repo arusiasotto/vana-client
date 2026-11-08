@@ -443,6 +443,13 @@ pub enum Event {
         y: f32,
         from: String,
     },
+    /// One of the mod's HUD elements (`from`) dragged over a canvas, at (x, y) in it; or off it (`x` / `y` negative).
+    DragOver {
+        id: String,
+        x: f32,
+        y: f32,
+        from: String,
+    },
     Close,
 }
 
@@ -474,6 +481,10 @@ impl Event {
             }
             Event::Drop { id, x, y, from } => {
                 json!({"kind": "drop", "id": id, "x": x.round() as i64, "y": y.round() as i64, "from": from})
+            }
+            Event::DragOver { id, x, y, from } => {
+                let kind = if *x < 0.0 { "drag_out" } else { "drag_over" };
+                json!({"kind": kind, "id": id, "x": x.round() as i64, "y": y.round() as i64, "from": from})
             }
             Event::Close => json!({"kind": "close"}),
         }
