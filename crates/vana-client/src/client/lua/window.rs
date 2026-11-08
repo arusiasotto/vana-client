@@ -427,7 +427,8 @@ pub enum Event {
         x: f32,
         y: f32,
     },
-    /// A drag on a canvas: 0 start, 1 a move, 2 the release; where, and the move since the last report.
+    /// A drag on a canvas: 0 start, 1 a move, 2 the release; where, and the move since the last report; where on
+    /// screen in window pixels and the mod's other window whose canvas is under the pointer (modern UI).
     Drag {
         id: String,
         phase: u8,
@@ -435,6 +436,8 @@ pub enum Event {
         y: f32,
         dx: f32,
         dy: f32,
+        screen: Option<(f32, f32)>,
+        over: Option<String>,
     },
     /// One of the mod's HUD elements (`from`) dragged and let go over a canvas, at (x, y) in it.
     Drop {
@@ -476,8 +479,16 @@ impl Event {
                 let kind = if *x < 0.0 { "leave" } else { "hover" };
                 json!({"kind": kind, "id": id, "x": x.round() as i64, "y": y.round() as i64})
             }
-            Event::Drag { id, phase, x, y, dx, dy } => {
-                json!({"kind": (["drag_start", "drag", "drag_end"][*phase as usize % 3]), "id": id, "x": x.round() as i64, "y": y.round() as i64, "dx": dx.round() as i64, "dy": dy.round() as i64})
+            Event::Drag { id, phase, x, y, dx, dy, screen, over } => {
+                let mut e = json!({"kind": (["drag_start", "drag", "drag_end"][*phase as usize % 3]), "id": id, "x": x.round() as i64, "y": y.round() as i64, "dx": dx.round() as i64, "dy": dy.round() as i64});
+                if let Some((sx, sy)) = screen {
+                    e["sx"] = (sx.round() as i64).into();
+                    e["sy"] = (sy.round() as i64).into();
+                }
+                if let Some(w) = over {
+                    e["window"] = w.clone().into();
+                }
+                e
             }
             Event::Drop { id, x, y, from } => {
                 json!({"kind": "drop", "id": id, "x": x.round() as i64, "y": y.round() as i64, "from": from})
@@ -1137,7 +1148,7 @@ impl Window {
             return (Vec::new(), Vec::new());
         }
         self.drag = (phase != 2).then_some((i, x, y));
-        (vec![Event::Drag { id, phase, x, y, dx: x - lx, dy: y - ly }], Vec::new())
+        (vec![Event::Drag { id, phase, x, y, dx: x - lx, dy: y - ly, screen: None, over: None }], Vec::new())
     }
 
     /// The classic list's text width and its columns.

@@ -12,6 +12,8 @@ local jobs = require("src.jobs")
 local keys = require("src.keys")
 local actions = require("src.actions")
 local builder = require("src.builder")
+local palette = require("src.palette")
+local ghost = require("src.ghost")
 
 local M = {}
 
@@ -28,6 +30,7 @@ local defined = false
 -- kind (nil: a macro of typed lines), the action picked ({name}), its target, the search results, and the slot it was
 -- opened from ({bar, slot, main, sub}: the saved macro goes on it), if any.
 local lib_ids = {}
+local open_builder
 local E = { id = nil, kind = "ma", pick = nil, target = "t", results = {}, auto_name = nil, slot = nil }
 -- The Config tab's slot whose own key is set there.
 local K = { bar = 1, slot = 1 }
@@ -56,37 +59,175 @@ local function does_text(entry)
   return n == 1 and entry.lines[1] or ("%d lines"):format(n)
 end
 
+-- ---------------------------------------------------------------------------
+-- Library: the job's macros as tiles
+-- ---------------------------------------------------------------------------
+
+local CW, T, TG = 480, 52, 6                      -- the canvas's width, a tile's size, the gap between tiles
+local COLS = math.floor((CW + TG) / (T + TG))
+local TILE = { 10, 17, 24, 255 }
+local TILE_HOVER = { 20, 33, 44, 255 }
+local TILE_EDGE = { 184, 139, 73, 205 }
+local TILE_SEL = { 255, 214, 120, 255 }
+local TILE_TEXT = { 236, 230, 214, 255 }
+local GHOST_BG = { 20, 24, 38, 160 }
+local GHOST_INK = { 255, 255, 255, 170 }
+
+-- The tiles shown: {id, entry, act, label, lines}; the chosen one's id; the tile under the pointer; a tile's drag
+-- ({n, x, y}: where in the canvas, nil x while it is over another window).
+local tiles = {}
+local L = { sel = nil, hover = nil, drag = nil }
+
+local function tile_xy(n)
+  return ((n - 1) % COLS) * (T + TG), ((n - 1) // COLS) * (T + TG)
+end
+
+local function tile_at(x, y)
+  for n = 1, #tiles do
+    local tx, ty = tile_xy(n)
+    if x >= tx and x < tx + T and y >= ty and y < ty + T then return n end
+  end
+end
+
+local function short(text)
+  local n = math.max(1, math.floor((T - 6) / (6.5 * 0.72)))
+  if utf8.len(text) and utf8.len(text) > n then
+    return text:sub(1, utf8.offset(text, n) - 1) .. "…"
+  end
+  return text
+end
+
+local function draw_tiles()
+  local d = {}
+  local function add(c) d[#d + 1] = c end
+  for n, t in ipairs(tiles) do
+    local x, y = tile_xy(n)
+    add({ type = "rect", x = x, y = y, w = T, h = T, round = 7, colour = L.hover == n and TILE_HOVER or TILE })
+    local sel = L.sel == t.id
+    add({ type = "rect", x = x, y = y, w = T, h = T, round = 7, line = sel and 2.5 or 1.5,
+      colour = sel and TILE_SEL or TILE_EDGE })
+    if t.act then
+      local isz = math.floor(T * 0.58)
+      add({ type = "icon", x = x + (T - isz) / 2, y = y + 4, size = isz, kind = t.act.kind, id = t.act.id })
+      add({ type = "text", x = x + T / 2, y = y + T - 14, text = short(t.label:match("^[^\n]*")), size = 0.72,
+        align = "center", colour = TILE_TEXT })
+    else
+      local ls = {}
+      for l in t.label:gmatch("[^\n]+") do ls[#ls + 1] = l end
+      local top = y + (T - #ls * 12) / 2
+      for k, l in ipairs(ls) do
+        add({ type = "text", x = x + T / 2, y = top + (k - 1) * 12, text = short(l), size = 0.72, align = "center",
+          colour = TILE_TEXT })
+      end
+    end
+    if L.drag and L.drag.n == n then
+      add({ type = "rect", x = x, y = y, w = T, h = T, round = 7, colour = { 0, 0, 0, 120 } })
+    end
+    local uses = data.uses(S.mj, t.id)
+    add({ type = "tip", x = x, y = y, w = T, h = T, title = t.entry.name or "",
+      text = table.concat(t.lines, "\n") .. ("\n\nOn %d slot%s. Drag onto a slot of the bars; click to choose, "
+        .. "right-click to edit."):format(uses, uses == 1 and "" or "s") })
+  end
+  -- The dragged tile under the pointer, while it is over this window.
+  local g = L.drag and L.drag.x and tiles[L.drag.n]
+  if g then
+    local gx, gy = L.drag.x - T / 2, L.drag.y - T / 2
+    add({ type = "rect", x = gx, y = gy, w = T, h = T, round = 7, colour = GHOST_BG })
+    if g.act then
+      local isz = math.floor(T * 0.58)
+      add({ type = "icon", x = gx + (T - isz) / 2, y = gy + 4, size = isz, kind = g.act.kind, id = g.act.id,
+        colour = GHOST_INK })
+    else
+      add({ type = "text", x = gx + T / 2, y = gy + T / 2 - 6, text = short(g.label:match("^[^\n]*")), size = 0.72,
+        align = "center", colour = GHOST_INK })
+    end
+  end
+  local rows = math.max(1, math.ceil(#tiles / COLS))
+  ui.update(WIN, "tiles", { h = rows * (T + TG) - TG, draw = d })
+end
+
+local function show_selected()
+  local t
+  for _, x in ipairs(tiles) do
+    if x.id == L.sel then t = x end
+  end
+  ui.update(WIN, "lsel", { text = t and ('%s: %s; on %d slot%s.'):format(t.entry.name or "?", does_text(t.entry),
+    data.uses(S.mj, t.id), data.uses(S.mj, t.id) == 1 and "" or "s") or "Click a macro to choose it." })
+end
+
 local function refresh_library(select_id)
   ui.update(WIN, "job", { text = S.mj or "" })
+  tiles, lib_ids = {}, {}
   if not S.mj then
-    lib_ids = {}
     ui.update(WIN, "lctx", { text = "Jobs are not loaded yet." })
-    ui.update(WIN, "lib", { rows = {} })
+    draw_tiles()
     return
   end
-  local at = ui.get(WIN, "lib").at or 1
-  local rows = {}
-  lib_ids = {}
+  if select_id then L.sel = tostring(select_id) end
+  local still = false
   for i, it in ipairs(data.library(S.mj)) do
     lib_ids[i] = it.id
-    if select_id and it.id == tostring(select_id) then at = i end
-    rows[i] = {
-      it.entry.name or "",
-      does_text(it.entry),
-      tostring(data.uses(S.mj, it.id)),
-      icon = row_icon({ lines = data.entry_lines(it.entry) }),
-    }
+    local lines = data.entry_lines(it.entry)
+    tiles[i] = { id = it.id, entry = it.entry, lines = lines, act = actions.of({ lines = lines }),
+      label = data.display_label(it.entry) }
+    if it.id == L.sel then still = true end
   end
+  if not still then L.sel = tiles[1] and tiles[1].id or nil end
   ui.update(WIN, "lctx", {
-    text = #rows == 0 and ("%s has no macros yet: press New."):format(S.mj)
-      or ("%s macros. Open the Palette and drag one onto a slot of the bars."):format(S.mj),
+    text = #tiles == 0 and ("%s has no macros yet: press New."):format(S.mj)
+      or ("%s macros: drag one onto a slot of the bars."):format(S.mj),
   })
-  ui.update(WIN, "lib", { rows = rows, at = math.max(1, math.min(at, #rows)) })
+  draw_tiles()
+  show_selected()
 end
 
 local function selected_entry()
-  local at = ui.get(WIN, "lib").at
-  return at and lib_ids[at] or nil
+  return L.sel
+end
+
+-- The tiles' events: hover, click to choose, right-click to edit, drag onto the bars.
+local function on_tiles(e)
+  if e.kind == "hover" or e.kind == "leave" then
+    local n = e.kind == "hover" and tile_at(e.x, e.y) or nil
+    if n ~= L.hover then
+      L.hover = n
+      draw_tiles()
+    end
+  elseif e.kind == "click" then
+    local n = tile_at(e.x, e.y)
+    if not n then return end
+    L.sel = tiles[n].id
+    draw_tiles()
+    show_selected()
+    if e.button == "right" then open_builder(tiles[n].id) end
+  elseif e.kind == "drag_start" then
+    local n = tile_at(e.x, e.y)
+    if not n then return end
+    local t = tiles[n]
+    L.drag = { n = n, x = e.x, y = e.y }
+    -- Only the current main job's macros go on the bars.
+    if S.mj == jobs.current() then
+      palette.start_drag(t.id, t.act, t.label)
+    else
+      palette.last = nil
+      say(("these are %s's macros; the bars show %s's."):format(S.mj, jobs.current() or "?"))
+    end
+    if e.sx then ghost.start(e.sx, e.sy, math.floor(settings.get("size") * hud.screen().ui_scale), t.act, t.label) end
+    draw_tiles()
+  elseif e.kind == "drag" and L.drag then
+    -- Over this window it draws the tile itself; over another of ours that one does; between them the HUD's ghost.
+    local inside = e.x >= 0 and e.y >= 0 and e.x < CW and e.y < math.max(1, math.ceil(#tiles / COLS)) * (T + TG)
+    L.drag.x, L.drag.y = inside and e.x or nil, e.y
+    if e.sx then
+      if inside or e.window then ghost.move(-10000, -10000) else ghost.move(e.sx, e.sy) end
+    end
+    draw_tiles()
+  elseif e.kind == "drag_end" and L.drag then
+    L.drag = nil
+    ghost.stop()
+    palette.end_drag()
+    draw_tiles()
+  end
 end
 
 local function copy_selected()
@@ -208,7 +349,7 @@ end
 
 -- Opens the builder on a library entry (`id`), or on a new macro: blank, or `macro` (a slot's own macro) as typed
 -- lines. `slot` ({bar, slot, main, sub}) is where Save puts it.
-local function open_builder(id, slot, macro)
+function open_builder(id, slot, macro)
   if not S.mj then
     say("jobs are not loaded yet.")
     return
@@ -370,9 +511,8 @@ local function define()
       { type = "input", id = "job", label = "Job", text = "", max = 3, page = TAB_LIB,
         tip = "The main job whose macros to show, e.g. RDM." },
       { type = "text", id = "lctx", text = "", page = TAB_LIB },
-      { type = "list", id = "lib", rows = {}, height = 12, page = TAB_LIB,
-        columns = { { title = "Macro", width = 150 }, { title = "Runs" }, { title = "Slots", width = 44, align = "right" } },
-        tip = "Enter or click a macro to edit it." },
+      { type = "canvas", id = "tiles", w = CW, h = T, page = TAB_LIB },
+      { type = "text", id = "lsel", text = "", dim = true, page = TAB_LIB },
       { type = "buttons", id = "lbtn", items = { "New", "Edit", "Copy", "Delete", "Palette" }, page = TAB_LIB },
 
       -- Builder
@@ -419,7 +559,9 @@ local function define()
   })
 
   ui.on(WIN, function(_, e)
-    if e.kind == "set" then
+    if e.id == "tiles" then
+      on_tiles(e)
+    elseif e.kind == "set" then
       if e.id:match("^mod%d$") then
         keys.set_mod(tonumber(e.id:sub(4)), keys.MOD_LABELS[e.index])
         keys_changed()
@@ -448,9 +590,7 @@ local function define()
       end
       refresh_library()
     elseif e.kind == "select" then
-      if e.id == "lib" then
-        open_builder(lib_ids[e.index])
-      elseif e.id == "found" then
+      if e.id == "found" then
         pick(e.index)
       elseif e.id == "kslots" then
         K.slot = e.index

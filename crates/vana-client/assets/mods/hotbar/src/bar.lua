@@ -350,7 +350,7 @@ local function on_event(_, e)
     -- A palette tile: its library macro goes into the set the slot shows (the sub job's when it shows that one).
     tile_at = nil
     local c = hit(e.x, e.y)
-    local id = palette.dragged_id(e.from)
+    local id = palette.dragged_id(e.from) or (e.from == "tiles" and palette.last)
     if type(c) ~= "table" or not id or not main then return end
     local _, from = data.resolve(main, sub, c.b, c.i)
     data.assign(main, from == "sub" and sub or nil, c.b, c.i, id)
@@ -366,7 +366,7 @@ local function on_event(_, e)
     end
   elseif e.kind == "drag_over" or e.kind == "drag_out" then
     -- A palette tile dragged over the bars (or off them): its copy follows the pointer here.
-    tile_at = e.kind == "drag_over" and palette.dragged_id(e.from) and { x = e.x, y = e.y } or nil
+    tile_at = e.kind == "drag_over" and palette.dragging and { x = e.x, y = e.y } or nil
     draw()
   elseif e.kind == "click" then
     local c = hit(e.x, e.y)

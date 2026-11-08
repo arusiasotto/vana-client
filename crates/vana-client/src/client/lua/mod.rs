@@ -2281,6 +2281,61 @@ mod tests {
         assert!(drag(&mut host, &[20.0, 150.0]).0.is_empty());
     }
 
+    /// A drag on a mod's canvas over another of its windows' canvases: the drag events say where on screen and which
+    /// window is under the pointer; that canvas gets drag_over, then the drop on the release (not its own canvas).
+    #[test]
+    fn canvas_drag_onto_canvas() {
+        let mut host = Host::default();
+        let vm = Vm::new(
+            manifest::Manifest { id: "t".into(), ..Default::default() },
+            PathBuf::from("."),
+            vm::Source::Dir(PathBuf::from(".")),
+        )
+        .unwrap();
+        api::install(&vm.lua, &vm, (serde_json::Value::Null, serde_json::Value::Null)).unwrap();
+        vm.lua
+            .load(
+                r#"
+                ui.window("a", {title = "A", elements = {{type = "canvas", id = "s", w = 100, h = 50}}})
+                ui.window("b", {title = "B", elements = {{type = "canvas", id = "c", w = 100, h = 50}}})
+                ui.open("a"); ui.open("b")
+            "#,
+            )
+            .exec()
+            .unwrap();
+        host.vms.push(vm);
+        host.canvas_at("t", "a", 0, [0.0, 0.0], [0.0, 0.0, 100.0, 50.0], 1.0);
+        host.canvas_at("t", "b", 0, [200.0, 0.0], [200.0, 0.0, 300.0, 50.0], 1.0);
+        let drag = |phase: u8, x: f32| window::Event::Drag {
+            id: "s".into(),
+            phase,
+            x,
+            y: 10.0,
+            dx: 0.0,
+            dy: 0.0,
+            screen: None,
+            over: None,
+        };
+        // Within its own canvas: nothing crosses.
+        let mut ev = vec![drag(1, 50.0)];
+        assert!(host.canvas_drags("t", "a", &mut ev).is_empty() && host.ui_events.is_empty());
+        assert_eq!(ev[0].json()["window"], serde_json::Value::Null);
+        let mut ev = vec![drag(1, 250.0)];
+        assert!(host.canvas_drags("t", "a", &mut ev).is_empty());
+        assert_eq!((ev[0].json()["sx"].as_i64(), ev[0].json()["window"].as_str()), (Some(250), Some("b")));
+        let over = std::mem::take(&mut host.ui_events);
+        assert_eq!(
+            (over[0].1.as_str(), over[0].2.json()),
+            ("b", serde_json::json!({"kind": "drag_over", "id": "c", "x": 50, "y": 10, "from": "s"}))
+        );
+        let mut ev = vec![drag(2, 260.0)];
+        let dropped = host.canvas_drags("t", "a", &mut ev);
+        assert_eq!(
+            (dropped[0].1.as_str(), dropped[0].2.json()),
+            ("b", serde_json::json!({"kind": "drop", "id": "c", "x": 60, "y": 10, "from": "s"}))
+        );
+    }
+
     /// The bundled Battle Text's short lines: the common forms; an unknown one stays as printed; names in their colours.
     #[test]
     fn battle_text_short_lines() {
@@ -5208,13 +5263,55 @@ impl Host {
         self.canvases.push(CanvasAt { m: m.into(), win: win.into(), id, origin, shown, ppp, at: now });
     }
 
-    /// The drop on mod `m`'s canvas under (x, y) in window pixels, drawn in the last moments in an open window: the
-    /// window and its event, at the point in the canvas.
-    fn canvas_drop(&self, m: &str, x: f64, y: f64, from: &str) -> Option<(String, window::Event)> {
+    /// Where mod `m`'s canvas `id` of window `win`, at (x, y) in its units, is on screen (window pixels).
+    fn canvas_to_screen(&self, m: &str, win: &str, id: &str, x: f32, y: f32) -> Option<(f32, f32)> {
+        let c = self.canvases.iter().rev().find(|c| c.m == m && c.win == win && c.id == id)?;
+        Some((c.origin[0] + x * c.ppp, c.origin[1] + y * c.ppp))
+    }
+
+    /// A drag of mod `m`'s (`from`: a HUD element, or a canvas, which is `skip` (window, canvas)) at (x, y) in window
+    /// pixels: the canvas of the mod's under it gets drag_over, the one it left drag_out. The window under it, if any.
+    fn drag_cross(&mut self, m: &str, from: &str, x: f64, y: f64, skip: Option<(&str, &str)>) -> Option<String> {
+        let over = self.canvas_drop(m, x, y, from, skip).and_then(|(win, ev)| match ev {
+            window::Event::Drop { id: c, x, y, from } => {
+                Some((win, c.clone(), window::Event::DragOver { id: c, x, y, from }))
+            }
+            _ => None,
+        });
+        let now = over.as_ref().map(|(win, c, _)| (m.to_string(), win.clone(), c.clone(), from.to_string()));
+        if let Some((pm, pwin, pc, pfrom)) = self.drag_over.take()
+            && now.as_ref().is_none_or(|n| n.1 != pwin || n.2 != pc)
+        {
+            self.ui_events.push((pm, pwin, window::Event::DragOver { id: pc, x: -1.0, y: -1.0, from: pfrom }));
+        }
+        self.drag_over = now;
+        let (win, _, ev) = over?;
+        match self.ui_events.last_mut() {
+            Some(last)
+                if last.0 == m && last.1 == win && matches!(last.2, window::Event::DragOver { x, .. } if x >= 0.0) =>
+            {
+                last.2 = ev
+            }
+            _ => self.ui_events.push((m.to_string(), win.clone(), ev)),
+        }
+        Some(win)
+    }
+
+    /// The drop on mod `m`'s canvas under (x, y) in window pixels, drawn in the last moments in an open window (not
+    /// `skip`, the (window, canvas) the drag started on): the window and its event, at the point in the canvas.
+    fn canvas_drop(
+        &self,
+        m: &str,
+        x: f64,
+        y: f64,
+        from: &str,
+        skip: Option<(&str, &str)>,
+    ) -> Option<(String, window::Event)> {
         let (x, y) = (x as f32, y as f32);
         let now = std::time::Instant::now();
         let c = self.canvases.iter().rev().find(|c| {
             c.m == m
+                && skip.is_none_or(|(w, id)| c.win != w || c.id != id)
                 && now.duration_since(c.at) < std::time::Duration::from_millis(250)
                 && x >= c.shown[0]
                 && y >= c.shown[1]
@@ -5424,9 +5521,51 @@ pub(super) fn window_click(w: &mut World, mod_id: &str, win_id: &str, click: sup
         }
     }
     host.ui_events.extend(ended);
-    if let Some((ev, se)) = out {
+    if let Some((mut ev, se)) = out {
+        let dropped = host.canvas_drags(mod_id, win_id, &mut ev);
         host.ui_events.extend(ev.into_iter().map(|e| (mod_id.to_string(), win_id.to_string(), e)));
+        host.ui_events.extend(dropped);
         w.sounds.extend(se.into_iter().map(|s| s as u32));
+    }
+}
+
+impl Host {
+    /// A window's events: a canvas drag's get where on screen it is, and it crosses the mod's other canvases (they
+    /// get drag_over and drag_out, and the drop on the release: returned, to follow the window's own events).
+    fn canvas_drags(
+        &mut self,
+        mod_id: &str,
+        win_id: &str,
+        ev: &mut [window::Event],
+    ) -> Vec<(String, String, window::Event)> {
+        let host = self;
+        let mut dropped = Vec::new();
+        for e in ev.iter_mut() {
+            let window::Event::Drag { id, phase, x, y, screen, over, .. } = e else { continue };
+            let Some((sx, sy)) = host.canvas_to_screen(mod_id, win_id, id, *x, *y) else { continue };
+            *screen = Some((sx, sy));
+            let skip = Some((win_id, id.as_str()));
+            match phase {
+                1 => *over = host.drag_cross(mod_id, id, sx as f64, sy as f64, skip),
+                2 => {
+                    let prev = host.drag_over.take();
+                    match host.canvas_drop(mod_id, sx as f64, sy as f64, id, skip) {
+                        Some((w, d)) => dropped.push((mod_id.to_string(), w, d)),
+                        None => {
+                            if let Some((pm, pwin, pc, pfrom)) = prev {
+                                dropped.push((
+                                    pm,
+                                    pwin,
+                                    window::Event::DragOver { id: pc, x: -1.0, y: -1.0, from: pfrom },
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        dropped
     }
 }
 

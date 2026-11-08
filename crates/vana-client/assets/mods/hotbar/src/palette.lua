@@ -11,8 +11,21 @@ local M = {}
 -- Set by init.lua: edit(id) opens the builder on an entry, drag_ended() when a tile's drag ends.
 M.hooks = {}
 
--- The tile being dragged ({act, label}), for the bars' window to draw over itself: the HUD's ghost is under it.
+-- The tile being dragged ({id, act, label}: here or in the manager's library), for the bars' window to draw over
+-- itself (the HUD's ghost is under it); `last` the library id of the last one, for its drop (which may come after
+-- the drag's end).
 M.dragging = nil
+M.last = nil
+
+function M.start_drag(id, act, label)
+  M.dragging = { id = id, act = act, label = label }
+  M.last = id
+end
+
+function M.end_drag()
+  M.dragging = nil
+  if M.hooks.drag_ended then M.hooks.drag_ended() end
+end
 
 local COLS, ROWS = 8, 2
 local open = false
@@ -147,10 +160,9 @@ function M.draw()
           return math.floor(settings.get("size") * u), act, label
         end)
         if e.kind == "drag_start" then
-          M.dragging = { act = act, label = label }
+          M.start_drag(it.id, act, label)
         elseif e.kind == "drag_end" then
-          M.dragging = nil
-          if M.hooks.drag_ended then M.hooks.drag_ended() end
+          M.end_drag()
         end
       end
     end)
