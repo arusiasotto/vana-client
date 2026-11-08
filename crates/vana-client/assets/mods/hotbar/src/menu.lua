@@ -21,10 +21,10 @@ local all = {}        -- the picker's whole list: {label, info, icon, macro}
 local rows = {}       -- what it shows after the filter
 
 -- The set a slot's new macro goes into: the sub job's when the slot shows the sub set's. The picker's button text,
--- when given, labels the slot in place of the name.
+-- when given, labels the slot in place of the name (a library macro keeps its own: it is put on the slot by reference).
 local function store(macro)
   local label = data.trim(ui.is_open(PICK) and ui.get(PICK, "btn").text or "")
-  if label ~= "" then
+  if label ~= "" and macro.ref == nil then
     macro = { name = macro.name, label = label, lines = macro.lines }
   end
   local main, sub = jobs.current()
@@ -121,10 +121,24 @@ local function macros()
           local act = actions.of(m)
           out[#out + 1] = { label = data.trim(m.name) ~= "" and m.name or (m.lines[1] or "?"),
             info = ("Bar %d, slot %d"):format(b, s), icon = act and { kind = act.kind, id = act.id } or nil,
-            macro = { name = m.name, label = m.label, lines = m.lines } }
+            macro = { name = m.name, label = m.label, lines = m.lines, ref = m.ref } }
         end
       end
     end
+  end
+  return out
+end
+
+-- The main job's library: each entry goes onto the slot by reference.
+local function library()
+  local out = {}
+  local main = jobs.current()
+  for _, it in ipairs(main and data.library(main) or {}) do
+    local lines = data.entry_lines(it.entry)
+    local act = actions.of({ lines = lines })
+    out[#out + 1] = { label = data.trim(it.entry.name) ~= "" and it.entry.name or (lines[1] or "?"),
+      info = lines[1] or "", icon = act and { kind = act.kind, id = act.id } or nil,
+      macro = { name = it.entry.name, lines = lines, ref = it.id } }
   end
   return out
 end
@@ -143,10 +157,12 @@ local function show(filter)
   ui.update(PICK, "count", { text = #rows == 0 and "Nothing matches." or ("%d to choose from"):format(#rows) })
 end
 
-local TITLES = { spell = "Cast a Spell", ability = "Use an Ability", macro = "Assign a Macro" }
+local TITLES = { spell = "Cast a Spell", ability = "Use an Ability", macro = "Assign a Macro",
+  library = "From the Library" }
 
 local function pick(kind)
-  all = kind == "spell" and spells() or kind == "ability" and abilities() or macros()
+  all = kind == "spell" and spells() or kind == "ability" and abilities() or kind == "library" and library()
+    or macros()
   table.sort(all, function(a, b)
     if kind == "macro" and a.info ~= b.info then return a.info < b.info end
     return a.label < b.label
@@ -162,11 +178,13 @@ local function pick(kind)
       { type = "input", id = "filter", label = "Filter (type to narrow the list)", text = "", max = 32, filter = true,
         tip = "Typing goes here: part of a name narrows the list." },
       { type = "list", id = "list", rows = {}, height = 12,
-        columns = { { title = kind == "macro" and "Macro" or "Name" }, { title = kind == "macro" and "From" or "",
-          width = kind == "macro" and 150 or 110, align = "right" } } },
+        columns = { { title = (kind == "macro" or kind == "library") and "Macro" or "Name" },
+          { title = kind == "macro" and "From" or kind == "library" and "Runs first" or "",
+            width = (kind == "macro" or kind == "library") and 150 or 110, align = "right" } } },
       { type = "text", id = "count", text = "", dim = true },
-      { type = "input", id = "btn", label = "Button text (blank: the name)", text = "", max = 14,
-        tip = "What the slot shows; Enter to type it." },
+      kind ~= "library" and { type = "input", id = "btn", label = "Button text (blank: the name)", text = "", max = 14,
+        tip = "What the slot shows; Enter to type it." } or { type = "text", id = "btn", dim = true,
+        text = "A library macro keeps its own name and button text (edit them in the manager)." },
       { type = "buttons", id = "go", items = { "Assign", "Cancel" } },
     },
   })
@@ -256,6 +274,7 @@ local ITEMS = {
   { "Cast a spell...", "spell" },
   { "Use an ability...", "ability" },
   { "Assign a macro...", "macro" },
+  { "From the library...", "library" },
   { "Edit the macro", "edit" },
   { "Clear the slot", "clear" },
   { "Set the key...", "key" },
@@ -295,7 +314,7 @@ function M.open(bar, slot, from)
       if it[1] == want then what = it[2] end
     end
     ui.close(MENU)
-    if what == "spell" or what == "ability" or what == "macro" then
+    if what == "spell" or what == "ability" or what == "macro" or what == "library" then
       pick(what)
     elseif what == "edit" then
       M.hooks.edit_slot(bar, slot, from)

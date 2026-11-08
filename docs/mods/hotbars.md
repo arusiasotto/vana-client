@@ -13,10 +13,12 @@ sub set fills a blue one. Clearing a slot of a sub set the main set fills blanks
 
 ## On the bars
 
-- **Keys:** bar 1 takes `1`..`0`, `-`, `=`; bar 2 the same with Ctrl, bar 3 with Alt. The manager's Keys page picks
-  each bar's modifier and the key row (number row, function keys or the numpad). A slot shows its key in its corner.
-- **Click** a slot to run it; **right-click** for Edit, Clear and the manager; **drag** a slot onto another to swap
-  them (in the sub set when either comes from it).
+- **Keys:** bar 1 takes `1`..`0`, `-`, `=`; bar 2 the same with Ctrl, bar 3 with Alt. The manager's Config page picks
+  each bar's modifier and the key row (number row, function keys or the numpad), and any slot's own key. A slot shows
+  its key in its corner.
+- **Click** a slot to run it; **right-click** for its menu: a spell, an ability, an existing macro or one from the
+  library, Edit the macro (in the manager's Builder), Clear, its own key, the manager; **drag** a slot onto another to
+  swap them (in the sub set when either comes from it).
 - **Hover** a slot for its name and lines.
 - The jobs over the top bar open the manager.
 
@@ -28,12 +30,30 @@ macros unless a bar uses them.
 Each line runs as typed. `/wait 2` on its own line waits two seconds; `<wait 2>` at the end of a line waits after it.
 A macro still running ignores a second press.
 
+## The library, the Builder and the palette
+
+Each main job has a **library** of macros (`//hb`, Library: New, Edit, Copy, Delete). A slot can name a library
+macro instead of holding its own copy, so editing the macro changes every slot (main or sub set) that names it.
+
+The **Builder** makes one: pick a type (spell, job ability, weapon skill, pet command, item, equipment, a system
+command such as `/attack`, `/heal`, `/assist` or `/lockon`, or Macro for typed lines only), search, pick, choose
+the target, and add lines to run after it. System commands show a game icon standing in for them (a sword for
+`/attack`, Regen for `/heal`). Edit the macro on a slot opens the Builder on it; Save puts it in the library and on
+that slot.
+
+The **palette** (`//hb palette`, or Palette on the Library page) shows the main job's library as tiles on the screen;
+drag its background to move it. Drag a tile onto a slot of the bars to put that macro there; click one to edit it.
+
+The manager's **Config** page sets each bar's modifier and key row, and a slot's own key.
+
 The macros are kept in `mod-data/hotbar/files/macros.json`:
 
 ```json
 {
   "WAR": {
-    "main": { "1": { "1": { "name": "Provoke", "lines": ["/ja \"Provoke\" <t>"] } } },
+    "library": { "1": { "name": "Provoke", "action": { "kind": "ja", "name": "Provoke", "target": "t" },
+                        "lines": ["/p Provoked <t>"] } },
+    "main": { "1": { "1": { "ref": "1" }, "2": { "name": "Berserk", "lines": ["/ja \"Berserk\" <me>"] } } },
     "sub": { "NIN": { "1": { "6": { "name": "Utsusemi", "lines": ["/ma \"Utsusemi: Ichi\" <me>"] } } } }
   }
 }
@@ -43,6 +63,7 @@ The macros are kept in `mod-data/hotbar/files/macros.json`:
 
 - `//hb` opens or closes the manager.
 - `//hb show`, `//hb hide`: the bars for this session.
+- `//hb palette` shows or hides the palette.
 - `//hb run <bar> <slot>`: runs a slot (for a key bind).
 - `//hb reload`: reads macros.json again.
 - `//hb wipestock` empties the game's own macro sets after keeping a copy; `//hb restorestock` puts it back.

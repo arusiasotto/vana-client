@@ -1,5 +1,8 @@
 -- What a macro does first, for its slot's icon and recast: the first line naming a spell (/ma, /magic, /so, /song,
--- /nin), a job ability or pet command (/ja, /pet), a weapon skill (/ws) or an item (/item).
+-- /nin), a job ability or pet command (/ja, /pet), a weapon skill (/ws), an item (/item, /equip) or one of the
+-- Builder's system commands (/attack, /heal, ...: the game icon standing in for it).
+
+local builder = require("src.builder")
 
 local M = {}
 
@@ -23,7 +26,7 @@ end
 
 local KIND = { ["/ma"] = "spell", ["/magic"] = "spell", ["/so"] = "spell", ["/song"] = "spell", ["/nin"] = "spell",
   ["/ninjutsu"] = "spell", ["/ja"] = "ability", ["/jobability"] = "ability", ["/pet"] = "ability",
-  ["/ws"] = "weaponskill", ["/weaponskill"] = "weaponskill", ["/item"] = "item" }
+  ["/ws"] = "weaponskill", ["/weaponskill"] = "weaponskill", ["/item"] = "item", ["/equip"] = "item" }
 
 local cache = {}
 
@@ -34,7 +37,9 @@ function M.of(macro)
   if hit ~= nil then return hit end
   hit = false
   for _, line in ipairs(macro.lines or {}) do
-    local cmd, name = line:match('^(/%a+)%s+"([^"]+)"')
+    -- /equip names its slot before the piece: /equip ring1 "Warp Ring".
+    local cmd, name = line:match('^(/[Ee][Qq][Uu][Ii][Pp])%s+%w+%s+"([^"]+)"')
+    if not cmd then cmd, name = line:match('^(/%a+)%s+"([^"]+)"') end
     if not cmd then cmd, name = line:match("^(/%a+)%s+(%S+)") end
     local kind = cmd and KIND[cmd:lower()]
     if kind then
@@ -53,6 +58,13 @@ function M.of(macro)
       end
       break
     end
+    -- A system command (/attack <t>, /heal) shows the icon that stands in for it, with no recast.
+    local bare = line:gsub("%s*<[^>]*>%s*$", ""):gsub("%s+$", ""):lower()
+    local c = bare:find("^/") and builder.command(bare)
+    if c then
+      if c.icon then hit = { kind = c.icon.kind, id = c.icon.id, no_recast = true } end
+      break
+    end
   end
   cache[key] = hit
   return hit
@@ -60,7 +72,7 @@ end
 
 -- Seconds left on its recast and the fraction of the whole still to go (0 when ready).
 function M.recast(a, recasts)
-  if not a then return 0, 0 end
+  if not a or a.no_recast then return 0, 0 end
   local left, total = 0, 0
   if a.kind == "spell" then
     left, total = recasts.spells[a.id] or 0, recasts.totals.spells[a.id] or 0
@@ -87,7 +99,7 @@ end
 -- pet, a spell what the magic list asks (a job that has it at our level, as main for SCH's and GEO's main-only spells
 -- and gifts, blue magic set) and its MP. Nil `a` (a macro with no known action) counts as usable.
 function M.usable(a, me)
-  if not a or not me then return true end
+  if not a or not me or a.no_recast then return true end
   if a.kind == "spell" then
     local s = res.spell(a.id)
     if not s then return true end

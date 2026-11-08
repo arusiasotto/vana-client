@@ -5,13 +5,15 @@
 -- at the bottom right. The buttons never move. A slot shows its action's icon (or its label), its hotkey, a shade
 -- with the seconds left while the action recasts, and its macro in a tip; one whose action cannot be used now is
 -- dimmed, and one the battle menu suggests glows. A click fires it, a right click opens its menu, and a slot dragged
--- onto another swaps them. Slots the main job's set fills have a gold edge, the sub job's set's a blue one.
+-- onto another swaps them; a palette tile dropped on a slot puts that library macro there. Slots the main job's set
+-- fills have a gold edge, the sub job's set's a blue one.
 
 local data = require("src.data")
 local runner = require("src.runner")
 local jobs = require("src.jobs")
 local keys = require("src.keys")
 local actions = require("src.actions")
+local palette = require("src.palette")
 
 local M = {}
 
@@ -332,7 +334,18 @@ local function on_event(_, e)
     return
   end
   if e.id ~= "c" then return end
-  if e.kind == "hover" or e.kind == "leave" then
+  if e.kind == "drop" then
+    -- A palette tile: its library macro goes into the set the slot shows (the sub job's when it shows that one).
+    local c = hit(e.x, e.y)
+    local id = palette.dragged_id(e.from)
+    if type(c) ~= "table" or not id or not main then return end
+    local _, from = data.resolve(main, sub, c.b, c.i)
+    data.assign(main, from == "sub" and sub or nil, c.b, c.i, id)
+    flash[c.b .. ":" .. c.i] = os.clock() + 0.12
+    timer.after(0.13, draw)
+    M.rebuild()
+    if M.hooks.changed then M.hooks.changed() end
+  elseif e.kind == "hover" or e.kind == "leave" then
     local now = e.kind == "hover" and key_of(hit(e.x, e.y)) or nil
     if now ~= hover then
       hover = now

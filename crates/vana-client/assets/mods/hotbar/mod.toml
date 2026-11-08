@@ -1,6 +1,6 @@
 name = "Hotbars"
-version = "1.6.0"
-description = "Hotbars of multi-line macros with their actions' icons and recasts, loaded by main job and sub job."
+version = "1.7.0"
+description = "Hotbars of multi-line macros with their actions' icons and recasts, loaded by main job and sub job; a macro library with a builder and a palette to drag from."
 authors = ["Arusia"]
 permissions = ["actions", "ui.native"]
 
