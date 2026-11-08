@@ -529,7 +529,8 @@ pub(super) fn hud_press(host: &mut super::Host, button: MouseButton) -> bool {
     true
 }
 
-/// A HUD element's press released: a click, or the drag's end over the mod's element there (which gets a drop).
+/// A HUD element's press released: a click, or the drag's end over the mod's element there (which gets a drop), else
+/// over a canvas of the mod's windows (its window gets a drop on it).
 pub(super) fn hud_release(host: &mut super::Host, button: MouseButton) {
     let st = host.input.clone();
     let Some((m, id, _, start, dragging)) = st.borrow_mut().hud_press.take_if(|p| p.2 == button) else { return };
@@ -546,6 +547,8 @@ pub(super) fn hud_release(host: &mut super::Host, button: MouseButton) {
         let mut d = hud_event("drop", button, at, start);
         d["from"] = id.into();
         host.hud_events.push((m, o, d));
+    } else if let Some((win, ev)) = host.canvas_drop(&m, at.0, at.1, &id) {
+        host.ui_events.push((m, win, ev));
     }
 }
 

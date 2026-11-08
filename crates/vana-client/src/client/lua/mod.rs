@@ -264,6 +264,18 @@ fn release_options(w: &mut World) {
     }
 }
 
+/// A mod window's canvas as last drawn, in window pixels: its origin, the part of it shown (min x, min y, max x,
+/// max y), the pixels per point (a canvas's own units are points) and when.
+struct CanvasAt {
+    m: String,
+    win: String,
+    id: String,
+    origin: [f32; 2],
+    shown: [f32; 4],
+    ppp: f32,
+    at: std::time::Instant,
+}
+
 /// The mods of this session.
 #[derive(Default)]
 pub struct Host {
@@ -286,6 +298,8 @@ pub struct Host {
     pub(super) open_page: Option<String>,
     /// Window events for the mods' handlers: (mod, window, event).
     ui_events: Vec<(String, String, window::Event)>,
+    /// Where the mods' canvases were last drawn (the modern UI), for a HUD drag let go over one.
+    canvases: Vec<CanvasAt>,
     /// `/lua watch`: mods reloaded when their files are saved.
     watch: Option<Watch>,
     /// The keys and mouse, shared with every mod (input.held, input.mouse).
@@ -590,8 +604,8 @@ const BUNDLED: &[(&str, &str, &[(&str, &str)])] = bundled!["dps", "auto-advance"
     "list-trimmer",
     "bag-manager",
     "gearshift" ["src/core.lua", "src/compat.lua", "src/names.lua", "src/gs.lua", "src/lac.lua", "src/windower.lua", "src/xml.lua", "src/acxml.lua", "src/modes.lua", "src/texts.lua", "src/regex.lua", "src/spellcast.lua"],
-    "hotbar" ["src/actions.lua", "src/bar.lua", "src/data.lua", "src/jobs.lua", "src/keys.lua", "src/manager.lua", "src/runner.lua",
-        "src/stock.lua"],
+    "hotbar" ["src/actions.lua", "src/bar.lua", "src/builder.lua", "src/data.lua", "src/ghost.lua", "src/jobs.lua", "src/keys.lua",
+        "src/manager.lua", "src/menu.lua", "src/palette.lua", "src/runner.lua", "src/stock.lua"],
     "pad-bars" ["src/actions.lua", "src/runner.lua"],
     // After gearshift: its hooks see an action first.
     "steady-cast" ["src/hold.lua"],
@@ -2204,6 +2218,55 @@ mod tests {
         hud::hover(&mut host);
         assert_eq!(kinds(&take(&mut host)), ["b mouse_enter", "b mouse_leave", "a mouse_enter"]);
         assert_eq!(hud::tip(&host).map(|t| (t.0, t.1)), Some((String::new(), "A".into())));
+    }
+
+    /// A HUD element dragged and let go over one of its mod's canvases (as the modern UI last drew it): the canvas's
+    /// window gets a drop at the point in the canvas, in its points; none once the window is closed.
+    #[test]
+    fn hud_drag_onto_canvas() {
+        use winit::event::MouseButton::Left;
+        let mut host = Host::default();
+        let vm = Vm::new(
+            manifest::Manifest { id: "t".into(), ..Default::default() },
+            PathBuf::from("."),
+            vm::Source::Dir(PathBuf::from(".")),
+        )
+        .unwrap();
+        api::install(&vm.lua, &vm, (serde_json::Value::Null, serde_json::Value::Null)).unwrap();
+        vm.lua
+            .load(
+                r#"
+                hud.rect("a", {x = 0, y = 0, w = 10, h = 10})
+                hud.on("a", function() end)
+                ui.window("w", {title = "W", elements = {{type = "canvas", id = "c", w = 100, h = 50}}})
+                ui.open("w")
+            "#,
+            )
+            .exec()
+            .unwrap();
+        host.vms.push(vm);
+        host.info.borrow_mut().hud_rects = vec![("t".into(), "a".into(), [0.0, 0.0, 10.0, 10.0])];
+        // Drawn at (100, 0) in window pixels, 2 pixels to the point: 200 by 100 pixels.
+        host.canvas_at("t", "w", 0, [100.0, 0.0], [100.0, 0.0, 300.0, 100.0], 2.0);
+        let drag = |host: &mut Host, to: f64| {
+            host.input.borrow_mut().cursor = (5.0, 5.0);
+            assert!(input::hud_press(host, Left));
+            for x in [20.0, to] {
+                host.input.borrow_mut().cursor = (x, 5.0);
+                input::hud_drag(host, x, 5.0);
+            }
+            input::hud_release(host, Left);
+            host.hud_events.clear();
+            std::mem::take(&mut host.ui_events)
+        };
+        let ev = drag(&mut host, 150.0);
+        assert_eq!(ev.len(), 1);
+        assert_eq!((ev[0].0.as_str(), ev[0].1.as_str()), ("t", "w"));
+        assert_eq!(ev[0].2.json(), serde_json::json!({"kind": "drop", "id": "c", "x": 25, "y": 3, "from": "a"}));
+        // Off the canvas: nothing.
+        assert!(drag(&mut host, 320.0).is_empty());
+        host.vms[0].lua.load(r#"ui.close("w")"#).exec().unwrap();
+        assert!(drag(&mut host, 150.0).is_empty());
     }
 
     /// The bundled Battle Text's short lines: the common forms; an unknown one stays as printed; names in their colours.
@@ -4122,6 +4185,35 @@ return "acxml flow ok"
             assert(four.name == "sub" and from == "sub")
             assert(data.resolve("WAR", "NIN", 1, 3) == nil)
             assert(saved ~= nil)
+
+            -- The library: an entry on slots of both sets by reference; editing it changes them all.
+            local id = data.save_entry("WAR", nil, { name = "Prov", action = { kind = "ja", name = "Provoke",
+              target = "t" }, lines = { "/p Provoked <t>" } })
+            data.assign("WAR", nil, 2, 1, id)
+            data.assign("WAR", "NIN", 2, 2, id)
+            local got, gf = data.resolve("WAR", "NIN", 2, 2)
+            assert(got.ref == id and gf == "sub" and got.lines[1] == '/ja "Provoke" <t>'
+              and got.lines[2] == "/p Provoked <t>")
+            assert(data.uses("WAR", id) == 2)
+            data.save_entry("WAR", id, { name = "Provoke!", action = { kind = "ja", name = "Provoke", target = "bt" } })
+            assert(data.resolve("WAR", nil, 2, 1).name == "Provoke!")
+            assert(data.effective("WAR", "NIN")[2][2].macro.lines[1] == '/ja "Provoke" <bt>')
+            -- A swap keeps the reference (not a copy of its lines).
+            data.swap("WAR", nil, 2, 1, 2, 5)
+            assert(data.get_raw("WAR", nil, 2, 5).ref == id and data.get_raw("WAR", nil, 2, 1) == nil)
+            -- set_macro with a resolved library macro (as the pickers give) puts the reference.
+            data.set_macro("WAR", nil, 2, 6, data.resolve("WAR", nil, 2, 5))
+            assert(data.get_raw("WAR", nil, 2, 6).ref == id and data.uses("WAR", id) == 3)
+            data.delete_entry("WAR", id)
+            assert(data.resolve("WAR", "NIN", 2, 2) == nil and data.resolve("WAR", nil, 2, 5) == nil)
+            assert(data.uses("WAR", id) == 0 and data.resolve("WAR", nil, 1, 1).name == "two")
+
+            -- The builder's lines, and a system command's stand-in icon with no recast.
+            assert(data.command({ kind = "equip", name = "Warp Ring", target = "ring1" }) == '/equip ring1 "Warp Ring"')
+            assert(data.command({ kind = "cmd", name = "/attack", target = "t" }) == "/attack <t>")
+            assert(data.command({ kind = "cmd", name = "/heal" }) == "/heal")
+            local atk = a.of({ lines = { "/attack <t>" } })
+            assert(atk and atk.kind == "item" and atk.no_recast and a.recast(atk, r) == 0)
         "#;
         vm.lua.load(script).exec().unwrap_or_else(|e| panic!("{e}"));
     }
@@ -5085,6 +5177,55 @@ impl Host {
         })
     }
 
+    /// A mod window's canvas drawn this frame, at its element `i` (modwin's CanvasAt): kept for drops.
+    fn canvas_at(&mut self, m: &str, win: &str, i: usize, origin: [f32; 2], shown: [f32; 4], ppp: f32) {
+        let Some(id) = self.vms.iter().find(|v| v.manifest.id == m).and_then(|v| {
+            let st = v.st.borrow();
+            let w = st.windows.iter().find(|w| w.id == win)?;
+            match w.elems.get(i) {
+                Some(window::Elem::Canvas { id, .. }) => Some(id.clone()),
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        self.canvases.retain(|c| {
+            !(c.m == m && c.win == win && c.id == id) && now.duration_since(c.at) < std::time::Duration::from_secs(1)
+        });
+        self.canvases.push(CanvasAt { m: m.into(), win: win.into(), id, origin, shown, ppp, at: now });
+    }
+
+    /// The drop on mod `m`'s canvas under (x, y) in window pixels, drawn in the last moments in an open window: the
+    /// window and its event, at the point in the canvas.
+    fn canvas_drop(&self, m: &str, x: f64, y: f64, from: &str) -> Option<(String, window::Event)> {
+        let (x, y) = (x as f32, y as f32);
+        let now = std::time::Instant::now();
+        let c = self.canvases.iter().rev().find(|c| {
+            c.m == m
+                && now.duration_since(c.at) < std::time::Duration::from_millis(250)
+                && x >= c.shown[0]
+                && y >= c.shown[1]
+                && x < c.shown[2]
+                && y < c.shown[3]
+        })?;
+        let open = self
+            .vms
+            .iter()
+            .find(|v| v.manifest.id == m && v.suspended.is_none())
+            .is_some_and(|v| v.st.borrow().windows.iter().any(|w| w.id == c.win && w.open));
+        let ppp = c.ppp.max(0.01);
+        open.then(|| {
+            let ev = window::Event::Drop {
+                id: c.id.clone(),
+                x: (x - c.origin[0]) / ppp,
+                y: (y - c.origin[1]) / ppp,
+                from: from.into(),
+            };
+            (c.win.clone(), ev)
+        })
+    }
+
     /// Whether a mod window's line is being typed (it takes the text and the keys).
     pub(super) fn typing(&self) -> bool {
         !self.all_hidden
@@ -5240,6 +5381,10 @@ pub(super) fn window_click(w: &mut World, mod_id: &str, win_id: &str, click: sup
         return;
     }
     let host = &mut w.lua;
+    if let super::modern::ModClick::CanvasAt(i, origin, shown, ppp) = click {
+        host.canvas_at(mod_id, win_id, i, origin, shown, ppp);
+        return;
+    }
     // An open modal window takes no clicks meant for another.
     if let Some((k, id)) = host.modal()
         && (host.vms[k].manifest.id != mod_id || id != win_id)

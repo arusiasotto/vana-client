@@ -436,6 +436,13 @@ pub enum Event {
         dx: f32,
         dy: f32,
     },
+    /// One of the mod's HUD elements (`from`) dragged and let go over a canvas, at (x, y) in it.
+    Drop {
+        id: String,
+        x: f32,
+        y: f32,
+        from: String,
+    },
     Close,
 }
 
@@ -464,6 +471,9 @@ impl Event {
             }
             Event::Drag { id, phase, x, y, dx, dy } => {
                 json!({"kind": (["drag_start", "drag", "drag_end"][*phase as usize % 3]), "id": id, "x": x.round() as i64, "y": y.round() as i64, "dx": dx.round() as i64, "dy": dy.round() as i64})
+            }
+            Event::Drop { id, x, y, from } => {
+                json!({"kind": "drop", "id": id, "x": x.round() as i64, "y": y.round() as i64, "from": from})
             }
             Event::Close => json!({"kind": "close"}),
         }
