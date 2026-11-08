@@ -1,94 +1,307 @@
 -- The macro manager window.
 --
---   Slots  pick which set to edit (a main job, optionally with a sub job), see every
---          slot of a bar, and choose one to edit, clear or run.
---   Macro  name, button text and lines of the chosen slot.
---   Keys   the hotkey modifier of each bar and the key row (changes apply at once).
---
--- A set is "RDM" alone (loads whenever RDM is main) or "RDM" + "WHM" (loads when RDM/WHM
--- and overrides RDM's slots one by one).
+--   Library  a main job's macros: new, edit, copy, delete, and the palette, from which they are dragged onto the bars.
+--   Builder  one macro: an action of a type (spell, job ability, weapon skill, pet command, item, equipment, system
+--            command) and its target build the first line; lines typed under it run after it. A "Macro" is typed only.
+--   Config   the hotkey modifier of each bar and the key row (changes apply at once).
 
 local data = require("src.data")
 local jobs = require("src.jobs")
 local keys = require("src.keys")
-local runner = require("src.runner")
+local actions = require("src.actions")
+local builder = require("src.builder")
 
 local M = {}
 
--- Set by init.lua: changed() redraws the bars, rebind() rebinds the hotkeys.
+-- Set by init.lua: changed() redraws the bars, rebind() rebinds the hotkeys, palette() shows or hides the palette.
 M.hooks = {}
 
 local WIN = "manager"
-local TAB_SLOTS, TAB_MACRO, TAB_KEYS = 1, 2, 3
+local TAB_LIB, TAB_BUILD, TAB_CONFIG = 1, 2, 3
 
-local S = { mj = nil, sj = "", bar = 1, slot = 1 }
+local S = { mj = nil }
 local defined = false
 
-local DIM = { 150, 150, 160 }
-local SUB_COLOUR = { 130, 180, 235 }
+-- The library rows as shown (ids, in order) and the builder's state: the entry edited (nil: a new one), the action
+-- kind (nil: a macro of typed lines), the action picked ({name}), its target, the search results.
+local lib_ids = {}
+local E = { id = nil, kind = "ma", pick = nil, target = "t", results = {}, auto_name = nil, icon = nil }
 
 local function say(msg)
   chat.add("Hotbars: " .. msg)
 end
 
-local function slots_count()
-  return math.min(settings.get("slots"), data.MAX_SLOTS)
-end
-
-local function bars_count()
-  return math.min(settings.get("bars"), data.MAX_BARS)
-end
-
-local function sub_arg()
-  if S.sj ~= "" then
-    return S.sj
-  end
-  return nil
-end
-
-local function numbers(n)
-  local t = {}
-  for i = 1, n do
-    t[#t + 1] = tostring(i)
-  end
-  return t
+-- The icon a list row shows for a macro, from its first action.
+local function row_icon(macro)
+  local a = macro and actions.of(macro)
+  if not a then return nil end
+  return { kind = a.kind, id = a.id }
 end
 
 -- ---------------------------------------------------------------------------
--- Refreshing what the window shows
+-- Library
 -- ---------------------------------------------------------------------------
 
-local function set_text()
-  if not S.mj then
-    return "Jobs are not loaded yet."
+local function does_text(entry)
+  local first = data.command(entry.action)
+  local n = #(entry.lines or {})
+  if first then
+    return n > 0 and ("%s  +%d"):format(first, n) or first
   end
-  if S.sj ~= "" then
-    return ("Editing %s with sub %s: overrides the %s set slot by slot."):format(S.mj, S.sj, S.mj)
-  end
-  return ("Editing %s main set: loads whenever %s is your main job."):format(S.mj, S.mj)
+  return n == 1 and entry.lines[1] or ("%d lines"):format(n)
 end
 
-local function refresh_slots()
-  ui.update(WIN, "ctx", { text = set_text() })
+local function refresh_library(select_id)
+  ui.update(WIN, "job", { text = S.mj or "" })
   if not S.mj then
-    ui.update(WIN, "slots", { rows = {} })
+    lib_ids = {}
+    ui.update(WIN, "lctx", { text = "Jobs are not loaded yet." })
+    ui.update(WIN, "lib", { rows = {} })
     return
   end
-  local eff = data.effective(S.mj, sub_arg())
+  local at = ui.get(WIN, "lib").at or 1
   local rows = {}
-  for i = 1, slots_count() do
-    local cell = eff[S.bar] and eff[S.bar][i]
-    local name, from, colour = "", "", DIM
-    if cell then
-      name = cell.macro.name or ""
-      from = cell.from
-      -- While editing a sub set, slots that still come from main are shown dim.
-      colour = (S.sj ~= "" and cell.from == "main") and DIM or (cell.from == "sub" and SUB_COLOUR or { 255, 255, 255 })
-    end
-    rows[#rows + 1] = { keys.hint(S.bar, i), name, from, colour = colour }
+  lib_ids = {}
+  for i, it in ipairs(data.library(S.mj)) do
+    lib_ids[i] = it.id
+    if select_id and it.id == tostring(select_id) then at = i end
+    rows[i] = {
+      it.entry.name or "",
+      does_text(it.entry),
+      tostring(data.uses(S.mj, it.id)),
+      icon = row_icon({ lines = data.entry_lines(it.entry) }),
+    }
   end
-  ui.update(WIN, "slots", { rows = rows, at = S.slot })
+  ui.update(WIN, "lctx", {
+    text = #rows == 0 and ("%s has no macros yet: press New."):format(S.mj)
+      or ("%s macros. Open the Palette and drag one onto a slot of the bars."):format(S.mj),
+  })
+  ui.update(WIN, "lib", { rows = rows, at = math.max(1, math.min(at, #rows)) })
 end
+
+local function selected_entry()
+  local at = ui.get(WIN, "lib").at
+  return at and lib_ids[at] or nil
+end
+
+local function copy_selected()
+  local id = selected_entry()
+  local entry = id and data.get_entry(S.mj, id)
+  if not entry then return end
+  local copy = {}
+  for k, v in pairs(entry) do copy[k] = v end
+  copy.name = (entry.name or "") .. " (copy)"
+  refresh_library(data.save_entry(S.mj, nil, copy))
+  M.hooks.changed()
+end
+
+local function delete_selected()
+  local id = selected_entry()
+  local entry = id and data.get_entry(S.mj, id)
+  if not entry then return end
+  local mj = S.mj
+  local n = data.uses(mj, id)
+  local text = n > 0 and ('Delete "%s"? It is on %d slot%s, which will be emptied.'):format(entry.name, n,
+    n == 1 and "" or "s") or ('Delete "%s"?'):format(entry.name)
+  ui.prompt(text, { "Delete", "Cancel" }, function(i)
+    if i == 1 then
+      data.delete_entry(mj, id)
+      M.hooks.changed()
+      refresh_library()
+    end
+  end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Builder
+-- ---------------------------------------------------------------------------
+
+local function type_def()
+  return builder.TYPES[builder.type_index(E.kind)]
+end
+
+local function builder_entry()
+  local action = nil
+  if E.kind and E.pick then
+    action = { kind = E.kind, name = E.pick.name, target = E.target }
+  end
+  return {
+    name = ui.get(WIN, "name").text,
+    label = ui.get(WIN, "label").text,
+    icon = E.icon,
+    action = action,
+    lines = data.split_lines(ui.get(WIN, "extra").text),
+  }
+end
+
+local function refresh_preview()
+  local lines = data.entry_lines(builder_entry())
+  ui.update(WIN, "preview", {
+    text = #lines == 0 and "Runs: (nothing yet)" or ("Runs: " .. table.concat(lines, "  |  ")),
+    dim = #lines == 0,
+  })
+end
+
+local function refresh_choice()
+  local t = type_def()
+  local text
+  if not E.kind then
+    text = "Macro: type every line below."
+  elseif E.pick then
+    text = ("%s: %s"):format(t.label, E.pick.name)
+  else
+    text = ("%s: none yet. Search, then pick one from the list."):format(t.label)
+  end
+  ui.update(WIN, "picked", { text = text, dim = not E.kind or not E.pick })
+  ui.update(WIN, "btype", { items = { t.label } })
+  ui.update(WIN, "target", {
+    label = E.kind == "equip" and "Equipment slot" or "Target",
+    items = { E.kind and builder.target_label(E.kind, E.target, E.pick and E.pick.name) or "(not used)" },
+  })
+  ui.update(WIN, "extra", { label = E.kind and "Lines after it (| between lines, optional)" or "Lines (| between lines)" })
+end
+
+local function refresh_results(query)
+  local t = type_def()
+  ui.update(WIN, "q", { label = t.search })
+  ui.update(WIN, "found", { columns = builder.columns(E.kind) })
+  if not E.kind then
+    E.results = {}
+    ui.update(WIN, "found", { rows = {} })
+    ui.update(WIN, "fcount", { text = "" })
+    return
+  end
+  local found, more = builder.find(E.kind, query)
+  E.results = found
+  local rows = {}
+  for i, e in ipairs(found) do
+    rows[i] = { e.name, e.cells[1] or "", e.cells[2] or "", icon = e.icon }
+  end
+  ui.update(WIN, "found", { rows = rows, at = 1 })
+  ui.update(WIN, "fcount", {
+    text = #found == 0 and "Nothing matches." or (more and ("First %d matches."):format(#found)
+      or ("%d found."):format(#found)),
+  })
+end
+
+local function builder_where()
+  if E.id then
+    return ('Editing "%s" of %s.'):format((data.get_entry(S.mj, E.id) or {}).name or "?", S.mj or "?")
+  end
+  return ("New macro for %s."):format(S.mj or "?")
+end
+
+local function set_kind(kind)
+  if kind == E.kind then return end
+  E.kind, E.pick = kind, nil
+  E.target = kind == "equip" and "main" or kind == "cmd" and "" or "t"
+  refresh_results(ui.get(WIN, "q").text)
+  refresh_choice()
+  refresh_preview()
+end
+
+-- Opens the builder on a library entry (`id`), or on a new macro.
+local function open_builder(id)
+  if not S.mj then
+    say("jobs are not loaded yet.")
+    return
+  end
+  local entry = id and data.get_entry(S.mj, id) or nil
+  E.id = entry and tostring(id) or nil
+  E.kind, E.pick, E.target, E.auto_name, E.icon = "ma", nil, "t", nil, nil
+  local name, label, extra = "", "", ""
+  if entry then
+    name, label, E.icon = entry.name or "", entry.label or "", entry.icon
+    extra = data.join_lines(entry.lines)
+    if entry.action then
+      E.kind = entry.action.kind
+      E.pick = { name = entry.action.name }
+      E.target = entry.action.target
+    else
+      E.kind = nil
+    end
+  end
+  ui.update(WIN, "name", { text = name })
+  ui.update(WIN, "label", { text = label })
+  ui.update(WIN, "extra", { text = extra })
+  ui.update(WIN, "q", { text = "" })
+  ui.update(WIN, "bwhere", { text = builder_where() })
+  refresh_results("")
+  refresh_choice()
+  refresh_preview()
+  ui.update(WIN, "tabs", { at = TAB_BUILD })
+end
+
+local function pick(index)
+  local e = E.results[index]
+  if not e then return end
+  local name = data.trim(ui.get(WIN, "name").text)
+  -- The name follows the pick until the player types their own.
+  if name == "" or name == E.auto_name then
+    ui.update(WIN, "name", { text = e.title or e.name })
+    E.auto_name = e.title or e.name
+  end
+  -- A new pick starts on its usual target; picking the same again keeps the one chosen.
+  if not E.pick or E.pick.name ~= e.name then
+    E.target = e.target
+  end
+  E.pick = { name = e.name }
+  refresh_choice()
+  refresh_preview()
+end
+
+local function choose_type()
+  ui.menu(builder.TYPE_LABELS, function(i)
+    if i then set_kind(builder.TYPES[i].kind) end
+  end)
+end
+
+local function choose_target()
+  if not E.kind then
+    say("a macro's lines name their own targets.")
+    return
+  end
+  local choices = builder.targets_for(E.kind, E.pick and E.pick.name)
+  if choices[1][1] == "" and #choices == 1 then
+    say("that command takes no target.")
+    return
+  end
+  local labels = {}
+  for i, t in ipairs(choices) do labels[i] = t[2] end
+  ui.menu(labels, function(i)
+    if not i then return end
+    E.target = choices[i][1]
+    refresh_choice()
+    refresh_preview()
+  end)
+end
+
+local function save_builder()
+  if not S.mj then
+    return
+  end
+  local entry = builder_entry()
+  if E.kind and not entry.action then
+    say("pick one from the list first.")
+    return
+  end
+  if not entry.action and #entry.lines == 0 then
+    say("add at least one line to the macro.")
+    return
+  end
+  if data.trim(entry.name) == "" then
+    local c = entry.action and entry.action.kind == "cmd" and builder.command(entry.action.name)
+    entry.name = c and c.title or entry.action and entry.action.name or entry.lines[1]:sub(1, 24)
+  end
+  E.id = data.save_entry(S.mj, E.id, entry)
+  M.hooks.changed()
+  refresh_library(E.id)
+  ui.update(WIN, "tabs", { at = TAB_LIB })
+end
+
+-- ---------------------------------------------------------------------------
+-- Config
+-- ---------------------------------------------------------------------------
 
 local function refresh_keys()
   for b = 1, data.MAX_BARS do
@@ -102,73 +315,10 @@ local function refresh_keys()
   })
 end
 
-local function refresh_all()
-  ui.update(WIN, "bar", { items = numbers(bars_count()), at = math.min(S.bar, bars_count()) })
-  ui.update(WIN, "mj", { text = S.mj or "" })
-  ui.update(WIN, "sj", { text = S.sj })
-  refresh_slots()
+local function keys_changed()
+  M.hooks.rebind()
+  M.hooks.changed()
   refresh_keys()
-end
-
--- ---------------------------------------------------------------------------
--- Editing a slot
--- ---------------------------------------------------------------------------
-
-local function edit_slot()
-  if not S.mj then
-    return
-  end
-  local macro = data.resolve(S.mj, sub_arg(), S.bar, S.slot)
-  ui.update(WIN, "where", {
-    text = ("Bar %d, slot %d (%s) of %s"):format(S.bar, S.slot, keys.hint(S.bar, S.slot),
-      S.sj ~= "" and (S.mj .. " + sub " .. S.sj) or (S.mj .. " main")),
-  })
-  ui.update(WIN, "name", { text = macro and macro.name or "" })
-  ui.update(WIN, "label", { text = macro and macro.label or "" })
-  ui.update(WIN, "lines", { text = macro and data.join_lines(macro.lines) or "" })
-  ui.update(WIN, "tabs", { at = TAB_MACRO })
-end
-
-local function save_macro()
-  if not S.mj then
-    return
-  end
-  local lines = data.split_lines(ui.get(WIN, "lines").text)
-  if #lines == 0 then
-    say("add at least one line to the macro.")
-    return
-  end
-  local name = data.trim(ui.get(WIN, "name").text)
-  if name == "" then
-    name = lines[1]:sub(1, 24)
-  end
-  data.set_macro(S.mj, sub_arg(), S.bar, S.slot, {
-    name = name,
-    label = ui.get(WIN, "label").text,
-    lines = lines,
-  })
-  refresh_slots()
-  M.hooks.changed()
-  ui.update(WIN, "tabs", { at = TAB_SLOTS })
-end
-
-local function clear_slot()
-  if not S.mj then
-    return
-  end
-  data.clear(S.mj, sub_arg(), S.bar, S.slot)
-  refresh_slots()
-  M.hooks.changed()
-end
-
-local function run_slot()
-  if not S.mj then
-    return
-  end
-  local macro = data.resolve(S.mj, sub_arg(), S.bar, S.slot)
-  if macro then
-    runner.run_checked(macro)
-  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -178,101 +328,108 @@ end
 local function define()
   ui.window(WIN, {
     title = "Hotbars",
-    width = 480,
-    help = "Left-click a slot on the bar to fire it, right-click to edit it.",
+    width = 520,
+    help = "Drag a macro from the palette onto a slot. Right-click a slot to clear it.",
     elements = {
-      { type = "tabs", id = "tabs", items = { "Slots", "Macro", "Keys" }, at = 1 },
+      { type = "tabs", id = "tabs", items = { "Library", "Builder", "Config" }, at = 1 },
 
-      -- Slots
-      { type = "text", id = "ctx", text = "", page = TAB_SLOTS },
-      { type = "input", id = "mj", label = "Main job", text = "", max = 3, page = TAB_SLOTS,
-        tip = "The job you play as main, e.g. RDM." },
-      { type = "input", id = "sj", label = "Sub job (blank = the main job's own set)", text = "", max = 3,
-        page = TAB_SLOTS, tip = "Sub job, e.g. WHM: its slots load when that is your sub and override the main set." },
-      { type = "choice", id = "bar", label = "Bar", items = { "1" }, at = 1, page = TAB_SLOTS },
-      { type = "list", id = "slots", rows = {}, height = 12, page = TAB_SLOTS,
-        columns = { { title = "Key", width = 50 }, { title = "Macro" }, { title = "From", width = 56 } },
-        tip = "Enter or click a slot to edit its macro." },
-      { type = "buttons", id = "sbtn", items = { "Edit", "Clear", "Run" }, page = TAB_SLOTS },
+      -- Library
+      { type = "input", id = "job", label = "Job", text = "", max = 3, page = TAB_LIB,
+        tip = "The main job whose macros to show, e.g. RDM." },
+      { type = "text", id = "lctx", text = "", page = TAB_LIB },
+      { type = "list", id = "lib", rows = {}, height = 12, page = TAB_LIB,
+        columns = { { title = "Macro", width = 150 }, { title = "Runs" }, { title = "Slots", width = 44, align = "right" } },
+        tip = "Enter or click a macro to edit it." },
+      { type = "buttons", id = "lbtn", items = { "New", "Edit", "Copy", "Delete", "Palette" }, page = TAB_LIB },
 
-      -- Macro
-      { type = "text", id = "where", text = "", page = TAB_MACRO },
-      { type = "input", id = "name", label = "Name", text = "", max = 32, page = TAB_MACRO },
+      -- Builder
+      { type = "text", id = "bwhere", text = "", page = TAB_BUILD },
+      { type = "buttons", id = "btype", label = "Type", items = { "Spell" }, page = TAB_BUILD,
+        tip = "Choose what the macro does." },
+      { type = "input", id = "q", label = "Search", text = "", max = 32, page = TAB_BUILD,
+        tip = "Part of a name, e.g. cure." },
+      { type = "list", id = "found", rows = {}, height = 7, page = TAB_BUILD, columns = builder.columns("ma"),
+        tip = "Enter or click one to build the macro on it." },
+      { type = "text", id = "fcount", text = "", dim = true, page = TAB_BUILD },
+      { type = "text", id = "picked", text = "", page = TAB_BUILD },
+      { type = "buttons", id = "target", label = "Target", items = { "<t> Current target" }, page = TAB_BUILD },
+      { type = "input", id = "name", label = "Name", text = "", max = 32, page = TAB_BUILD },
       { type = "input", id = "label", label = "Button text (blank = from the name)", text = "", max = 14,
-        page = TAB_MACRO },
-      { type = "input", id = "lines", label = "Lines (separate with |)", text = "", max = 1024, page = TAB_MACRO,
-        tip = 'Example: /ma "Cure" <t> | /wait 2 | /echo done' },
+        page = TAB_BUILD },
+      { type = "input", id = "extra", label = "Lines after it (| between lines, optional)", text = "", max = 1024,
+        page = TAB_BUILD, tip = 'Example: /p Casting <t> | /wait 2 | /echo done' },
+      { type = "text", id = "preview", text = "", page = TAB_BUILD },
       { type = "text", id = "tip", text = "Waits: /wait 2 on its own line, or <wait 2> at the end of one.",
-        dim = true, page = TAB_MACRO },
-      { type = "buttons", id = "ebtn", items = { "Save", "Cancel" }, page = TAB_MACRO },
+        dim = true, page = TAB_BUILD },
+      { type = "buttons", id = "bbtn", items = { "Save", "Cancel" }, page = TAB_BUILD },
 
-      -- Keys
-      { type = "text", id = "ktext", text = "Hotkey modifier for each bar:", page = TAB_KEYS },
-      { type = "choice", id = "mod1", label = "Bar 1", items = keys.MOD_LABELS, at = 1, page = TAB_KEYS },
-      { type = "choice", id = "mod2", label = "Bar 2", items = keys.MOD_LABELS, at = 1, page = TAB_KEYS },
-      { type = "choice", id = "mod3", label = "Bar 3", items = keys.MOD_LABELS, at = 1, page = TAB_KEYS },
-      { type = "choice", id = "row", label = "Keys", items = keys.ROW_LABELS, at = 1, page = TAB_KEYS },
-      { type = "text", id = "clash", text = "", page = TAB_KEYS },
-      { type = "buttons", id = "kbtn", items = { "Reset to defaults" }, page = TAB_KEYS },
+      -- Config
+      { type = "text", id = "ktext", text = "Hotkey modifier for each bar:", page = TAB_CONFIG },
+      { type = "choice", id = "mod1", label = "Bar 1", items = keys.MOD_LABELS, at = 1, page = TAB_CONFIG },
+      { type = "choice", id = "mod2", label = "Bar 2", items = keys.MOD_LABELS, at = 1, page = TAB_CONFIG },
+      { type = "choice", id = "mod3", label = "Bar 3", items = keys.MOD_LABELS, at = 1, page = TAB_CONFIG },
+      { type = "choice", id = "row", label = "Keys", items = keys.ROW_LABELS, at = 1, page = TAB_CONFIG },
+      { type = "text", id = "clash", text = "", page = TAB_CONFIG },
+      { type = "buttons", id = "kbtn", items = { "Reset to defaults" }, page = TAB_CONFIG },
     },
   })
 
   ui.on(WIN, function(_, e)
     if e.kind == "set" then
-      if e.id == "bar" then
-        S.bar = e.index
-        refresh_slots()
-      elseif e.id:match("^mod%d$") then
+      if e.id:match("^mod%d$") then
         keys.set_mod(tonumber(e.id:sub(4)), keys.MOD_LABELS[e.index])
-        M.hooks.rebind()
-        M.hooks.changed()
-        refresh_keys()
-        refresh_slots()
+        keys_changed()
       elseif e.id == "row" then
         keys.set_row(keys.ROW_LABELS[e.index])
-        M.hooks.rebind()
-        M.hooks.changed()
-        refresh_keys()
-        refresh_slots()
+        keys_changed()
       end
-    elseif e.kind == "change" and (e.id == "mj" or e.id == "sj") then
-      local text = data.trim(e.text)
-      if text == "" and e.id == "sj" then
-        S.sj = ""
+    elseif e.kind == "edit" then
+      if e.id == "q" then
+        refresh_results(e.text)
+      elseif e.id == "extra" or e.id == "name" then
+        refresh_preview()
+      end
+    elseif e.kind == "change" and e.id == "job" then
+      local job = jobs.parse(e.text)
+      if job then
+        S.mj = job
       else
-        local job = jobs.parse(text)
-        if job then
-          S[e.id] = job
-        else
-          say(('"%s" is not a job (use the three-letter name, e.g. RDM).'):format(text))
-        end
+        say(('"%s" is not a job (use the three-letter name, e.g. RDM).'):format(data.trim(e.text)))
       end
-      refresh_all()
-    elseif e.kind == "select" and e.id == "slots" then
-      S.slot = e.index
-      edit_slot()
+      refresh_library()
+    elseif e.kind == "select" then
+      if e.id == "lib" then
+        open_builder(lib_ids[e.index])
+      elseif e.id == "found" then
+        pick(e.index)
+      end
     elseif e.kind == "press" then
-      if e.id == "sbtn" then
-        S.slot = ui.get(WIN, "slots").at
+      if e.id == "lbtn" then
         if e.index == 1 then
-          edit_slot()
+          open_builder(nil)
         elseif e.index == 2 then
-          clear_slot()
-        else
-          run_slot()
+          local id = selected_entry()
+          if id then open_builder(id) end
+        elseif e.index == 3 then
+          copy_selected()
+        elseif e.index == 4 then
+          delete_selected()
+        elseif M.hooks.palette then
+          M.hooks.palette()
         end
-      elseif e.id == "ebtn" then
+      elseif e.id == "btype" then
+        choose_type()
+      elseif e.id == "target" then
+        choose_target()
+      elseif e.id == "bbtn" then
         if e.index == 1 then
-          save_macro()
+          save_builder()
         else
-          ui.update(WIN, "tabs", { at = TAB_SLOTS })
+          ui.update(WIN, "tabs", { at = TAB_LIB })
         end
       elseif e.id == "kbtn" then
         keys.reset()
-        M.hooks.rebind()
-        M.hooks.changed()
-        refresh_keys()
-        refresh_slots()
+        keys_changed()
       end
     end
   end)
@@ -285,22 +442,17 @@ local function ensure()
   end
 end
 
--- Points the manager at the current jobs (main set).
-local function reset_to_current()
-  local main = jobs.current()
-  S.mj = main or S.mj
-  S.sj = ""
-  S.bar = math.min(S.bar, bars_count())
-  S.slot = math.min(S.slot, slots_count())
+local function refresh_all(select_id)
+  refresh_library(select_id)
+  refresh_keys()
 end
 
-function M.open()
+-- Opens the manager on the current main job's library, with `select_id` chosen when given.
+function M.open(select_id)
   ensure()
-  if not S.mj then
-    reset_to_current()
-  end
-  refresh_all()
-  ui.update(WIN, "tabs", { at = TAB_SLOTS })
+  S.mj = jobs.current() or S.mj
+  refresh_all(select_id)
+  ui.update(WIN, "tabs", { at = TAB_LIB })
   ui.open(WIN)
 end
 
@@ -313,21 +465,16 @@ function M.toggle()
   end
 end
 
--- Opens the editor on one slot of the current jobs; `from` is "sub" when the slot's
--- macro comes from the sub job's set (so that is the set to edit).
-function M.edit_slot(bar, slot, from)
+-- Opens the builder on a library entry of the current main job (a palette tile clicked).
+function M.edit_entry(id)
   ensure()
-  local main, sub = jobs.current()
-  S.mj = main or S.mj
-  S.sj = (from == "sub" and sub) or ""
-  S.bar = bar
-  S.slot = slot
-  refresh_all()
-  edit_slot()
+  S.mj = jobs.current() or S.mj
+  refresh_all(id)
+  open_builder(id)
   ui.open(WIN)
 end
 
--- Redraws the window's lists after the data changed from outside (//hb reload).
+-- Redraws the window's lists after the data changed from outside (//hb reload, a palette drop).
 function M.refresh()
   if defined then
     refresh_all()

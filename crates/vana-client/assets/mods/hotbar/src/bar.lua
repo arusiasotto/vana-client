@@ -1,16 +1,19 @@
--- The hotbars on screen: a slot shows its action's icon (or its label), its hotkey, a shade with the seconds left
--- while the action recasts, and its macro in a tip. A click fires it, a right click edits it, and a slot dragged onto
--- another swaps them. Slots the main job's set fills have a gold edge, the sub job's set's a blue one.
+-- The hotbars on screen, for your main job: a slot shows its action's icon (or its label), its hotkey, a shade with
+-- the seconds left while the action recasts, and its macro in a tip. A click fires it, a right click offers the
+-- manager and clearing it, and a slot dragged onto another swaps them.
 
 local data = require("src.data")
 local runner = require("src.runner")
 local jobs = require("src.jobs")
 local keys = require("src.keys")
 local actions = require("src.actions")
+local palette = require("src.palette")
+local ghost = require("src.ghost")
+local menu = require("src.menu")
 
 local M = {}
 
--- Set by init.lua: open_manager(), edit_slot(bar, slot, from), changed()
+-- Set by init.lua: open_manager(select_id?), changed()
 M.hooks = {}
 
 local hidden = false   -- //hb show | hide
@@ -19,8 +22,9 @@ local shown = {}       -- slot id -> {action, x, y, size} as drawn, for the reca
 
 local EMPTY_BG = { 14, 16, 24, 140 }
 local FILLED_BG = { 22, 26, 40, 215 }
+local DRAGGED_BG = { 22, 26, 40, 80 }
 local EMPTY_EDGE = { 80, 84, 96, 120 }
-local EDGE = { main = { 196, 160, 86, 235 }, sub = { 96, 156, 226, 240 } }
+local EDGE = { 196, 160, 86, 235 }
 local SHADE = { 0, 0, 0, 165 }
 
 -- Sizes and offsets are in UI units, so the bars keep their size at any resolution and UI size.
@@ -52,48 +56,52 @@ local function span(o, scr)
 end
 
 local function signature()
-  local main, sub = jobs.current()
+  local main = jobs.current()
   local scr = hud.screen()
   local x0, w = span(opts(), scr)
-  return table.concat({ tostring(main), tostring(sub), scr.width, scr.height, scr.ui_scale, floor_y(scr, x0, w) }, ":")
+  return table.concat({ tostring(main), scr.width, scr.height, scr.ui_scale, floor_y(scr, x0, w) }, ":")
 end
 
--- Runs the macro in a slot for the current jobs.
+-- Runs the macro in a slot for the current main job.
 function M.fire(bar, slot)
-  local main, sub = jobs.current()
+  local main = jobs.current()
   if not main then return end
-  local macro = data.resolve(main, sub, bar, slot)
+  local macro = data.resolve(main, bar, slot)
   if macro then runner.run_checked(macro) end
 end
 
-local function slot_menu(bar, slot)
-  local main, sub = jobs.current()
-  local _, from = data.resolve(main, sub, bar, slot)
-  ui.menu({ "Edit / assign macro", "Clear slot", "Open manager" }, function(i)
+local function changed()
+  M.rebuild()
+  if M.hooks.changed then M.hooks.changed() end
+end
+
+local function slot_menu(bar, slot, x, y)
+  local main = jobs.current()
+  menu.open(x, y, { "Open manager", "Clear slot" }, function(i)
     if i == 1 then
-      M.hooks.edit_slot(bar, slot, from)
+      M.hooks.open_manager(main and data.ref_of(main, bar, slot))
     elseif i == 2 and main then
-      data.clear(main, from == "sub" and sub or nil, bar, slot)
-      M.rebuild()
-      if M.hooks.changed then M.hooks.changed() end
-    elseif i == 3 then
-      M.hooks.open_manager()
+      data.clear(main, bar, slot)
+      changed()
     end
   end)
 end
 
--- A slot dropped on another: the two swap, in the sub job's set when either comes from it.
+-- A slot dropped on another: the two swap. A palette tile dropped on a slot puts its macro there.
 local function dropped(bar, slot, from_id)
+  local main = jobs.current()
+  if not main then return end
+  local lib_id = palette.dragged_id(from_id)
+  if lib_id then
+    data.assign(main, bar, slot, lib_id)
+    changed()
+    return
+  end
   local fb, fs = from_id:match("^s(%d+)_(%d+)$")
   fb, fs = tonumber(fb), tonumber(fs)
   if not fb or (fb == bar and fs == slot) then return end
-  local main, sub = jobs.current()
-  if not main then return end
-  local _, a = data.resolve(main, sub, fb, fs)
-  local _, b = data.resolve(main, sub, bar, slot)
-  data.swap(main, (a == "sub" or b == "sub") and sub or nil, fb, fs, bar, slot)
-  M.rebuild()
-  if M.hooks.changed then M.hooks.changed() end
+  data.swap(main, fb, fs, bar, slot)
+  changed()
 end
 
 local function tip_of(macro)
@@ -105,10 +113,11 @@ end
 
 function M.rebuild()
   hud.clear()
+  menu.forget()
   shown = {}
   built_sig = signature()
   if hidden or not settings.get("on") or not settings.get("visible") then return end
-  local main, sub = jobs.current()
+  local main = jobs.current()
   if not main then
     built_sig = nil -- jobs not known yet; the tick tries again
     return
@@ -117,7 +126,7 @@ function M.rebuild()
   local o = opts()
   local scr = hud.screen()
   local u = scr.ui_scale
-  local eff = data.effective(main, sub)
+  local eff = data.effective(main)
   local round = 6 * u
   local x0, w = span(o, scr)
   local y_bottom = floor_y(scr, x0, w) - o.oy - o.size
@@ -132,18 +141,21 @@ function M.rebuild()
     for i = 1, o.slots do
       local x = x0 + (i - 1) * (o.size + o.gap)
       local id = ("s%d_%d"):format(b, i)
-      local cell = eff[b] and eff[b][i]
-      local macro = cell and cell.macro
+      local macro = eff[b] and eff[b][i]
       local act = macro and actions.of(macro)
       hud.rect(id .. "_f", { x = x - 1, y = y - 1, w = o.size + 2, h = o.size + 2, round = round + 1,
-        colour = macro and EDGE[cell.from] or EMPTY_EDGE, line = 1.5 * u, layer = 0 })
+        colour = macro and EDGE or EMPTY_EDGE, line = 1.5 * u, layer = 0 })
       hud.rect(id, { x = x, y = y, w = o.size, h = o.size, round = round, colour = macro and FILLED_BG or EMPTY_BG,
         layer = 1, tip = macro and tip_of(macro) or nil })
       hud.on(id, function(_, e)
         if e.kind == "click" then
-          if e.button == "right" then slot_menu(b, i) else M.fire(b, i) end
+          if e.button == "right" then slot_menu(b, i, e.x, e.y) else M.fire(b, i) end
         elseif e.kind == "drop" and e.from then
           dropped(b, i, e.from)
+        elseif macro then
+          ghost.follow(e, id, FILLED_BG, DRAGGED_BG, function()
+            return o.size, act, data.display_label(macro)
+          end)
         end
       end)
       if act then
@@ -178,9 +190,11 @@ function M.rebuild()
 
   -- The jobs above the top bar; a click opens the manager.
   local top = y_bottom - (o.bars - 1) * (o.size + o.gap)
-  hud.text("hdr", { x = x0, y = top - line_h * 0.8 - 8 * u, text = main .. "/" .. (sub or "-"), size = 0.8,
+  local hdr_y = top - line_h * 0.8 - 8 * u
+  hud.text("hdr", { x = x0, y = hdr_y, text = main, size = 0.8,
     colour = { 230, 215, 170 }, bg = { 0, 0, 0, 140 }, pad = 3 * u, layer = 2 })
   hud.on("hdr", function() M.hooks.open_manager() end)
+  palette.draw(main, x0, w, hdr_y - 6 * u, o.size, o.gap, u)
   M.recasts()
 end
 

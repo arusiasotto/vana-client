@@ -1,6 +1,6 @@
 name = "Hotbars"
-version = "1.0.0"
-description = "Hotbars of multi-line macros with their actions' icons and recasts, loaded by main job and sub job."
+version = "1.1.0"
+description = "Hotbars of multi-line macros with their actions' icons and recasts, built from your spells, abilities and items and loaded by main job."
 authors = ["Arusia"]
 permissions = ["actions", "ui.native"]
 

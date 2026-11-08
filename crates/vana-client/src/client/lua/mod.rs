@@ -589,8 +589,8 @@ const BUNDLED: &[(&str, &str, &[(&str, &str)])] = bundled!["dps", "auto-advance"
     "list-trimmer",
     "bag-manager",
     "gearshift" ["src/core.lua", "src/compat.lua", "src/names.lua", "src/gs.lua", "src/lac.lua", "src/windower.lua", "src/xml.lua", "src/acxml.lua", "src/modes.lua", "src/texts.lua", "src/regex.lua", "src/spellcast.lua"],
-    "hotbar" ["src/actions.lua", "src/bar.lua", "src/data.lua", "src/jobs.lua", "src/keys.lua", "src/manager.lua", "src/runner.lua",
-        "src/stock.lua"],
+    "hotbar" ["src/actions.lua", "src/bar.lua", "src/builder.lua", "src/data.lua", "src/ghost.lua", "src/jobs.lua", "src/keys.lua",
+        "src/manager.lua", "src/menu.lua", "src/palette.lua", "src/runner.lua", "src/stock.lua"],
     "pad-bars" ["src/actions.lua", "src/runner.lua"],
     // After gearshift: its hooks see an action first.
     "steady-cast" ["src/hold.lua"],
@@ -3928,17 +3928,99 @@ return "acxml flow ok"
             data.init({ read = function() return nil end, write = function(_, t) saved = t end, decode = json.decode,
               encode = json.encode })
             local m = function(n) return { name = n, lines = { "/echo " .. n } } end
-            data.set_macro("WAR", nil, 1, 1, m("one"))
-            data.set_macro("WAR", nil, 1, 2, m("two"))
-            data.set_macro("WAR", "NIN", 1, 3, m("sub"))
-            data.swap("WAR", nil, 1, 1, 1, 2)
-            assert(data.resolve("WAR", nil, 1, 1).name == "two" and data.resolve("WAR", nil, 1, 2).name == "one")
-            -- Into the sub set: the main set keeps its macro under the sub set's.
-            data.swap("WAR", "NIN", 1, 3, 1, 4)
-            local four, from = data.resolve("WAR", "NIN", 1, 4)
-            assert(four.name == "sub" and from == "sub")
-            assert(data.resolve("WAR", "NIN", 1, 3) == nil)
-            assert(saved ~= nil)
+            data.set_macro("WAR", 1, 1, m("one"))
+            data.set_macro("WAR", 1, 2, m("two"))
+            data.swap("WAR", 1, 1, 1, 2)
+            assert(data.resolve("WAR", 1, 1).name == "two" and data.resolve("WAR", 1, 2).name == "one")
+            data.swap("WAR", 1, 2, 1, 4)
+            assert(data.resolve("WAR", 1, 2) == nil and data.resolve("WAR", 1, 4).name == "one")
+            data.clear("WAR", 1, 4)
+            assert(data.resolve("WAR", 1, 4) == nil and saved ~= nil)
+
+            -- The library: a built line, slots that refer to an entry, a swap that keeps the references, a delete
+            -- that empties them.
+            local id = data.save_entry("WAR", nil, { name = " Cure ", action = { kind = "ma", name = "Cure",
+              target = "me" }, lines = { "/p cured", "" } })
+            assert(id == "1" and data.save_entry("WAR", nil, { name = "x", lines = { "/echo x" } }) == "2")
+            data.assign("WAR", 2, 1, id)
+            data.assign("WAR", 2, 2, id)
+            local cure = data.resolve("WAR", 2, 1)
+            assert(cure.name == "Cure" and cure.ref == "1")
+            assert(cure.lines[1] == '/ma "Cure" <me>' and cure.lines[2] == "/p cured" and #cure.lines == 2)
+            assert(a.of(cure).id == 1)
+            assert(data.resolve("WAR", 2, 1) == cure, "one runnable macro per entry")
+            assert(data.uses("WAR", id) == 2)
+            data.save_entry("WAR", id, { name = "Cure!", action = { kind = "ma", name = "Cure", target = "t" } })
+            local edited = data.resolve("WAR", 2, 2)
+            assert(edited.name == "Cure!" and edited.lines[1] == '/ma "Cure" <t>' and #edited.lines == 1)
+            data.swap("WAR", 2, 1, 2, 3)
+            assert(data.resolve("WAR", 2, 1) == nil and data.ref_of("WAR", 2, 3) == "1")
+            assert(data.effective("WAR")[2][3].name == "Cure!")
+            data.delete_entry("WAR", id)
+            assert(data.resolve("WAR", 2, 3) == nil and data.resolve("WAR", 2, 2) == nil)
+            assert(#data.library("WAR") == 1 and data.library("WAR")[1].id == "2")
+            local back = json.decode(saved)
+            assert(back.WAR.library["2"].name == "x" and back.WAR.library["1"] == nil)
+
+            -- The other action kinds' lines; /equip names the slot first.
+            assert(data.command({ kind = "ja", name = "Provoke", target = "t" }) == '/ja "Provoke" <t>')
+            assert(data.command({ kind = "equip", name = "Warp Ring", target = "ring1" }) == '/equip ring1 "Warp Ring"')
+            assert(data.command({ kind = "equip", name = "Warp Ring", target = "" }) == nil)
+            assert(data.command({ kind = "cmd", name = "/attack", target = "t" }) == "/attack <t>")
+            assert(data.command({ kind = "cmd", name = "/heal", target = "" }) == "/heal")
+            local builder = require("src.builder")
+            assert(#builder.targets_for("cmd", "/heal") == 1 and #builder.targets_for("cmd", "/assist") > 1, "targets")
+            local rest = builder.find("cmd", "resting")
+            assert(#rest == 1 and rest[1].name == "/heal" and rest[1].title == "Heal", rest[1] and rest[1].name)
+            -- A command line shows its stand-in icon, with no recast.
+            local atk = a.of({ lines = { "/attack <t>" } })
+            assert(atk and atk.kind == "item" and atk.id == 16535 and a.recast(atk, {}) == 0)
+            local heal = a.of({ lines = { "/Heal" } })
+            assert(heal and heal.kind == "status" and heal.id == 42)
+            assert(a.of({ lines = { "/sit" } }) == false)
+            assert(a.of({ lines = { '/equip ring1 "Potion"' } }).id == 4112)
+
+            local b = require("src.builder")
+            assert(b.default_target(0x20) == "t" and b.default_target(1) == "me" and b.default_target(0x1d) == "stpc")
+            game.spells = function() return { 1 } end
+            res.spell = function(id) if id == 1 then return { name = "Cure", mp = 8, kind = 1, targets = 0x1f } end end
+            game.abilities = function() return { 0x20, 0x210 } end
+            res.ability = function(id)
+              if id == 0x20 then return { name = "Raging Axe", kind = 3 } end
+              if id == 0x210 then return { name = "Provoke", kind = 1, recast = 30 } end
+            end
+            game.items = function(bag)
+              if bag == 0 then return { { id = 4112, count = 3 }, { id = 15000, count = 1 } } end
+              return {}
+            end
+            res.item = function(id)
+              if id == 4112 then return { name = "Potion", kind = "usable", targets = 1, slots = 0 } end
+              if id == 15000 then return { name = "Warp Ring", kind = "armor", slots = 0x6000 } end
+            end
+            local cures = b.find("ma", "CUR")
+            assert(#cures == 1 and cures[1].name == "Cure" and cures[1].target == "stpc" and cures[1].icon.id == 1)
+            assert(b.find("ja", "")[1].name == "Provoke" and #b.find("ja", "") == 1 and b.find("ws", "")[1].name == "Raging Axe")
+            local pots = b.find("item", "")
+            assert(#pots == 1 and pots[1].name == "Potion" and pots[1].cells[1] == "3" and pots[1].target == "me")
+            local rings = b.find("equip", "warp")
+            assert(#rings == 1 and rings[1].target == "ring1", tostring(rings[1] and rings[1].target))
+            for _, m in ipairs({ "src.palette", "src.manager", "src.bar" }) do require(m) end
+            assert(require("src.palette").dragged_id("p_12") == "12" and require("src.palette").dragged_id("s1_2") == nil)
+
+            -- The slot menu opens above the pointer, inside the window; below it when there is no room above.
+            local placed = {}
+            hud.screen = function() return { width = 800, height = 600, ui_scale = 1 } end
+            hud.rect = function(id, s) placed[id] = s end
+            hud.text = function() end
+            hud.on = function() end
+            timer.after = function() end
+            local mn = require("src.menu")
+            mn.open(795, 590, { "a", "b" }, function() end)
+            local bg = placed.menu_bg
+            assert(bg.y + bg.h < 590 and bg.y >= 0 and bg.x >= 0 and bg.x + bg.w <= 800)
+            mn.open(10, 5, { "a", "b" }, function() end)
+            bg = placed.menu_bg
+            assert(bg.y > 5 and bg.x >= 0 and bg.y + bg.h <= 600)
         "#;
         vm.lua.load(script).exec().unwrap_or_else(|e| panic!("{e}"));
     }

@@ -1,9 +1,11 @@
--- Hotbars (from PR #88 by Arusia): bars of multi-line macros that load by main job, then sub job; each slot shows its
--- action's icon and recast. See src/data.lua for macros.json. //hb opens the manager.
+-- Hotbars (from PR #88 by Arusia): bars of multi-line macros that load by main job; each slot shows its action's icon
+-- and recast. Macros are built in the manager (//hb) and dragged onto the bars from the palette (//hb palette). See
+-- src/data.lua for macros.json.
 
 local data = require("src.data")
 local bar = require("src.bar")
 local manager = require("src.manager")
+local palette = require("src.palette")
 local stock = require("src.stock")
 
 local ok, err = data.init({
@@ -18,10 +20,12 @@ if not ok then
 end
 
 bar.hooks.open_manager = manager.open
-bar.hooks.edit_slot = manager.edit_slot
 bar.hooks.changed = manager.refresh
 manager.hooks.changed = bar.rebuild
 manager.hooks.rebind = bar.rebind
+manager.hooks.palette = palette.toggle
+palette.hooks.edit = manager.edit_entry
+palette.hooks.redraw = bar.rebuild
 
 -- The game's macro palette hides (its drawing only) while the bars show.
 local function apply_stock_palette()
@@ -45,7 +49,8 @@ events.on("settings_changed", refresh)
 timer.every(1, bar.tick)
 timer.every(0.25, bar.recasts)
 
-local USAGE = "//hb [show | hide | run <bar> <slot> | reload | wipestock | restorestock]  (no argument opens the manager)"
+local USAGE = "//hb [show | hide | palette | run <bar> <slot> | reload | wipestock | restorestock]"
+  .. "  (no argument opens the manager)"
 
 commands.register("hb", function(cmd, a, b)
   cmd = (cmd or ""):lower()
@@ -55,6 +60,8 @@ commands.register("hb", function(cmd, a, b)
     bar.set_hidden(false)
   elseif cmd == "hide" then
     bar.set_hidden(true)
+  elseif cmd == "palette" then
+    palette.toggle()
   elseif cmd == "run" then
     local bn, sn = tonumber(a), tonumber(b)
     if bn and sn then bar.fire(bn, sn) else chat.add("Hotbars: " .. USAGE) end
