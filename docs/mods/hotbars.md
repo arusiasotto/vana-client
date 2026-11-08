@@ -32,8 +32,10 @@ A macro still running ignores a second press.
 
 ## The library, the Builder and the palette
 
-Each main job has a **library** of macros (`//hb`, Library: New, Edit, Copy, Delete). A slot can name a library
-macro instead of holding its own copy, so editing the macro changes every slot (main or sub set) that names it.
+Each main job has a **library** of macros (`//hb`, Library: New, Edit, Copy, Delete). The Library page shows them as
+tiles: click one to choose it, right-click to edit it, drag it onto a slot of the bars to put it there. A slot can
+name a library macro instead of holding its own copy, so editing the macro changes every slot (main or sub set) that
+names it.
 
 The **Builder** makes one: pick a type (spell, job ability, weapon skill, pet command, item, equipment, a system
 command such as `/attack`, `/heal`, `/assist` or `/lockon`, or Macro for typed lines only), search, pick, choose
