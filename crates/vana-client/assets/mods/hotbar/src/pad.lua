@@ -118,7 +118,8 @@ function M.fire(side, button)
   end
 end
 
--- Takes the triggers, the d-pad and the buttons a slot answers, and the list's cursor keys.
+-- Takes the triggers, the d-pad and the buttons a slot answers, and the list's cursor keys. A press is taken on its
+-- press only: the host keeps the button taken until it comes up.
 input.on_pad(function(e)
   if not mode.is_pad() then return nil end
   if IS_TRIGGER[e.button] then timer.after(0, M.sync) end
@@ -135,19 +136,20 @@ input.on_pad(function(e)
           else chooser.close() end
         end)
       end
-      return true
+      return e.down or nil
     end
     if e.down and held() and SLOT[b] then chooser.close() end -- another slot: it fires as usual
   end
   if game_menu() then return nil end
-  if IS_TRIGGER[e.button] then return true end
+  if IS_TRIGGER[e.button] then return e.down or nil end
   local side = held()
   if not side or not SLOT[e.button] then return nil end
   if e.down then
     -- Not in the filter itself: a macro may wait, and the filter has a few milliseconds to answer.
     timer.after(0, function() M.fire(side, e.button) end)
+    return true
   end
-  return true
+  return nil
 end)
 
 -- ---------------------------------------------------------------------------

@@ -1324,7 +1324,7 @@
           "help": "Opens the hotbar manager."
         }
       },
-      "description": "Hotbars of multi-line macros with their actions' icons and recasts, loaded by main job and sub job; a macro library with a builder and a palette to drag from. Play with the keyboard's hotbars or the gamepad's crossbars (LT, RT or both with the d-pad, face buttons, L1 / R1 and L3 / R3), and switch between them with //hb mode.",
+      "description": "Hotbars of multi-line macros with their actions' icons and recasts, loaded by main job and sub job; a macro library with a builder and a palette to drag from. Play with the keyboard's hotbars or the gamepad's crossbars (LT, RT or both with the d-pad, face buttons, L1 / R1 and L3 / R3), and switch between them with //hb mode. Gamepad mode needs input.capture (to take the triggers and buttons) and automation (a slot fires from a timer, since a pad filter cannot wait for a macro's waits).",
       "files": [
         {
           "path": "init.lua",
@@ -1334,8 +1334,8 @@
         },
         {
           "path": "mod.toml",
-          "sha256": "738273b144bef4a9c9a15ff0cdf0a9b3afd2770ca646b1c405cf03a4653e2bd3",
-          "size": 3525,
+          "sha256": "4c7c26dd38a037ddb36971bc4dfa8121c20123507990e55816e4c3f2756ef33a",
+          "size": 3689,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/mod.toml"
         },
         {
@@ -1406,8 +1406,8 @@
         },
         {
           "path": "src/pad.lua",
-          "sha256": "74ef2d37d2e5a386f0f0db9e1c9bc8409fcf94becbe29125cf6ff12db007bfdc",
-          "size": 16903,
+          "sha256": "a18774d670163b8a74082bbbb49c13d123da578fa37782a5989aaafb7ca03fdc",
+          "size": 17026,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/src/pad.lua"
         },
         {
@@ -1438,7 +1438,7 @@
       "id": "hotbar",
       "kind": "lua",
       "name": "Hotbars",
-      "version": "1.9.2"
+      "version": "1.9.3"
     },
     {
       "authors": [],
