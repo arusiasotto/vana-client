@@ -66,12 +66,12 @@ function M.is_active()
   return settings.get("on") and mode.is_pad() and input.pad().connected and true or false
 end
 
--- A game window is open (not our group's list): the pad is the game's then, for its paging and bag switch.
+-- A game list (magic, items, shops...) has the keys: the pad is the game's then, for its paging and bag switch.
 local function game_menu()
-  local menu_open = ui.native and ui.native.menu_open
-  if not menu_open or chooser.is_open() then return false end
-  local ok, open = pcall(menu_open)
-  return ok and open or false
+  local list = ui.native and ui.native.list
+  if not list or chooser.is_open() then return false end
+  local ok, open = pcall(list)
+  return ok and open ~= nil
 end
 
 -- "lt" or "rt" while one trigger is held, "lr" while both are, else nil.

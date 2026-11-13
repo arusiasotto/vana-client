@@ -74,9 +74,9 @@ palette.hooks.drag_ended = function()
   pad.tile_drag_ended()
 end
 
--- The game's macro palette hides (its drawing only) while the bars show: not in gamepad mode, which has none.
+-- The game's macro palette hides (its drawing only) while the bars or the crossbars show.
 local function apply_stock_palette()
-  ui.native.hide("palette", settings.get("on") and settings.get("hide_stock") and not mode.is_pad())
+  ui.native.hide("palette", settings.get("on") and settings.get("hide_stock"))
 end
 
 local function refresh()

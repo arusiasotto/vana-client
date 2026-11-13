@@ -1,5 +1,5 @@
 name = "Hotbars"
-version = "1.9.0"
+version = "1.9.2"
 description = "Hotbars of multi-line macros with their actions' icons and recasts, loaded by main job and sub job; a macro library with a builder and a palette to drag from. Play with the keyboard's hotbars or the gamepad's crossbars (LT, RT or both with the d-pad, face buttons, L1 / R1 and L3 / R3), and switch between them with //hb mode."
 authors = ["Arusia"]
 permissions = ["actions", "automation", "input.capture", "ui.native"]
@@ -14,7 +14,7 @@ help = "Shows the hotbars in an edge window and binds their keys, or in gamepad 
 type = "bool"
 default = true
 label = "Hide Stock Macro Bar"
-help = "Hides the game's macro palette while the hotbars show. Its Ctrl and Alt keys still run macros unless a bar uses them."
+help = "Hides the game's macro palette (the hotbars' or the crossbars') while Hotbars shows. Its Ctrl and Alt keys still run macros unless a bar uses them."
 
 [settings.mode]
 type = "enum"
