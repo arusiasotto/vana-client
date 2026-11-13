@@ -64,7 +64,7 @@ end
 local picked = chooser.hooks.picked
 chooser.hooks.picked = function()
   if picked then picked() end
-  pad.invalidate()
+  pad.redraw()
 end
 manager.hooks.rebind = bar.rebind
 manager.hooks.palette = palette.toggle
@@ -96,6 +96,7 @@ end)
 timer.every(1, bar.tick)
 timer.every(0.25, bar.recasts)
 timer.every(0.25, pad.recasts)
+timer.every(0.25, pad.sync)
 timer.every(1, pad.tick)
 
 -- Switches between the keyboard's hotbars and the gamepad's crossbars (`to` nil: the other one).
@@ -122,8 +123,10 @@ commands.register("hb", function(cmd, a, b)
     manager.toggle()
   elseif cmd == "show" then
     bar.set_hidden(false)
+    pad.rebuild()
   elseif cmd == "hide" then
     bar.set_hidden(true)
+    pad.rebuild()
   elseif cmd == "more" then
     bar.grow(1)
   elseif cmd == "fewer" then

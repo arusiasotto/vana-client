@@ -16,6 +16,7 @@ local actions = require("src.actions")
 local palette = require("src.palette")
 local chooser = require("src.chooser")
 local mode = require("src.mode")
+local slotview = require("src.slotview")
 
 local M = {}
 
@@ -24,31 +25,13 @@ M.hooks = {}
 
 local WIN = "bars"
 
--- As the modern macro palette's keys: a plain charcoal key, surface under the pointer, a bronze edge (the sub job's
--- set's slots a blue one); an empty slot fainter.
-local KEY = { 10, 17, 24, 255 }
-local KEY_HOVER = { 20, 33, 44, 255 }
-local EMPTY_KEY = { 10, 17, 24, 150 }
-local EMPTY_EDGE = { 184, 139, 73, 70 }
+-- The bars' own colours: the sub job's set's blue edge, the battle menu's glow, the + / - knobs (round, charcoal
+-- ringed in gold, the text colour under the pointer).
+local KEY, GOLD = slotview.KEY, slotview.GOLD
 local EDGE = { main = { 184, 139, 73, 205 }, sub = { 104, 164, 232, 205 } }
-local FLASH = { 255, 236, 190, 120 }
-local SHADE = { 0, 0, 0, 165 }
-local UNUSABLE = { 6, 8, 14, 165 }
-local TEXT = { 236, 230, 214, 255 }
-local MUTED = { 196, 188, 170, 230 }
 local GLOW = { 255, 214, 120 }
-local GHOST = { 255, 255, 255, 140 }
-local GHOST_BG = { 20, 24, 38, 120 }
-local DROP = { 255, 214, 120, 200 }
-local DRAGGED = { 0, 0, 0, 120 }
--- + / -: round knobs as the edge window's fold button, charcoal ringed in gold (the text colour under the pointer).
-local GOLD = { 228, 192, 119, 255 }
 local GOLD_OFF = { 228, 192, 119, 70 }
 local INK = { 236, 230, 214, 255 }
-
--- A slot's label's text size (of the flyouts' text) and its lines' height.
-local LABEL = 0.78
-local LABEL_LINE = 13
 
 -- Bars per second while the window grows or shrinks.
 local SPEED = 4.5
@@ -59,10 +42,7 @@ local built_sig = nil  -- what the window was made for
 local reveal = nil     -- the bars shown now, eased toward wanted()
 local geo = nil        -- the layout: size, gap, slots, bars, width, button size
 local eff, main, sub = nil, nil, nil
-local hover = nil      -- "b:i", "plus" or "minus" under the pointer
-local flash = {}       -- "b:i" -> os.clock() until its fire flash ends
-local drag = nil       -- {b, i, x, y}: the slot a drag started on and where the pointer is now
-local tile_at = nil    -- {x, y}: where a palette tile dragged over the bars is
+local st = slotview.state() -- hover ("b:i", "plus" or "minus"), flashes, the slot dragged, a palette tile over us
 local suggested = {}   -- "spell:<id>" / "ability:<id>" the battle menu suggests now
 local shades = {}      -- "b:i" -> {left, frac, usable} from the last recast tick
 local top_dock = false -- docked on the top edge (the dock event): grows down, the buttons at the top
@@ -110,12 +90,7 @@ local function list_place(b, i)
   local at = ui.bounds and ui.bounds(WIN, "c")
   if not at or not geo then return nil end
   local x, y = slot_xy(b, i)
-  local u = hud.screen().ui_scale
-  local cx = at.x + (x + geo.size / 2) * at.scale - chooser.WIDTH * u / 2
-  if top_dock then
-    return { x = cx, y = at.y + (y + geo.size) * at.scale + 6 * u }
-  end
-  return { x = cx, y = at.y + y * at.scale - 6 * u, above = true }
+  return slotview.list_place(at, x, y, geo.size, top_dock)
 end
 
 -- Runs the macro in a slot for the current jobs; a group opens its list. While a list is open the keys of the bar
@@ -190,16 +165,6 @@ local function hit(x, y)
   end
 end
 
--- A line cut to what fits a slot `w` points wide, 4 clear of each side, at the label's text size (about 6.5 a
--- character at the flyouts' size), with an ellipsis.
-local function fit(text, w)
-  local n = math.max(1, math.floor((w - 8) / (6.5 * LABEL)))
-  if utf8.len(text) and utf8.len(text) > n then
-    return text:sub(1, utf8.offset(text, n) - 1) .. "…"
-  end
-  return text
-end
-
 local function key_of(c) return type(c) == "table" and (c.b .. ":" .. c.i) or c end
 
 -- ---------------------------------------------------------------------------
@@ -223,90 +188,34 @@ local function draw()
         local cell = eff[b] and eff[b][i]
         local macro = cell and cell.macro
         local act = macro and actions.of(macro)
-        add({ type = "rect", x = x, y = y, w = s, h = s, round = round,
-          colour = hover == key and KEY_HOVER or (macro and KEY or EMPTY_KEY) })
-        add({ type = "rect", x = x, y = y, w = s, h = s, round = round, line = 1.5,
-          colour = macro and EDGE[cell.from] or EMPTY_EDGE })
         local sugg = is_suggested(macro, act)
-        if sugg then
-          -- Inside, gold at the edge fading into the key toward the middle (rings inset a step at a time), its depth
-          -- and strength pulsing with the glow round it.
-          local depth = s * (0.22 + 0.06 * glow)
-          local rings = 10
-          local step_w = depth / rings
-          for k = 0, rings - 1 do
-            local t = k / rings
-            local inset = k * step_w
-            add({ type = "rect", x = x + inset, y = y + inset, w = s - 2 * inset, h = s - 2 * inset,
-              round = math.max(0, round - inset), line = step_w + 0.5,
-              colour = { GLOW[1], GLOW[2], GLOW[3], math.floor((55 + 55 * glow) * (1 - t) * (1 - t)) } })
-          end
-        end
-        if act then
-          local isz = math.floor(s * 0.58)
-          add({ type = "icon", x = x + (s - isz) / 2, y = y + 4, size = isz, kind = act.kind, id = act.id })
-        end
-        -- A group: a small arrow in the corner, pointing where its list opens.
-        if macro and macro.group then
-          local ax = x + s - 9
-          local base, tip = y + 10, y + 6
-          if top_dock then base, tip = tip, base end
-          add({ type = "tri", x1 = ax - 4, y1 = base, x2 = ax + 4, y2 = base, x3 = ax, y3 = tip, colour = GOLD })
-        end
-        local sh = shades[key]
-        if sh and sh.left > 0 then
-          add({ type = "rect", x = x, y = y, w = s, h = math.max(2, s * sh.frac), round = round, colour = SHADE })
-        elseif sh and not sh.usable then
-          add({ type = "rect", x = x, y = y, w = s, h = s, round = round, colour = UNUSABLE })
-        end
-        if macro then
-          local label = data.display_label(macro)
-          if act then
-            add({ type = "text", x = x + s / 2, y = y + s - LABEL_LINE - 2, text = fit(label:match("^[^\n]*"), s),
-              size = LABEL, align = "center", colour = TEXT })
-          else
-            local lines = {}
-            for l in label:gmatch("[^\n]+") do lines[#lines + 1] = l end
-            local top = y + (s - #lines * LABEL_LINE) / 2
-            for n, l in ipairs(lines) do
-              add({ type = "text", x = x + s / 2, y = top + (n - 1) * LABEL_LINE, text = fit(l, s), size = LABEL,
-                align = "center", colour = TEXT })
+        slotview.draw_slot(add, {
+          x = x, y = y, s = s, macro = macro, act = act, shade = shades[key], up = top_dock,
+          hover = st.hover == key, edge = macro and EDGE[cell.from] or slotview.EMPTY_EDGE,
+          hint = geo.show_keys and keys.hint(b, i) or nil, fallback = keys.hint(b, i),
+          st = st, key = key, source = st.drag and st.drag.cell.b == b and st.drag.cell.i == i,
+          hit_key = function(px, py) return key_of(hit(px, py)) end,
+          -- A suggestion: inside, gold at the edge fading into the key toward the middle (rings inset a step at a
+          -- time), its depth and strength pulsing with the glow round it.
+          before = sugg and function()
+            local depth = s * (0.22 + 0.06 * glow)
+            local rings = 10
+            local step_w = depth / rings
+            for k = 0, rings - 1 do
+              local t = k / rings
+              local inset = k * step_w
+              add({ type = "rect", x = x + inset, y = y + inset, w = s - 2 * inset, h = s - 2 * inset,
+                round = math.max(0, round - inset), line = step_w + 0.5,
+                colour = { GLOW[1], GLOW[2], GLOW[3], math.floor((55 + 55 * glow) * (1 - t) * (1 - t)) } })
             end
-          end
-        end
-        if sh and sh.left > 0 then
-          local secs = math.ceil(sh.left)
-          local t = secs >= 60 and ("%d:%02d"):format(secs // 60, secs % 60) or tostring(secs)
-          add({ type = "text", x = x + s / 2, y = y + s / 2 - 11, text = t, size = 1.45, font = "bold",
-            align = "center", colour = { 255, 236, 180, 255 } })
-        end
-        if geo.show_keys then
-          local hint = keys.hint(b, i)
-          add({ type = "text", x = x + 4, y = y + 2, text = hint, size = 0.9, colour = MUTED })
-        end
-        if sugg then
-          add({ type = "rect", x = x - 3, y = y - 3, w = s + 6, h = s + 6, round = round + 3, line = 3,
-            colour = { GLOW[1], GLOW[2], GLOW[3], math.floor(25 + 45 * glow) } })
-          add({ type = "rect", x = x - 1, y = y - 1, w = s + 2, h = s + 2, round = round + 1, line = 1.5,
-            colour = { GLOW[1], GLOW[2], GLOW[3], math.floor(150 + 90 * glow) } })
-        end
-        if flash[key] and flash[key] > now then
-          add({ type = "rect", x = x, y = y, w = s, h = s, round = round, colour = FLASH })
-        end
-        if drag and drag.x then
-          if drag.b == b and drag.i == i then
-            add({ type = "rect", x = x, y = y, w = s, h = s, round = round, colour = DRAGGED })
-          elseif key_of(hit(drag.x, drag.y)) == key then
-            add({ type = "rect", x = x - 1, y = y - 1, w = s + 2, h = s + 2, round = round + 1, line = 2, colour = DROP })
-          end
-        elseif tile_at and key_of(hit(tile_at.x, tile_at.y)) == key then
-          add({ type = "rect", x = x - 1, y = y - 1, w = s + 2, h = s + 2, round = round + 1, line = 2, colour = DROP })
-        end
-        if macro then
-          local name = data.trim(macro.name)
-          add({ type = "tip", x = x, y = y, w = s, h = s, title = name ~= "" and name or keys.hint(b, i),
-            text = table.concat(macro.lines or {}, "\n") })
-        end
+          end or nil,
+          after = sugg and function()
+            add({ type = "rect", x = x - 3, y = y - 3, w = s + 6, h = s + 6, round = round + 3, line = 3,
+              colour = { GLOW[1], GLOW[2], GLOW[3], math.floor(25 + 45 * glow) } })
+            add({ type = "rect", x = x - 1, y = y - 1, w = s + 2, h = s + 2, round = round + 1, line = 1.5,
+              colour = { GLOW[1], GLOW[2], GLOW[3], math.floor(150 + 90 * glow) } })
+          end or nil,
+        })
       end
     end
   end
@@ -320,7 +229,7 @@ local function draw()
   }
   for _, btn in ipairs(buttons) do
     local name, cy, live, tip = btn[1], btn[2], btn[3], btn[4]
-    local ink = not live and GOLD_OFF or (hover == name and INK or GOLD)
+    local ink = not live and GOLD_OFF or (st.hover == name and INK or GOLD)
     add({ type = "circle", x = cx, y = cy, r = r, colour = KEY })
     add({ type = "circle", x = cx, y = cy, r = r - 0.75, line = 1.5, colour = ink })
     local a = r * 0.45
@@ -330,27 +239,7 @@ local function draw()
     end
     add({ type = "tip", x = cx - r, y = cy - r, w = 2 * r, h = 2 * r, title = "", text = tip })
   end
-  -- The dragged slot, or a palette tile dragged over the bars: a translucent copy under the pointer.
-  local g, act, glabel = nil, nil, nil
-  if drag and drag.x then
-    local cell = eff[drag.b] and eff[drag.b][drag.i]
-    local macro = cell and cell.macro
-    g, act, glabel = drag, macro and actions.of(macro), macro and data.display_label(macro)
-  elseif tile_at and palette.dragging then
-    g, act, glabel = tile_at, palette.dragging.act, palette.dragging.label
-  end
-  if g then
-    local gx, gy = g.x - s / 2, g.y - s / 2
-    add({ type = "rect", x = gx, y = gy, w = s, h = s, round = round, colour = GHOST_BG })
-    if act then
-      local isz = math.floor(s * 0.58)
-      add({ type = "icon", x = gx + (s - isz) / 2, y = gy + 4, size = isz, kind = act.kind, id = act.id,
-        colour = GHOST })
-    elseif glabel then
-      add({ type = "text", x = gx + s / 2, y = gy + s / 2 - LABEL_LINE / 2, text = fit(glabel:match("^[^\n]*"), s),
-        size = LABEL, align = "center", colour = GHOST })
-    end
-  end
+  slotview.draw_ghost(add, st, s, function(c) local cell = eff[c.b] and eff[c.b][c.i]; return cell and cell.macro end)
   ui.update(WIN, "c", { h = h, draw = d })
 end
 
@@ -412,65 +301,36 @@ local function on_event(_, e)
     return
   end
   if e.id ~= "c" then return end
-  if e.kind == "drop" then
-    -- A palette tile: its library macro goes into the set the slot shows (the sub job's when it shows that one).
-    tile_at = nil
-    local c = hit(e.x, e.y)
-    local id = palette.dragged_id(e.from) or (e.from == "tiles" and palette.last)
-    if type(c) ~= "table" or not id or not main then return end
-    local _, from = data.resolve(main, sub, c.b, c.i)
-    data.assign(main, from == "sub" and sub or nil, c.b, c.i, id)
-    flash[c.b .. ":" .. c.i] = os.clock() + 0.12
-    timer.after(0.13, draw)
-    M.rebuild()
-    if M.hooks.changed then M.hooks.changed() end
-  elseif e.kind == "hover" or e.kind == "leave" then
-    local now = e.kind == "hover" and key_of(hit(e.x, e.y)) or nil
-    if now ~= hover then
-      hover = now
-      draw()
-    end
-  elseif e.kind == "drag_over" or e.kind == "drag_out" then
-    -- A palette tile dragged over the bars (or off them): its copy follows the pointer here.
-    tile_at = e.kind == "drag_over" and palette.dragging and { x = e.x, y = e.y } or nil
-    draw()
-  elseif e.kind == "click" then
-    local c = hit(e.x, e.y)
-    if c == "plus" then
-      M.grow(1)
-    elseif c == "minus" then
-      M.grow(-1)
-    elseif type(c) == "table" then
-      if e.button == "right" then
-        local _, from = data.resolve(main, sub, c.b, c.i)
-        M.hooks.slot_menu(c.b, c.i, from)
-      else
-        flash[c.b .. ":" .. c.i] = os.clock() + 0.12
-        draw()
-        timer.after(0.13, draw)
-        M.fire(c.b, c.i)
-      end
-    end
-  elseif e.kind == "drag_start" then
-    local c = hit(e.x, e.y)
-    local cell = type(c) == "table" and eff[c.b] and eff[c.b][c.i]
-    drag = cell and cell.macro and { b = c.b, i = c.i, x = e.x, y = e.y } or nil
-    if drag then draw() end
-  elseif e.kind == "drag" and drag then
-    drag.x, drag.y = e.x, e.y
-    draw()
-  elseif e.kind == "drag_end" and drag then
-    local to = hit(e.x, e.y)
-    local from = drag
-    drag = nil
-    draw()
-    if type(to) ~= "table" or (to.b == from.b and to.i == from.i) or not main then return end
-    local _, a = data.resolve(main, sub, from.b, from.i)
-    local _, b = data.resolve(main, sub, to.b, to.i)
-    data.swap(main, (a == "sub" or b == "sub") and sub or nil, from.b, from.i, to.b, to.i)
-    M.rebuild()
-    if M.hooks.changed then M.hooks.changed() end
-  end
+  slotview.handle(e, {
+    st = st, hit = hit, key_of = key_of, draw = draw,
+    macro_of = function(c) local cell = eff[c.b] and eff[c.b][c.i]; return cell and cell.macro end,
+    same = function(a, b) return a.b == b.b and a.i == b.i end,
+    drop = function(c, id)
+      -- The library macro goes into the set the slot shows (the sub job's when it shows that one).
+      if not main then return end
+      local _, from = data.resolve(main, sub, c.b, c.i)
+      data.assign(main, from == "sub" and sub or nil, c.b, c.i, id)
+      slotview.flash(st, key_of(c), draw)
+      M.rebuild()
+      if M.hooks.changed then M.hooks.changed() end
+    end,
+    fire = function(c) M.fire(c.b, c.i) end,
+    menu = function(c)
+      local _, from = data.resolve(main, sub, c.b, c.i)
+      M.hooks.slot_menu(c.b, c.i, from)
+    end,
+    swap = function(from, to)
+      if not main then return end
+      local _, a = data.resolve(main, sub, from.b, from.i)
+      local _, b = data.resolve(main, sub, to.b, to.i)
+      data.swap(main, (a == "sub" or b == "sub") and sub or nil, from.b, from.i, to.b, to.i)
+      M.rebuild()
+      if M.hooks.changed then M.hooks.changed() end
+    end,
+    other = function(c)
+      if c == "plus" then M.grow(1) elseif c == "minus" then M.grow(-1) end
+    end,
+  })
 end
 
 function M.rebuild()
@@ -515,11 +375,7 @@ function M.recasts()
   for b = 1, geo.bars do
     for i = 1, geo.slots do
       local cell = eff[b] and eff[b][i]
-      local act = cell and cell.macro and actions.of(cell.macro)
-      if act then
-        local left, frac = actions.recast(act, r)
-        shades[b .. ":" .. i] = { left = left, frac = frac, usable = actions.usable(act, me) }
-      end
+      shades[b .. ":" .. i] = cell and cell.macro and slotview.shade(cell.macro, r, me) or nil
     end
   end
   draw()
@@ -561,8 +417,8 @@ function M.is_hidden() return hidden end
 
 -- A palette tile's drag ended (dropped or not): its copy over the bars goes.
 function M.tile_drag_ended()
-  if tile_at then
-    tile_at = nil
+  if st.tile_at then
+    st.tile_at = nil
     draw()
   end
 end

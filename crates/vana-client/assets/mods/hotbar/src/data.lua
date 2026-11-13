@@ -622,9 +622,6 @@ end
 -- Gamepad crossbars: db[main].pad[side][button]
 -- ---------------------------------------------------------------------------
 
--- For a short while the sides were the bumpers ("lb", "rb"); they are the triggers' again, and keep their slots.
-local PAD_LEGACY = { lb = "lt", rb = "rt" }
-
 local function pad_set(main, create)
   if not main then
     return nil
@@ -638,11 +635,6 @@ local function pad_set(main, create)
   if not is_table(job.pad) then
     if not create then return nil end
     job.pad = {}
-  end
-  for old, new in pairs(PAD_LEGACY) do
-    if is_table(job.pad[old]) and job.pad[new] == nil then
-      job.pad[new], job.pad[old] = job.pad[old], nil
-    end
   end
   return job.pad
 end

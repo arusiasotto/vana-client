@@ -114,13 +114,6 @@ SENT = {}
 pad.fire("lt", "l3", true)
 assert(#SENT == 2 and SENT[2] == "/p Ignis up", #SENT)
 
--- Slots saved while the sides were the bumpers ("lb", "rb") are the triggers' again.
-data.init({ read = function() return '{"RUN":{"pad":{"lb":{"up":{"name":"Old","lines":["/echo old"]}}}}}' end,
-  write = function() end, decode = json.decode, encode = json.encode })
-local old = data.pad_resolve("RUN", "lt", "up")
-assert(old and old.name == "Old")
-assert(data.pad_resolve("RUN", "lb", "up") == nil)
-
 -- Both triggers held: a third set, apart from the other two.
 data.init({ read = function() return nil end, write = function() end, decode = json.decode, encode = json.encode })
 local lid = data.save_entry("RUN", nil, { name = "Ignis", action = { kind = "ja", name = "Ignis", target = "me" },
