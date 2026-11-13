@@ -3,6 +3,10 @@
 -- an ability, an existing macro or one of the job's library macros in it. The manager's Builder makes library macros
 -- (spells, abilities, weapon skills, pet commands, items, equipment, system commands or typed lines); the palette
 -- shows them as tiles to drag onto the bars. See src/data.lua for macros.json. //hb opens the manager.
+--
+-- Two ways to play, one at a time (the Mode setting; //hb mode switches for the session): the keyboard's hotbars
+-- above, or the gamepad's crossbars (src/pad.lua): hold LT, RT or both and the d-pad, face buttons, L1 / R1 and L3 / R3
+-- fire that side's slots, which take the same library macros, dragged from the palette.
 
 local data = require("src.data")
 local bar = require("src.bar")
@@ -11,6 +15,9 @@ local stock = require("src.stock")
 local menu = require("src.menu")
 local palette = require("src.palette")
 local jobs = require("src.jobs")
+local chooser = require("src.chooser")
+local mode = require("src.mode")
+local pad = require("src.pad")
 
 local ok, err = data.init({
   read = fs.read,
@@ -26,6 +33,7 @@ end
 -- After a macro or the library changed: the bars, the manager's lists and the palette's tiles.
 local function changed()
   bar.rebuild()
+  pad.invalidate()
   manager.refresh()
   palette.set_job(jobs.current())
 end
@@ -40,16 +48,35 @@ menu.hooks.open_manager = manager.open
 menu.hooks.changed = changed
 manager.hooks.changed = function()
   bar.rebuild()
+  pad.invalidate()
   palette.set_job(jobs.current())
+end
+-- A crossbar slot changed: the lists and the palette follow; the bars, which show none of it, stay.
+pad.hooks.changed = bar.hooks.changed
+-- The library is being edited: the crossbars stay shown to drop macros on.
+pad.hooks.editing = function() return palette.is_open() or manager.is_open() end
+pad.hooks.open_manager = manager.open
+pad.hooks.palette = function()
+  palette.set_job(jobs.current())
+  palette.toggle()
+end
+-- A group's member picked from its list: the slot shows that one now.
+local picked = chooser.hooks.picked
+chooser.hooks.picked = function()
+  if picked then picked() end
+  pad.invalidate()
 end
 manager.hooks.rebind = bar.rebind
 manager.hooks.palette = palette.toggle
 palette.hooks.edit = manager.edit_entry
-palette.hooks.drag_ended = bar.tile_drag_ended
+palette.hooks.drag_ended = function()
+  bar.tile_drag_ended()
+  pad.tile_drag_ended()
+end
 
--- The game's macro palette hides (its drawing only) while the bars show.
+-- The game's macro palette hides (its drawing only) while the bars show: not in gamepad mode, which has none.
 local function apply_stock_palette()
-  ui.native.hide("palette", settings.get("on") and settings.get("hide_stock"))
+  ui.native.hide("palette", settings.get("on") and settings.get("hide_stock") and not mode.is_pad())
 end
 
 local function refresh()
@@ -61,9 +88,27 @@ end
 refresh()
 -- The jobs can arrive after the mod loads, and a job change swaps the macros.
 events.on("job_change", changed)
-events.on("settings_changed", refresh)
+events.on("settings_changed", function(key)
+  -- The Mode setting changed: it decides again over what //hb mode set.
+  if key == "mode" then mode.use_setting() end
+  refresh()
+end)
 timer.every(1, bar.tick)
 timer.every(0.25, bar.recasts)
+timer.every(0.25, pad.recasts)
+timer.every(1, pad.tick)
+
+-- Switches between the keyboard's hotbars and the gamepad's crossbars (`to` nil: the other one).
+local function set_mode(to)
+  if to then mode.set(to) else mode.toggle() end
+  refresh()
+  if mode.is_pad() then
+    chat.add("Hotbars: gamepad crossbars"
+      .. (input.pad().connected and "." or " (no controller is connected: they answer one once it is)."))
+  else
+    chat.add("Hotbars: keyboard hotbars.")
+  end
+end
 
 -- The forms of //hb as mod.toml declares them: what the chat line's hint and //mods show.
 local function usage()
@@ -86,6 +131,14 @@ commands.register("hb", function(cmd, a, b)
   elseif cmd == "palette" then
     palette.set_job(jobs.current())
     palette.toggle()
+  elseif cmd == "mode" then
+    if (a or "") == "" then
+      set_mode(nil)
+    elseif mode.parse(a) then
+      set_mode(mode.parse(a))
+    else
+      usage()
+    end
   elseif cmd == "run" then
     local bn, sn = tonumber(a), tonumber(b)
     if bn and sn then bar.fire(bn, sn) else usage() end

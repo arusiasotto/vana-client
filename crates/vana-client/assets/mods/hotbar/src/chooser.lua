@@ -1,6 +1,6 @@
 -- A group slot's list: pressing the slot opens its members in a list over it (under it on the top edge), the one
 -- picked last under the cursor. Up / Down and Enter, a click, or a member's number (the bars' keys 1, 2, ...) run
--- one; Escape or a click elsewhere closes it. It opens and closes with a short fold.
+-- one, and the gamepad's d-pad and A (src/pad.lua); Escape, B or a click elsewhere closes it. It opens and closes with a short fold.
 
 local data = require("src.data")
 local actions = require("src.actions")
@@ -65,6 +65,19 @@ function M.pick(k)
   if M.hooks.picked then M.hooks.picked() end
 end
 
+-- The controller's: the cursor one row up (-1) or down (1), wrapping; and Accept, which runs the row it is on.
+function M.step(delta)
+  if not M.is_open() then return end
+  local n = #open_macro.group
+  local at = ui.get(WIN, "m").at or 1
+  ui.update(WIN, "m", { at = (at - 1 + delta) % n + 1 })
+end
+
+function M.accept()
+  if not M.is_open() then return end
+  M.pick(ui.get(WIN, "m").at or 1)
+end
+
 -- Opens a group's list; `at` is where on screen ({x, y, above} in window pixels), else at the pointer; members
 -- `suggested(member)` names (the battle menu's suggestions) show in gold; `bar` the bar whose slot opened it.
 function M.open(macro, at, suggested, bar)
@@ -75,7 +88,7 @@ function M.open(macro, at, suggested, bar)
     width = WIDTH,
     popup = true,
     animate = true,
-    help = "Up / Down, then Enter. Escape closes.",
+    help = "Up / Down, then Enter or A. Escape or B closes.",
     elements = {
       { type = "list", id = "m", rows = rows, height = #rows, at = data.last_member(macro),
         columns = { { title = "" }, { title = "", width = 46, align = "right" },

@@ -15,6 +15,7 @@ local keys = require("src.keys")
 local actions = require("src.actions")
 local palette = require("src.palette")
 local chooser = require("src.chooser")
+local mode = require("src.mode")
 
 local M = {}
 
@@ -85,7 +86,8 @@ end
 local function signature()
   local mj, sj = jobs.current()
   local o = opts()
-  return table.concat({ tostring(mj), tostring(sj), o.bars, o.slots, o.size, o.gap, tostring(o.show_keys) }, ":")
+  return table.concat({ tostring(mj), tostring(sj), o.bars, o.slots, o.size, o.gap, tostring(o.show_keys),
+    mode.get() }, ":")
 end
 
 local slot_xy
@@ -473,7 +475,8 @@ end
 
 function M.rebuild()
   built_sig = signature()
-  if hidden or not settings.get("on") or not settings.get("visible") then
+  -- In gamepad mode the crossbars (src/pad.lua) are what shows; the bars' window and keys stand down.
+  if hidden or not settings.get("on") or not settings.get("visible") or mode.is_pad() then
     ui.close(WIN)
     return
   end
@@ -536,7 +539,7 @@ end)
 chooser.hooks.picked = function() M.recasts() end
 
 function M.rebind()
-  if not settings.get("on") then
+  if not settings.get("on") or mode.is_pad() then
     keys.bind_all(0, 0, M.fire)
     return
   end

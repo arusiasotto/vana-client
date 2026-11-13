@@ -14,6 +14,10 @@
 -- the library entry of that id, so editing an entry changes every slot that names it.
 -- In a "sub" set a slot of `false` blanks a slot the main set filled.
 --
+-- The gamepad crossbars (src/pad.lua) keep one more set per main job, "pad", shaped as a set whose bars are the
+-- trigger sides: { "lt": { "up": <macro>, "right": ..., "a": ..., "lb": ... }, "rt": { ... }, "lr": { ... } }. Its slots hold macros or
+-- references as the bars' do (no sub job sets: a crossbar loads by main job only).
+--
 -- A library entry is a macro whose first line can be built from an action:
 -- { name, label?, action = { kind = "ma", name = "Cure", target = "t" }?, lines = { <lines after it> } }.
 -- An equip action's target is the equipment slot ({ kind = "equip", name = "Warp Ring", target = "ring1" }); a system
@@ -28,6 +32,11 @@ local M = {}
 
 M.MAX_BARS = 3
 M.MAX_SLOTS = 12
+
+-- The gamepad crossbars: a side for each trigger held ("lr": both), and its slots: the d-pad's four, the face buttons' four, then
+-- the bumpers' (L1, R1) and the stick clicks' (L3, R3), which fire only while a trigger is held.
+M.PAD_SIDES = { "lt", "rt", "lr" }
+M.PAD_BUTTONS = { "up", "right", "down", "left", "y", "b", "a", "x", "lb", "rb", "l3", "r3" }
 
 local FILE = "macros.json"
 
@@ -407,11 +416,12 @@ local function refers(v, id)
   return is_table(v) and v.ref ~= nil and tostring(v.ref) == id
 end
 
--- Every set of the job (its main set, then each sub job's): fn(set).
+-- Every set of the job (its main set, then each sub job's, then its crossbars'): fn(set).
 local function each_set(main, fn)
   local job = db[main]
   if not is_table(job) then return end
   if is_table(job.main) then fn(job.main) end
+  if is_table(job.pad) then fn(job.pad) end
   for _, set in pairs(is_table(job.sub) and job.sub or {}) do
     if is_table(set) then fn(set) end
   end
@@ -606,6 +616,86 @@ function M.swap(main, sub, b1, s1, b2, s2)
   end
   put(b1, s1, m2)
   put(b2, s2, m1)
+end
+
+-- ---------------------------------------------------------------------------
+-- Gamepad crossbars: db[main].pad[side][button]
+-- ---------------------------------------------------------------------------
+
+-- For a short while the sides were the bumpers ("lb", "rb"); they are the triggers' again, and keep their slots.
+local PAD_LEGACY = { lb = "lt", rb = "rt" }
+
+local function pad_set(main, create)
+  if not main then
+    return nil
+  end
+  local job = db[main]
+  if not is_table(job) then
+    if not create then return nil end
+    job = {}
+    db[main] = job
+  end
+  if not is_table(job.pad) then
+    if not create then return nil end
+    job.pad = {}
+  end
+  for old, new in pairs(PAD_LEGACY) do
+    if is_table(job.pad[old]) and job.pad[new] == nil then
+      job.pad[new], job.pad[old] = job.pad[old], nil
+    end
+  end
+  return job.pad
+end
+
+local function pad_put(main, side, button, v)
+  local set = pad_set(main, true)
+  if not is_table(set[side]) then
+    set[side] = {}
+  end
+  set[side][button] = v
+end
+
+local function pad_drop(main, side, button)
+  local set = pad_set(main, false)
+  if not set or not is_table(set[side]) then return end
+  set[side][button] = nil
+  if next(set[side]) == nil then
+    set[side] = nil
+  end
+end
+
+-- The value in a crossbar slot: a macro table, a reference ({ref}) or nil.
+function M.pad_get_raw(main, side, button)
+  local v = raw_slot(pad_set(main, false), side, button)
+  return is_table(v) and v or nil
+end
+
+-- What a crossbar slot does: its macro (a library entry's for a reference, with `ref` its id), or nil when empty.
+function M.pad_resolve(main, side, button)
+  return deref(main, M.pad_get_raw(main, side, button))
+end
+
+-- Puts a library entry on a crossbar slot.
+function M.pad_assign(main, side, button, id)
+  pad_put(main, side, button, { ref = tostring(id) })
+  M.save()
+end
+
+-- Empties a crossbar slot.
+function M.pad_clear(main, side, button)
+  pad_drop(main, side, button)
+  M.save()
+end
+
+-- Swaps two crossbar slots; a slot naming a library entry still names it.
+function M.pad_swap(main, s1, b1, s2, b2)
+  local v1, v2 = M.pad_get_raw(main, s1, b1), M.pad_get_raw(main, s2, b2)
+  local function put(s, b, v)
+    if v then pad_put(main, s, b, v) else pad_drop(main, s, b) end
+  end
+  put(s1, b1, v2)
+  put(s2, b2, v1)
+  M.save()
 end
 
 return M

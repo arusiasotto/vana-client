@@ -868,6 +868,10 @@ function M.open(select_id)
   ui.open(WIN)
 end
 
+function M.is_open()
+  return defined and ui.is_open(WIN) or false
+end
+
 function M.toggle()
   ensure()
   if ui.is_open(WIN) then
