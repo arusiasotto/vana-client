@@ -1,6 +1,7 @@
 -- A group slot's list: pressing the slot opens its members in a list over it (under it on the top edge), the one
 -- picked last under the cursor. Up / Down and Enter, a click, or a member's number (the bars' keys 1, 2, ...) run
--- one, and the gamepad's d-pad and A (src/pad.lua); Escape, B or a click elsewhere closes it. It opens and closes with a short fold.
+-- one, and the gamepad's d-pad and A (src/pad.lua); Escape, B or a click elsewhere closes it. It opens and closes with
+-- a short fold. The same popup also lists any rows for a pick (pick_list): the library's macros for a crossbar slot.
 
 local data = require("src.data")
 local actions = require("src.actions")
@@ -18,6 +19,8 @@ local DIM = { 160, 152, 136, 255 }
 local SUGGESTED = { 255, 214, 120, 255 }
 
 local open_macro = nil
+local open_pick = nil -- a plain list's callback(k), and its row count
+local open_count = 0
 -- The bar whose slot opened the list: its keys pick members by number, another bar's keys act as usual.
 local open_bar = nil
 
@@ -40,11 +43,11 @@ local function rows_of(macro, suggested)
 end
 
 function M.is_open()
-  return open_macro ~= nil and ui.is_open(WIN)
+  return (open_macro ~= nil or open_pick ~= nil) and ui.is_open(WIN)
 end
 
 local function close()
-  open_macro, open_bar = nil, nil
+  open_macro, open_bar, open_pick = nil, nil, nil
   if ui.is_open(WIN) then ui.close(WIN) end
 end
 M.close = close
@@ -56,6 +59,13 @@ end
 
 -- Runs member k of the open group and closes the list.
 function M.pick(k)
+  if open_pick then
+    local f = open_pick
+    if k < 1 or k > open_count then return end
+    close()
+    f(k)
+    return
+  end
   local macro = open_macro
   local m = macro and macro.group[k]
   if not m then return end
@@ -68,7 +78,7 @@ end
 -- The controller's: the cursor one row up (-1) or down (1), wrapping; and Accept, which runs the row it is on.
 function M.step(delta)
   if not M.is_open() then return end
-  local n = #open_macro.group
+  local n = open_pick and open_count or #open_macro.group
   local at = ui.get(WIN, "m").at or 1
   ui.update(WIN, "m", { at = (at - 1 + delta) % n + 1 })
 end
@@ -95,7 +105,27 @@ function M.open(macro, at, suggested, bar)
           { title = "", width = 20, align = "right" } } },
     },
   })
-  open_macro, open_bar = macro, bar
+  open_macro, open_bar, open_pick = macro, bar, nil
+  ui.open(WIN, at)
+end
+
+-- Opens `rows` ({ name, "", "", icon = {kind, id}? }) for a pick: `on_pick(k)` gets the row chosen; the cursor
+-- starts on `start`. `at` is as for open.
+function M.pick_list(title, rows, at, on_pick, start)
+  if #rows == 0 then return end
+  ui.window(WIN, {
+    title = title,
+    width = WIDTH,
+    popup = true,
+    animate = true,
+    help = "Up / Down, then Enter or A. Escape or B closes.",
+    elements = {
+      { type = "list", id = "m", rows = rows, height = math.min(#rows, 10), at = start or 1,
+        columns = { { title = "" }, { title = "", width = 46, align = "right" },
+          { title = "", width = 20, align = "right" } } },
+    },
+  })
+  open_macro, open_bar, open_pick, open_count = nil, nil, on_pick, #rows
   ui.open(WIN, at)
 end
 
@@ -103,7 +133,7 @@ ui.on(WIN, function(_, e)
   if e.kind == "select" then
     M.pick(e.index)
   elseif e.kind == "close" then
-    open_macro, open_bar = nil, nil
+    open_macro, open_bar, open_pick = nil, nil, nil
   end
 end)
 

@@ -183,11 +183,9 @@ assert(press("b", false) == nil, "its release is not answered")
 assert(press("lt", false) == nil, "nor is the trigger's")
 release_all()
 
--- A button with no trigger held, or one with no slot, is the game's.
+-- A button with no trigger held is the game's.
 assert(press("b", true) == nil and #SENT == 0, "B alone is the game's")
 press("b", false)
-BUTTONS.lt = true
-assert(press("start", true) == nil, "a button that is no slot is the game's")
 release_all()
 
 -- A slot with nothing in it is taken but runs nothing.
@@ -247,3 +245,66 @@ BUTTONS.rt = nil
 BUTTONS.lt = true
 assert(press("x", true) == true and not chooser.is_open() and SENT[1] == "/p other", "another slot fires as usual")
 release_all()
+
+-- Assigning with the controller: a trigger and Back start it; a slot then opens the library's list, A puts the row
+-- on the slot (a filled slot's list starts on its macro, under a Clear row); Back or B ends it.
+assert(press("back", true) == nil and not pad.is_assigning(), "Back alone is the game's")
+BUTTONS.lt = true
+assert(press("back", true) == true and pad.is_assigning())
+press("back", false)
+assert(press("y", true) == true and chooser.is_open() and #SENT == 0, "a slot opens the library")
+press("y", false)
+assert(press("down", true) == true)
+press("down", false)
+assert(press("a", true) == true and not chooser.is_open())
+press("a", false)
+assert(data.pad_resolve("RUN", "lt", "y").ref == other, "the second entry went on the slot")
+press("y", true)
+press("y", false)
+assert(press("up", true) == true)
+press("up", false)
+press("up", true)
+press("up", false)
+press("a", true)
+press("a", false)
+assert(data.pad_resolve("RUN", "lt", "y") == nil, "the Clear row empties it")
+assert(press("b", true) == true and chooser.is_open(), "B with a trigger is a slot")
+press("b", false)
+assert(press("b", true) == true and not chooser.is_open() and pad.is_assigning(), "B closes the list")
+press("b", false)
+BUTTONS.lt = nil
+assert(press("b", true) == true and not pad.is_assigning(), "B with no trigger ends it")
+press("b", false)
+BUTTONS.lt = true
+press("back", true)
+press("back", false)
+BUTTONS.lt = nil
+assert(pad.is_assigning() and press("back", true) == true and not pad.is_assigning(), "Back ends it")
+release_all()
+
+-- A trigger and Start open the manager; Start alone is the game's.
+local managed = 0
+local open_manager = pad.hooks.open_manager
+pad.hooks.open_manager = function() managed = managed + 1 end
+assert(press("start", true) == nil and managed == 0)
+BUTTONS.rt = true
+assert(press("start", true) == true and managed == 1)
+pad.hooks.open_manager = open_manager
+release_all()
+
+-- Detect Gamepad: a controller coming or going picks the mode; a hand-made choice stands until the next change.
+mode.use_setting()
+mode.forget()
+assert(mode.detect(false, true) == nil, "off: nothing changes")
+mode.forget()
+assert(mode.detect(true, true) == mode.GAMEPAD and mode.is_pad(), "a controller at the start")
+assert(mode.detect(true, true) == nil)
+mode.set("hotbars")
+assert(mode.detect(true, true) == nil and not mode.is_pad(), "a hand-made choice stands")
+assert(mode.detect(true, false) == nil, "already the hotbars")
+assert(mode.detect(true, true) == mode.GAMEPAD, "it comes again")
+assert(mode.detect(true, false) == mode.HOTBARS and not mode.is_pad(), "it goes")
+mode.forget()
+assert(mode.detect(true, false) == nil, "no controller at the start: the setting stands")
+mode.use_setting()
+mode.set("gamepad")

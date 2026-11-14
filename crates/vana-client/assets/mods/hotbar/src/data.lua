@@ -1,6 +1,7 @@
 -- Macro storage and job-based resolution.
 --
--- macros.json (in the mod's data folder) is nested by the job you play as MAIN:
+-- Each world (server) has its file in the mod's data folder, macros-<World>.json, started from macros.json (the
+-- file before worlds had theirs, also used until the world is known). It is nested by the job you play as MAIN:
 --
 --   {
 --     "RDM": {
@@ -38,7 +39,8 @@ M.MAX_SLOTS = 12
 M.PAD_SIDES = { "lt", "rt", "lr" }
 M.PAD_BUTTONS = { "up", "right", "down", "left", "y", "b", "a", "x", "lb", "rb", "l3", "r3" }
 
-local FILE = "macros.json"
+local LEGACY = "macros.json"
+local FILE = LEGACY
 
 local deps = nil
 local db = {}
@@ -108,6 +110,7 @@ end
 function M.load()
   db = {}
   local raw = deps.read(FILE)
+  if not raw and FILE ~= LEGACY then raw = deps.read(LEGACY) end
   if not raw or raw:match("^%s*$") then
     return true
   end
@@ -119,6 +122,18 @@ function M.load()
   end
   db = parsed
   return true
+end
+
+-- The file in use.
+function M.file() return FILE end
+
+-- Uses world `name`'s file (nil or "": macros.json), reading it when that is another file: true, then load()'s
+-- answer, when it changed.
+function M.set_world(name)
+  local file = name and name ~= "" and ("macros-" .. (name:gsub("[^%w%-_]", "_")) .. ".json") or LEGACY
+  if file == FILE then return false end
+  FILE = file
+  return true, M.load()
 end
 
 function M.save()

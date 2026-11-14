@@ -1,6 +1,6 @@
 -- Which way the player plays: the keyboard's hotbars (the default) or the gamepad's crossbars (src/pad.lua). Only one
 -- shows and answers at a time. The Mode setting (per character, on the Extras page) says which; //hb mode switches it
--- for the session until the setting is changed again.
+-- for the session until the setting is changed again. With Detect Gamepad on, a controller coming or going switches it.
 
 local M = {}
 
@@ -26,6 +26,25 @@ end
 -- The Mode setting was changed: it decides again.
 function M.use_setting()
   override = nil
+end
+
+local seen = nil -- whether a controller played at the last sample; nil: not sampled yet
+
+-- Forgets the last sample: the next one counts as the first.
+function M.forget()
+  seen = nil
+end
+
+-- Samples whether a controller plays. When detecting is on and that changed, picks the mode (gamepad with one,
+-- hotbars without) and returns it; else nil. At the first sample only a controller changes anything.
+function M.detect(enabled, connected)
+  local before = seen
+  seen = connected
+  if not enabled or connected == before or (before == nil and not connected) then return nil end
+  local to = connected and M.GAMEPAD or M.HOTBARS
+  if M.get() == to then return nil end
+  M.set(to)
+  return to
 end
 
 function M.toggle()

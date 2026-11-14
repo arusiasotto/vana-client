@@ -88,10 +88,14 @@ end
 refresh()
 -- The jobs can arrive after the mod loads, and a job change swaps the macros.
 events.on("job_change", changed)
+local detect
 events.on("settings_changed", function(key)
   -- The Mode setting changed: it decides again over what //hb mode set.
   if key == "mode" then mode.use_setting() end
+  -- Detect Gamepad changed: a controller already there counts as found now.
+  if key == "pad_detect" then mode.forget() end
   refresh()
+  if key == "pad_detect" then detect() end
 end)
 timer.every(1, bar.tick)
 timer.every(0.25, bar.recasts)
@@ -110,6 +114,36 @@ local function set_mode(to)
     chat.add("Hotbars: keyboard hotbars.")
   end
 end
+
+-- With Detect Gamepad on, a controller coming or going switches the mode. A controller does not play while the game
+-- window is unfocused (unless background play is on): that is no disconnect.
+detect = function()
+  local connected = input.pad().connected
+  local ok, win = pcall(client.window)
+  if not connected and ok and win and not win.focused then return end
+  local to = mode.detect(settings.get("pad_detect"), connected)
+  if not to then return end
+  refresh()
+  chat.add(to == mode.GAMEPAD and "Hotbars: controller found, gamepad crossbars."
+    or "Hotbars: controller gone, keyboard hotbars.")
+end
+timer.every(0.5, detect)
+
+-- The world's macros: its file once the world is known (game calls may not work while the mod loads).
+local function use_world()
+  local ok, info = pcall(game.info)
+  if not ok or type(info) ~= "table" then return end
+  local switched, loaded, why = data.set_world(info.server)
+  if not switched then return end
+  if loaded then
+    changed()
+  else
+    chat.add("Hotbars: " .. data.file() .. " could not be read (" .. tostring(why) .. "); a copy was kept as "
+      .. data.file() .. ".bad.")
+  end
+end
+use_world()
+timer.every(1, use_world)
 
 -- The forms of //hb as mod.toml declares them: what the chat line's hint and //mods show.
 local function usage()
@@ -134,6 +168,12 @@ commands.register("hb", function(cmd, a, b)
   elseif cmd == "palette" then
     palette.set_job(jobs.current())
     palette.toggle()
+  elseif cmd == "assign" then
+    if mode.is_pad() and pad.is_active() then
+      pad.set_assigning(not pad.is_assigning())
+    else
+      chat.add("Hotbars: assigning needs gamepad mode and a controller.")
+    end
   elseif cmd == "mode" then
     if (a or "") == "" then
       set_mode(nil)
@@ -151,7 +191,7 @@ commands.register("hb", function(cmd, a, b)
     stock.restore()
   elseif cmd == "reload" then
     local loaded, why = data.load()
-    if not loaded then chat.add("Hotbars: macros.json could not be read (" .. tostring(why) .. ").") end
+    if not loaded then chat.add("Hotbars: " .. data.file() .. " could not be read (" .. tostring(why) .. ").") end
     changed()
   else
     usage()
