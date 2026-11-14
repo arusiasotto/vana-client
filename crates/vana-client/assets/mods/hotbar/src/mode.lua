@@ -1,6 +1,4 @@
--- Which way the player plays: the keyboard's hotbars (the default) or the gamepad's crossbars (src/pad.lua). Only one
--- shows and answers at a time. The Mode setting (per character, on the Extras page) says which; //hb mode switches it
--- for the session until the setting is changed again. With Detect Gamepad on, a controller coming or going switches it.
+-- Hotbars or gamepad mode: the Mode setting, overridden by //hb mode or Detect Gamepad until the setting changes.
 
 local M = {}
 
@@ -18,25 +16,20 @@ function M.is_pad()
   return M.get() == M.GAMEPAD
 end
 
--- `to` is M.HOTBARS or M.GAMEPAD, until the setting changes (use_setting).
 function M.set(to)
   override = to == M.GAMEPAD and M.GAMEPAD or M.HOTBARS
 end
 
--- The Mode setting was changed: it decides again.
 function M.use_setting()
   override = nil
 end
 
-local seen = nil -- whether a controller played at the last sample; nil: not sampled yet
-
--- Forgets the last sample: the next one counts as the first.
+local seen = nil -- controller connected at the last sample; nil before the first
 function M.forget()
   seen = nil
 end
 
--- Samples whether a controller plays. When detecting is on and that changed, picks the mode (gamepad with one,
--- hotbars without) and returns it; else nil. At the first sample only a controller changes anything.
+-- Returns the mode to switch to when the connection changed (the first sample switches only to gamepad), else nil.
 function M.detect(enabled, connected)
   local before = seen
   seen = connected
@@ -57,7 +50,6 @@ local ALIASES = {
   gamepad = M.GAMEPAD, pad = M.GAMEPAD, controller = M.GAMEPAD, crossbar = M.GAMEPAD, crossbars = M.GAMEPAD,
 }
 
--- A typed word ("pad", "keyboard", ...) as a mode, or nil.
 function M.parse(text)
   return ALIASES[tostring(text or ""):lower()]
 end

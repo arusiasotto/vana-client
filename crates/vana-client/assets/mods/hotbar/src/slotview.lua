@@ -1,5 +1,4 @@
--- What the bars (src/bar.lua) and the crossbars (src/pad.lua) share: a slot's look, a canvas's drag and drop events,
--- the ghost under the pointer, and where a group's list opens.
+-- Shared by the bars and the crossbars: slot drawing, canvas drag and drop, the drag ghost, group list placement.
 
 local data = require("src.data")
 local actions = require("src.actions")
@@ -23,13 +22,11 @@ local GHOST_BG = { 20, 24, 38, 120 }
 local DROP = { 255, 214, 120, 200 }
 local DRAGGED = { 0, 0, 0, 120 }
 
--- A slot's label's text size (of the flyouts' text) and its lines' height.
 local LABEL = 0.78
 local LABEL_LINE = 13
 local ROUND = 7
 
--- A window's slot state: the key under the pointer, the fire flashes (key -> until), the slot being dragged
--- ({cell, x, y}) and where a palette tile dragged over it is ({x, y}).
+-- hover: key under the pointer; flash: key -> until; drag: {cell, x, y}; tile_at: a palette tile over us {x, y}.
 function M.state()
   return { hover = nil, flash = {}, drag = nil, tile_at = nil }
 end
@@ -38,7 +35,7 @@ function M.reset(st)
   st.hover, st.drag, st.tile_at = nil, nil, nil
 end
 
--- A line cut to what fits a slot `w` points wide, 4 clear of each side, with an ellipsis.
+-- Cuts a line to fit a slot `w` wide.
 function M.fit(text, w)
   local n = math.max(1, math.floor((w - 8) / (6.5 * LABEL)))
   if utf8.len(text) and utf8.len(text) > n then
@@ -47,17 +44,7 @@ function M.fit(text, w)
   return text
 end
 
--- What a slot's tip lists: a macro's lines, or a group's members.
-function M.tip_text(macro)
-  local lines = macro.lines or {}
-  if macro.group then
-    lines = {}
-    for n, m in ipairs(macro.group) do lines[n] = ("%d. %s"):format(n, m.lines[1] or m.name) end
-  end
-  return table.concat(lines, "\n")
-end
-
--- A slot's recast shade, or nil without an action.
+-- {left, frac, usable}, or nil without an action.
 function M.shade(macro, recasts, me)
   local act = actions.of(macro)
   if not act then return nil end
@@ -65,16 +52,14 @@ function M.shade(macro, recasts, me)
   return { left = left, frac = frac, usable = actions.usable(act, me) }
 end
 
--- The slot's flash for a moment.
 function M.flash(st, key, draw)
   st.flash[key] = os.clock() + 0.12
   draw()
   timer.after(0.13, draw)
 end
 
--- Draws one slot into `add`. c: x, y, s, macro, act, edge (colour), hover, shade, dim (icon greyed), up (a group's
--- arrow points down: the list opens below), hint (corner text), fallback (the tip's title), before / after (functions
--- drawing under the icon and over the text), and for the drag marks st, key, source (the slot dragged), hit_key(x, y).
+-- c: x, y, s, macro, act, edge, hover, shade, dim, up (group arrow points down), hint, fallback (tip title),
+-- before / after(add), st, key, source (being dragged), hit_key(x, y).
 function M.draw_slot(add, c)
   local x, y, s, macro, act, sh, st = c.x, c.y, c.s, c.macro, c.act, c.shade, c.st
   add({ type = "rect", x = x, y = y, w = s, h = s, round = ROUND,
@@ -86,7 +71,6 @@ function M.draw_slot(add, c)
     add({ type = "icon", x = x + (s - isz) / 2, y = y + 4, size = isz, kind = act.kind, id = act.id,
       colour = c.dim and { 150, 150, 150, 255 } or nil })
   end
-  -- A group: a small arrow in the corner, pointing where its list opens.
   if macro and macro.group then
     local ax = x + s - 9
     local base, tip = y + 10, y + 6
@@ -142,12 +126,11 @@ function M.draw_slot(add, c)
   if macro then
     local name = data.trim(macro.name)
     add({ type = "tip", x = x, y = y, w = s, h = s, title = name ~= "" and name or c.fallback,
-      text = M.tip_text(macro) })
+      text = data.tip_text(macro) })
   end
 end
 
--- The dragged slot, or a palette tile dragged over the window: a see-through copy under the pointer. `macro_of(cell)`
--- is the macro in the dragged slot.
+-- The dragged slot or palette tile under the pointer.
 function M.draw_ghost(add, st, s, macro_of)
   local g, act, label
   if st.drag and st.drag.x then
@@ -168,8 +151,7 @@ function M.draw_ghost(add, st, s, macro_of)
   end
 end
 
--- Where a group slot's list opens given the canvas's bounds `at`: over the slot at (x, y) (under it on the top edge),
--- centred on it, in window pixels.
+-- A group list's place over the slot at (x, y) (under it when docked on top), from the canvas bounds `at`.
 function M.list_place(at, x, y, s, top_dock)
   local u = hud.screen().ui_scale
   local cx = at.x + (x + s / 2) * at.scale - chooser.WIDTH * u / 2
@@ -179,13 +161,11 @@ function M.list_place(at, x, y, s, top_dock)
   return { x = cx, y = at.y + y * at.scale - 6 * u, above = true }
 end
 
--- The canvas events of a slot window. h: st, hit(x, y) -> a slot's cell, another thing or nil; key_of(cell);
--- macro_of(cell); same(a, b); draw(); drop(cell, library id); fire(cell); menu(cell); swap(from, to); other(thing)
--- for a click on anything else. Returns whether it handled the event.
+-- A slot canvas's events. h: st, hit(x, y), key_of, macro_of, same(a, b), draw, drop(cell, id), fire, menu,
+-- swap(from, to), other(thing) for clicks off slots. Returns whether it handled the event.
 function M.handle(e, h)
   local st = h.st
   if e.kind == "drop" then
-    -- A library tile (the palette's, or the manager's): it goes on the slot.
     st.tile_at = nil
     local c = h.hit(e.x, e.y)
     local id = palette.dragged_id(e.from) or (e.from == "tiles" and palette.last)
@@ -201,7 +181,6 @@ function M.handle(e, h)
       h.draw()
     end
   elseif e.kind == "drag_over" or e.kind == "drag_out" then
-    -- A palette tile dragged over the window (or off it): its copy follows the pointer.
     st.tile_at = e.kind == "drag_over" and palette.dragging and { x = e.x, y = e.y } or nil
     h.draw()
   elseif e.kind == "click" then

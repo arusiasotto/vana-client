@@ -1,24 +1,25 @@
--- The gamepad's crossbars, Hotbars' other mode (src/mode.lua): three sets (LT, RT, both held) of the d-pad's and the
--- face buttons' slots, flanked by L1 / L3 and R1 / R3, in an edge window that shows the set held and folds to its edge.
--- Slots hold the job's library macros (src/data.lua "pad"); src/slotview.lua draws them as the bars' are.
+-- Gamepad crossbars: three sets (LT, RT, both held) of twelve slots (d-pad, face buttons, L1 / R1, L3 / R3) in an edge
+-- window. With Auto-hide it shows only the set held and folds to an "Open Manager" button otherwise.
+--
+-- Controller: trigger + slot button fires; trigger + Back toggles assigning (a slot press opens the library to pick
+-- its macro); trigger + Start opens the manager. Game lists (magic, items...) keep the pad.
 
 local data = require("src.data")
 local runner = require("src.runner")
 local jobs = require("src.jobs")
 local actions = require("src.actions")
-local palette = require("src.palette")
 local chooser = require("src.chooser")
+local menu = require("src.menu")
 local mode = require("src.mode")
 local bar = require("src.bar")
 local slotview = require("src.slotview")
 
 local M = {}
 
--- Set by init.lua: changed() after a slot changed, open_manager(), palette() shows the macro palette, editing().
+-- Set by init.lua: changed(), open_manager(), palette(), editing() (manager or palette open).
 M.hooks = {}
 
 local WIN = "pads"
-local MENU = "padmenu"
 
 local SIDES, BUTTONS = data.PAD_SIDES, data.PAD_BUTTONS
 local LABELS = { up = "Up", right = "Right", down = "Down", left = "Left", y = "Y", b = "B", a = "A", x = "X",
@@ -28,46 +29,50 @@ local SLOT = {}
 for _, b in ipairs(BUTTONS) do SLOT[b] = true end
 local IS_TRIGGER = { lt = true, rt = true }
 
--- The side held has a gold edge; the others dim.
 local EDGE = { 184, 139, 73, 205 }
 local EDGE_HELD = { 228, 192, 119, 255 }
 local OFF_EDGE = { 80, 84, 96, 120 }
 local KEY, KEY_HOVER, TEXT, GOLD = slotview.KEY, slotview.KEY_HOVER, slotview.TEXT, slotview.GOLD
 local DIMMED = { 140, 140, 150, 255 }
-local MENU_GOLD = { 232, 210, 156 }
-local MENU_DIM = { 160, 162, 172 }
 
 local PAD = 8
-local HEAD = 16 -- the sets' names over the diamonds
+local HEAD = 16                -- set names over the diamonds
 local IDLE_W, IDLE_H = 120, 24 -- the folded window's button
 
 local st = slotview.state()
-local geo = nil          -- the layout shown: size, slots (each { x, y, side, button }), sides, width, height
-local layouts = {}       -- "view:size" -> a layout
-local cells = {}         -- "side:button" -> the macro there
+local geo = nil          -- current layout: size, slots ({x, y, side, button}), sides, width, height
+local layouts = {}       -- "view:size" -> layout
+local cells = {}         -- "side:button" -> macro
+local shades = {}        -- "side:button" -> recast shade
 local main = nil
-local shades = {}        -- "side:button" -> {left, frac, usable} from the last recast tick
 local built_sig = nil
-local built_view = nil   -- what the window was built to show: "all", "lt", "rt", "lr" or "none"
-local built_at = nil     -- when it was last defined
-local window_key = nil   -- what the window is defined for: view, size and job
-local drawn_held = nil   -- the set held when it was last drawn
-local top_dock = false   -- docked on the top edge: a group's list opens under the slot
-local idle_hover = false -- the pointer is on the folded window's button
-local assigning = false  -- picking macros for slots with the controller: a slot press opens the library's list
+local built_view = nil   -- "all", "lt", "rt", "lr" or "none"
+local built_at = nil     -- os.clock() of the last window define
+local window_key = nil
+local drawn_held = nil
+local top_dock = false
+local idle_hover = false
+local assigning = false
 
 local function key_of(c) return type(c) == "table" and (c.side .. ":" .. c.button) or c end
+local function where(side, button) return SIDE_NAMES[side] .. " " .. LABELS[button] end
+
+local function changed()
+  M.rebuild()
+  if M.hooks.changed then M.hooks.changed() end
+end
 
 -- ---------------------------------------------------------------------------
--- Using a slot
+-- State
 -- ---------------------------------------------------------------------------
 
--- Whether the crossbars answer the controller now.
 function M.is_active()
   return settings.get("on") and mode.is_pad() and input.pad().connected and true or false
 end
 
--- A game list (magic, items, shops...) has the keys: the pad is the game's then, for its paging and bag switch.
+function M.is_assigning() return assigning end
+
+-- A game list has focus: the pad is the game's.
 local function game_menu()
   local list = ui.native and ui.native.list
   if not list or chooser.is_open() then return false end
@@ -75,7 +80,7 @@ local function game_menu()
   return ok and open ~= nil
 end
 
--- "lt" or "rt" while one trigger is held, "lr" while both are, else nil.
+-- "lt", "rt" or "lr" for the triggers held, else nil.
 local function held()
   local p = input.pad()
   if not p.connected or game_menu() then return nil end
@@ -86,14 +91,26 @@ local function held()
   return nil
 end
 
+-- "all", the set held, or "none" (folded). Every set shows while assigning or editing.
+local function view()
+  if settings.get("pad_autohide") and M.is_active() and not assigning
+      and not (M.hooks.editing and M.hooks.editing()) then
+    return held() or "none"
+  end
+  return "all"
+end
+
+-- ---------------------------------------------------------------------------
+-- Slots
+-- ---------------------------------------------------------------------------
+
 local function slot_of(side, button)
   for _, s in ipairs(geo and geo.slots or {}) do
     if s.side == side and s.button == button then return s end
   end
 end
 
--- Calls open(place) with where a list opens over a slot. Just after the window was rebuilt for a trigger pull its
--- canvas is drawn a frame later: until the bounds are the new ones, wait.
+-- Calls open(place) with where a list opens over a slot. A rebuilt window's canvas bounds lag a frame: wait for them.
 local function open_at(side, button, tries, open)
   local at = ui.bounds and ui.bounds(WIN, "c")
   local s = slot_of(side, button)
@@ -108,8 +125,7 @@ end
 -- Runs a slot; a group opens its list.
 function M.fire(side, button)
   local mj = jobs.current()
-  if not mj then return end
-  local macro = data.pad_resolve(mj, side, button)
+  local macro = mj and data.pad_resolve(mj, side, button)
   if not macro then return end
   if macro.group then
     open_at(side, button, 0, function(place) chooser.open(macro, place, nil, nil) end)
@@ -118,12 +134,7 @@ function M.fire(side, button)
   end
 end
 
--- Puts the library's macro `id` on a crossbar slot (false: empties it).
-local function put(mj, side, button, id)
-  if id then data.pad_assign(mj, side, button, id) else data.pad_clear(mj, side, button) end
-end
-
--- Opens the library's list over a slot to pick what it holds: the controller's way to fill the crossbars.
+-- Opens the library over a slot; the row picked goes on it (a "Clear" row first when it is filled).
 function M.assign(side, button)
   local mj = jobs.current()
   if not mj then return end
@@ -142,23 +153,19 @@ function M.assign(side, button)
     local macro = data.macro_of(mj, item.id)
     if macro then
       local act = actions.of(macro)
-      local name = data.trim(macro.name) ~= "" and macro.name or ((macro.lines or {})[1] or "")
-      rows[#rows + 1] = { name, "", "", icon = act and { kind = act.kind, id = act.id } or nil }
+      rows[#rows + 1] = { data.name_of(macro), "", "", icon = act and { kind = act.kind, id = act.id } or nil }
       ids[#rows] = item.id
       if cur and cur.ref == item.id then start = #rows end
     end
   end
   open_at(side, button, 0, function(place)
-    chooser.pick_list(SIDE_NAMES[side] .. " " .. LABELS[button], rows, place, function(k)
-      put(mj, side, button, ids[k])
-      M.changed()
+    chooser.pick_list(where(side, button), rows, place, function(k)
+      if ids[k] then data.pad_assign(mj, side, button, ids[k]) else data.pad_clear(mj, side, button) end
+      changed()
     end, start)
   end)
 end
 
-function M.is_assigning() return assigning end
-
--- Starts or ends picking macros for slots; the crossbars show every set while it lasts.
 function M.set_assigning(on)
   on = on and M.is_active() or false
   if on == assigning then return end
@@ -169,128 +176,73 @@ function M.set_assigning(on)
   M.rebuild()
 end
 
--- Takes the triggers, the d-pad and the buttons a slot answers, and the list's cursor keys. A press is taken on its
--- press only: the host keeps the button taken until it comes up.
+local function open_menu(side, button)
+  local mj = jobs.current()
+  local macro = mj and data.pad_resolve(mj, side, button)
+  local items = {}
+  if macro then
+    items[#items + 1] = { "Clear the slot", function()
+      data.pad_clear(mj, side, button)
+      changed()
+    end }
+  end
+  items[#items + 1] = { "Open the palette", function() M.hooks.palette() end }
+  items[#items + 1] = { "Open the manager", function() M.hooks.open_manager() end }
+  menu.open("Crossbar slot", macro, where(side, button), items)
+end
+
+-- ---------------------------------------------------------------------------
+-- Controller
+-- ---------------------------------------------------------------------------
+
+-- Runs fn next tick (the filter must answer at once) and takes the press; releases pass.
+local function take(e, fn)
+  if e.down and fn then timer.after(0, fn) end
+  return e.down or nil
+end
+
+local LIST_KEYS = {
+  up = function() chooser.step(-1) end,
+  down = function() chooser.step(1) end,
+  a = function() chooser.accept() end,
+  b = function() chooser.close() end,
+}
+
 input.on_pad(function(e)
   if not mode.is_pad() then return nil end
   if IS_TRIGGER[e.button] then timer.after(0, M.sync) end
   if e.blocked or not M.is_active() then return nil end
+  local b = e.button
   if chooser.is_open() then
-    -- A group's list is open: the d-pad moves its cursor, A runs the member, B closes it.
-    local b = e.button
-    if b == "up" or b == "down" or b == "a" or b == "b" then
-      if e.down then
-        timer.after(0, function()
-          if b == "up" then chooser.step(-1)
-          elseif b == "down" then chooser.step(1)
-          elseif b == "a" then chooser.accept()
-          else chooser.close() end
-        end)
-      end
-      return e.down or nil
-    end
-    if e.down and held() and SLOT[b] then chooser.close() end -- another slot: it fires as usual
+    if LIST_KEYS[b] then return take(e, LIST_KEYS[b]) end
+    if e.down and held() and SLOT[b] then chooser.close() end
   end
   if game_menu() then return nil end
-  if IS_TRIGGER[e.button] then return e.down or nil end
+  if IS_TRIGGER[b] then return take(e) end
   local side = held()
-  if e.button == "back" and (assigning or side) then
-    -- A trigger and Back start picking macros for slots; Back again ends it.
-    if e.down then timer.after(0, function() M.set_assigning(not assigning) end) end
-    return e.down or nil
+  if b == "back" and (assigning or side) then
+    return take(e, function() M.set_assigning(not assigning) end)
   end
-  if e.button == "start" and side then
-    if e.down and M.hooks.open_manager then timer.after(0, M.hooks.open_manager) end
-    return e.down or nil
+  if b == "start" and side then return take(e, M.hooks.open_manager) end
+  if b == "b" and assigning and not side then
+    return take(e, function() M.set_assigning(false) end)
   end
-  if assigning and e.button == "b" and not side then
-    if e.down then timer.after(0, function() M.set_assigning(false) end) end
-    return e.down or nil
-  end
-  if not side or not SLOT[e.button] then return nil end
-  if e.down then
-    -- Not in the filter itself: a macro may wait, and the filter has a few milliseconds to answer.
-    local pick = assigning
-    timer.after(0, function()
-      if pick then M.assign(side, e.button) else M.fire(side, e.button) end
-    end)
-    return true
-  end
-  return nil
-end)
-
--- ---------------------------------------------------------------------------
--- A slot's menu
--- ---------------------------------------------------------------------------
-
-local function changed()
-  M.rebuild()
-  if M.hooks.changed then M.hooks.changed() end
-end
-M.changed = changed
-
-local function open_menu(side, button)
-  local mj = jobs.current()
-  local macro = mj and data.pad_resolve(mj, side, button)
-  local act = macro and actions.of(macro)
-  local list, what = {}, {}
-  if macro then
-    list[#list + 1] = { "Clear the slot" }
-    what[#what + 1] = "clear"
-  end
-  list[#list + 1] = { "Open the palette" }
-  what[#what + 1] = "palette"
-  list[#list + 1] = { "Open the manager" }
-  what[#what + 1] = "manager"
-  local name = macro and (data.trim(macro.name) ~= "" and macro.name or (macro.lines[1] or "")) or "Empty slot"
-  ui.window(MENU, {
-    title = "Crossbar slot",
-    width = 270,
-    popup = true,
-    elements = {
-      { type = "list", id = "head", height = 1, rows = { {
-        name, SIDE_NAMES[side] .. " " .. LABELS[button], icon = act and { kind = act.kind, id = act.id } or nil,
-        colour = macro and MENU_GOLD or MENU_DIM } }, columns = { {}, { width = 70, align = "right" } } },
-      { type = "separator" },
-      { type = "list", id = "acts", rows = list, height = #list },
-    },
-  })
-  ui.on(MENU, function(_, e)
-    if e.kind ~= "select" or e.id ~= "acts" then return end
-    ui.close(MENU)
-    local picked = what[e.index]
-    if picked == "clear" and mj then
-      data.pad_clear(mj, side, button)
-      changed()
-    elseif picked == "palette" and M.hooks.palette then
-      M.hooks.palette()
-    elseif picked == "manager" and M.hooks.open_manager then
-      M.hooks.open_manager()
-    end
+  if not side or not SLOT[b] then return nil end
+  local pick = assigning
+  return take(e, function()
+    if pick then M.assign(side, b) else M.fire(side, b) end
   end)
-  ui.open(MENU)
-end
+end)
 
 -- ---------------------------------------------------------------------------
 -- Drawing
 -- ---------------------------------------------------------------------------
 
--- What at (x, y) in the canvas: a slot ({x, y, side, button}) or nil.
 local function hit(x, y)
   if not geo then return nil end
   for _, sl in ipairs(geo.slots) do
     if x >= sl.x and x < sl.x + geo.size and y >= sl.y and y < sl.y + geo.size then return sl end
   end
-end
-
--- What shows now: every set ("all"), or with the auto-hide on and a controller answering, only the set held ("none"
--- while no trigger is). All of them show for setting up: while the manager or palette is open.
-local function view()
-  if settings.get("pad_autohide") and M.is_active() and not assigning
-      and not (M.hooks.editing and M.hooks.editing()) then
-    return held() or "none"
-  end
-  return "all"
 end
 
 local function macro_of(c) return cells[key_of(c)] end
@@ -324,7 +276,6 @@ local function draw()
   ui.update(WIN, "c", { h = geo.height, draw = d })
 end
 
--- The button the window shows while it is folded to its edge: it opens the manager.
 local function draw_idle()
   ui.update(WIN, "c", { draw = {
     { type = "rect", x = 0, y = 0, w = IDLE_W, h = IDLE_H, round = 7, colour = idle_hover and KEY_HOVER or KEY },
@@ -340,7 +291,7 @@ local function refresh_cells()
   for _, sl in ipairs(geo.slots) do cells[key_of(sl)] = data.pad_resolve(main, sl.side, sl.button) end
 end
 
--- The recast shades and what cannot be used now, every quarter second.
+-- Every quarter second.
 function M.recasts()
   if not geo then return end
   local r = game.recasts()
@@ -350,14 +301,13 @@ function M.recasts()
   draw()
 end
 
--- A group's member was picked: its slot shows that one now.
+-- After a group member was picked.
 function M.redraw()
   if not geo or not main then return end
   refresh_cells()
   draw()
 end
 
--- A palette tile's drag ended (dropped or not): its copy over the crossbars goes.
 function M.tile_drag_ended()
   if st.tile_at then
     st.tile_at = nil
@@ -366,7 +316,7 @@ function M.tile_drag_ended()
 end
 
 -- ---------------------------------------------------------------------------
--- The window and its events
+-- Window
 -- ---------------------------------------------------------------------------
 
 local function on_event(_, e)
@@ -377,7 +327,6 @@ local function on_event(_, e)
   end
   if e.id ~= "c" then return end
   if not geo then
-    -- Folded to the edge: the canvas is just the button that opens the manager.
     if e.kind == "click" and e.button ~= "right" then
       if M.hooks.open_manager then M.hooks.open_manager() end
     elseif e.kind == "hover" or e.kind == "leave" then
@@ -411,7 +360,6 @@ local function on_event(_, e)
   })
 end
 
--- Whether the crossbars' window shows now: Hotbars on and visible, in gamepad mode.
 local function shown_now()
   return settings.get("on") and mode.is_pad() and settings.get("visible") and not bar.is_hidden()
 end
@@ -420,15 +368,14 @@ local function signature()
   return table.concat({ tostring(jobs.current()), settings.get("pad_size"), tostring(shown_now()), view() }, ":")
 end
 
--- The layout of a view at a slot size: two sets to a row (LT and RT, then LT + RT centred under them); each set has
--- its name over the diamonds, L1 over L3 on their left and R1 over R3 on their right.
+-- Two sets to a row (LT + RT centred under them); each set: name, two diamonds, L1 / L3 left, R1 / R3 right.
 local function layout(v, size)
   local key = v .. ":" .. size
   if layouts[key] then return layouts[key] end
   local gap = math.max(2, math.floor(size * 0.15))
-  local arm = size + gap               -- a diamond's arm
-  local dw = 2 * arm + size            -- a diamond's width
-  local wing = size + 2 * gap          -- a column of L1 / L3 or R1 / R3 and the space before its diamond
+  local arm = size + gap
+  local dw = 2 * arm + size     -- a diamond's width
+  local wing = size + 2 * gap   -- the shoulder column and its gap
   local side_w = 2 * wing + 2 * dw + 2 * gap
   local between = 6 * gap
   local spots = { up = { 1, 0 }, right = { 2, 1 }, down = { 1, 2 }, left = { 0, 1 } }
@@ -463,7 +410,7 @@ local function layout(v, size)
   return g
 end
 
--- Defines and opens the window when what it is for changed; its canvas is `w` by `h`.
+-- Defines and opens the window when `key` changed. `width` adds the edge frame's margins (34).
 local function define(key, w, h, width)
   if key == window_key and ui.is_open(WIN) then return end
   window_key = key
@@ -473,7 +420,6 @@ local function define(key, w, h, width)
     heading = assigning and (main .. " - assigning") or main,
     edge = true,
     grow = "up",
-    -- The canvas plus the edge frame's margins (16 + 18 at most), so it never overflows.
     width = width,
     elements = { { type = "canvas", id = "c", w = w, h = h } },
   })
@@ -491,14 +437,12 @@ function M.rebuild()
   end
   main = jobs.current()
   if not main then
-    built_sig = nil -- the job is not known yet; the tick tries again
-    geo = nil
+    built_sig, geo = nil, nil
     return
   end
   local size = settings.get("pad_size")
   local key = table.concat({ built_view, size, main, assigning and "assign" or "" }, ":")
   if built_view == "none" then
-    -- No trigger held: the window shrinks to a small button, back to its edge.
     geo = nil
     slotview.reset(st)
     define(key, IDLE_W, IDLE_H, IDLE_W + 2 * PAD + 34)
@@ -512,10 +456,9 @@ function M.rebuild()
   M.recasts()
 end
 
--- After a slot, the library or the job changed.
 M.invalidate = M.rebuild
 
--- Shows the set held: rebuilds when the view changed, else redraws when the trigger did.
+-- Every quarter second and on trigger changes.
 function M.sync()
   if not mode.is_pad() then return end
   if view() ~= built_view then
@@ -525,7 +468,7 @@ function M.sync()
   end
 end
 
--- Once a second: rebuilds when the job, the size or the mode changed.
+-- Every second.
 function M.tick()
   if signature() ~= built_sig then M.rebuild() end
 end

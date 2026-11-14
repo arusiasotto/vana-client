@@ -1,12 +1,7 @@
--- The hotbars in an edge window, as the Timers and the training regime are: on a screen edge, dragged along the edges,
--- folding to its tab. Its canvas grows a bar at a time from the edge that stays put: + and - show more or fewer bars,
--- easing the window's height. On the top edge the window keeps its top: bar 1 is the top row, the next ones below it,
--- + and - at the top right. Anywhere else it keeps its bottom: bar 1 is the bottom row, the next ones above it, + and -
--- at the bottom right. The buttons never move. A slot shows its action's icon (or its label), its hotkey, a shade
--- with the seconds left while the action recasts, and its macro in a tip; one whose action cannot be used now is
--- dimmed, and one the battle menu suggests glows. A click fires it, a right click opens its menu, and a slot dragged
--- onto another swaps them; a palette tile dropped on a slot puts that library macro there. Slots the main job's set
--- fills have a gold edge, the sub job's set's a blue one.
+-- Keyboard hotbars in an edge window. Bar 1 sits on the docked edge; + / - show more or fewer bars (eased). A slot
+-- shows its icon or label, hotkey, recast shade and tip; unusable actions dim, battle-menu suggestions glow. Click
+-- fires, right-click opens the slot menu, drag swaps, a dropped library tile assigns. Gold edge: main job's set;
+-- blue: sub job's.
 
 local data = require("src.data")
 local runner = require("src.runner")
@@ -15,37 +10,35 @@ local keys = require("src.keys")
 local actions = require("src.actions")
 local palette = require("src.palette")
 local chooser = require("src.chooser")
+local menu = require("src.menu")
 local mode = require("src.mode")
 local slotview = require("src.slotview")
 
 local M = {}
 
--- Set by init.lua: open_manager(), slot_menu(bar, slot, from), changed()
+-- Set by init.lua: changed(), open_manager(), palette().
 M.hooks = {}
 
 local WIN = "bars"
 
--- The bars' own colours: the sub job's set's blue edge, the battle menu's glow, the + / - knobs (round, charcoal
--- ringed in gold, the text colour under the pointer).
 local KEY, GOLD = slotview.KEY, slotview.GOLD
 local EDGE = { main = { 184, 139, 73, 205 }, sub = { 104, 164, 232, 205 } }
 local GLOW = { 255, 214, 120 }
 local GOLD_OFF = { 228, 192, 119, 70 }
 local INK = { 236, 230, 214, 255 }
 
--- Bars per second while the window grows or shrinks.
-local SPEED = 4.5
+local SPEED = 4.5 -- bars per second while growing or shrinking
 local PAD = 8
 
 local hidden = false   -- //hb show | hide
-local built_sig = nil  -- what the window was made for
-local reveal = nil     -- the bars shown now, eased toward wanted()
-local geo = nil        -- the layout: size, gap, slots, bars, width, button size
+local built_sig = nil
+local reveal = nil     -- bars shown now, eased toward wanted()
+local geo = nil        -- size, gap, slots, bars, width, btn
 local eff, main, sub = nil, nil, nil
-local st = slotview.state() -- hover ("b:i", "plus" or "minus"), flashes, the slot dragged, a palette tile over us
-local suggested = {}   -- "spell:<id>" / "ability:<id>" the battle menu suggests now
-local shades = {}      -- "b:i" -> {left, frac, usable} from the last recast tick
-local top_dock = false -- docked on the top edge (the dock event): grows down, the buttons at the top
+local st = slotview.state()
+local suggested = {}   -- "kind:id" the battle menu suggests
+local shades = {}      -- "b:i" -> recast shade
+local top_dock = false
 
 local function opts()
   return {
@@ -57,7 +50,7 @@ local function opts()
   }
 end
 
--- How many bars show (1 .. the Bars setting), kept per character.
+-- Bars shown (1 .. the Bars setting), per character.
 local function wanted()
   local most = math.min(settings.get("bars"), data.MAX_BARS)
   return math.max(1, math.min(most, tonumber(storage.character.hb_shown) or 1))
@@ -72,7 +65,7 @@ end
 
 local slot_xy
 
--- Whether the battle menu suggests what a macro does (any member of a group).
+-- Whether the battle menu suggests the macro (any member of a group).
 local function is_suggested(macro, act)
   if macro and macro.group then
     for _, m in ipairs(macro.group) do
@@ -84,8 +77,6 @@ local function is_suggested(macro, act)
   return act ~= nil and act ~= false and suggested[act.kind .. ":" .. act.id] == true
 end
 
--- Where a group slot's list opens: over the slot (under it on the top edge), centred on it, in window pixels; nil
--- when the bars' place on screen is not known (the list opens at the pointer).
 local function list_place(b, i)
   local at = ui.bounds and ui.bounds(WIN, "c")
   if not at or not geo then return nil end
@@ -93,8 +84,7 @@ local function list_place(b, i)
   return slotview.list_place(at, x, y, geo.size, top_dock)
 end
 
--- Runs the macro in a slot for the current jobs; a group opens its list. While a list is open the keys of the bar
--- it came from pick its members by number; another bar's key closes it and acts as usual.
+-- Runs a slot; a group opens its list. While a list is open its bar's keys pick members by number.
 function M.fire(bar, slot)
   if chooser.is_open() then
     if chooser.bar() == bar then
@@ -125,20 +115,19 @@ local function height(r)
   return rows * geo.size + (rows - 1) * geo.gap + 2 * PAD
 end
 
--- Bar 1 stands on the edge that stays put; each next bar is further from it (coming into view as the canvas grows).
 slot_xy = function(b, i)
   local x = PAD + (i - 1) * (geo.size + geo.gap)
   if top_dock then return x, PAD + (b - 1) * (geo.size + geo.gap) end
   return x, height(reveal or 1) - PAD - geo.size - (b - 1) * (geo.size + geo.gap)
 end
 
--- Whether a slot at y is in view (not into the padding on the growing side).
+-- Whether a slot at y is past the growing side's padding.
 local function in_view(y, h)
   if top_dock then return y < h - PAD end
   return y + geo.size > PAD
 end
 
--- The + and - knobs' centres: on the edge that stays put.
+-- The + and - knobs' centres.
 local function knobs(h)
   local r = geo.btn / 2
   local cx = geo.width - PAD - r
@@ -146,7 +135,7 @@ local function knobs(h)
   return cx, h - PAD - 3 * r - 4, h - PAD - r
 end
 
--- What is at (x, y) in the canvas: {b, i}, "plus", "minus" or nil.
+-- {b, i}, "plus", "minus" or nil.
 local function hit(x, y)
   if not geo then return nil end
   local h = height(reveal or 1)
@@ -182,7 +171,6 @@ local function draw()
   for b = 1, geo.bars do
     for i = 1, geo.slots do
       local x, y = slot_xy(b, i)
-      -- Only where it reaches past the padding on the growing side: a hidden bar's edge never peeks in.
       if in_view(y, h) then
         local key = b .. ":" .. i
         local cell = eff[b] and eff[b][i]
@@ -195,8 +183,7 @@ local function draw()
           hint = geo.show_keys and keys.hint(b, i) or nil, fallback = keys.hint(b, i),
           st = st, key = key, source = st.drag and st.drag.cell.b == b and st.drag.cell.i == i,
           hit_key = function(px, py) return key_of(hit(px, py)) end,
-          -- A suggestion: inside, gold at the edge fading into the key toward the middle (rings inset a step at a
-          -- time), its depth and strength pulsing with the glow round it.
+          -- Suggested: a pulsing gold fade inward, and a glow ring outside.
           before = sugg and function()
             local depth = s * (0.22 + 0.06 * glow)
             local rings = 10
@@ -219,7 +206,6 @@ local function draw()
       end
     end
   end
-  -- + over -, round knobs on the edge that stays put.
   local n, most = wanted(), geo.bars
   local r = geo.btn / 2
   local cx, plus_y, minus_y = knobs(h)
@@ -244,7 +230,7 @@ local function draw()
 end
 
 -- ---------------------------------------------------------------------------
--- Animation: the height easing, the suggestion glow breathing
+-- Animation
 -- ---------------------------------------------------------------------------
 
 local anim, last = nil, nil
@@ -278,7 +264,6 @@ local function animate()
   end
 end
 
--- + shows one bar more, - one fewer (1 .. the Bars setting).
 function M.grow(d)
   local n = wanted()
   local most = math.min(settings.get("bars"), data.MAX_BARS)
@@ -291,8 +276,24 @@ function M.grow(d)
 end
 
 -- ---------------------------------------------------------------------------
--- The window and its events
+-- Window
 -- ---------------------------------------------------------------------------
+
+local function open_menu(b, i)
+  if not main then return end
+  local macro, from = data.resolve(main, sub, b, i)
+  local items = {}
+  if macro then
+    items[#items + 1] = { "Clear the slot", function()
+      data.clear(main, from == "sub" and sub or nil, b, i)
+      M.rebuild()
+      if M.hooks.changed then M.hooks.changed() end
+    end }
+  end
+  items[#items + 1] = { "Open the palette", function() M.hooks.palette() end }
+  items[#items + 1] = { "Open the manager", function() M.hooks.open_manager() end }
+  menu.open(("Bar %d, Slot %d"):format(b, i), macro, keys.hint(b, i), items)
+end
 
 local function on_event(_, e)
   if e.kind == "dock" then
@@ -306,7 +307,7 @@ local function on_event(_, e)
     macro_of = function(c) local cell = eff[c.b] and eff[c.b][c.i]; return cell and cell.macro end,
     same = function(a, b) return a.b == b.b and a.i == b.i end,
     drop = function(c, id)
-      -- The library macro goes into the set the slot shows (the sub job's when it shows that one).
+      -- Into the set the slot shows.
       if not main then return end
       local _, from = data.resolve(main, sub, c.b, c.i)
       data.assign(main, from == "sub" and sub or nil, c.b, c.i, id)
@@ -315,10 +316,7 @@ local function on_event(_, e)
       if M.hooks.changed then M.hooks.changed() end
     end,
     fire = function(c) M.fire(c.b, c.i) end,
-    menu = function(c)
-      local _, from = data.resolve(main, sub, c.b, c.i)
-      M.hooks.slot_menu(c.b, c.i, from)
-    end,
+    menu = function(c) open_menu(c.b, c.i) end,
     swap = function(from, to)
       if not main then return end
       local _, a = data.resolve(main, sub, from.b, from.i)
@@ -335,18 +333,17 @@ end
 
 function M.rebuild()
   built_sig = signature()
-  -- In gamepad mode the crossbars (src/pad.lua) are what shows; the bars' window and keys stand down.
   if hidden or not settings.get("on") or not settings.get("visible") or mode.is_pad() then
     ui.close(WIN)
     return
   end
   main, sub = jobs.current()
   if not main then
-    built_sig = nil -- jobs not known yet; the tick tries again
+    built_sig = nil
     return
   end
   local o = opts()
-  local btn = 18 -- the fold knob's size (radius 9)
+  local btn = 18 -- knob diameter
   geo = { size = o.size, gap = o.gap, slots = o.slots, bars = o.bars, show_keys = o.show_keys, btn = btn,
     width = PAD + o.slots * o.size + (o.slots - 1) * o.gap + PAD + btn + PAD }
   eff = data.effective(main, sub)
@@ -356,8 +353,7 @@ function M.rebuild()
     heading = main .. "/" .. (sub or "-"),
     edge = true,
     grow = "up",
-    -- The canvas plus the edge frame's margins (16 + 18 at most), so it never overflows.
-    width = geo.width + 34,
+    width = geo.width + 34, -- plus the edge frame's margins
     elements = { { type = "canvas", id = "c", w = geo.width, h = height(reveal) } },
   })
   ui.on(WIN, on_event)
@@ -366,7 +362,7 @@ function M.rebuild()
   animate()
 end
 
--- The recast shades and what cannot be used now, every quarter second.
+-- Every quarter second.
 function M.recasts()
   if not geo or not eff then return end
   local r = game.recasts()
@@ -381,7 +377,6 @@ function M.recasts()
   draw()
 end
 
--- The battle menu's suggestions (while it is open): their slots glow, breathing gently.
 events.on("suggestions", function(rows)
   suggested = {}
   for _, r in ipairs(rows or {}) do
@@ -403,7 +398,7 @@ function M.rebind()
   keys.bind_all(o.bars, o.slots, M.fire)
 end
 
--- Once a second: rebuilds when the jobs or the layout settings changed.
+-- Every second.
 function M.tick()
   if signature() ~= built_sig then M.rebuild() end
 end
@@ -415,7 +410,6 @@ end
 
 function M.is_hidden() return hidden end
 
--- A palette tile's drag ended (dropped or not): its copy over the bars goes.
 function M.tile_drag_ended()
   if st.tile_at then
     st.tile_at = nil

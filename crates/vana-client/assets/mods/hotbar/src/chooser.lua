@@ -1,7 +1,5 @@
--- A group slot's list: pressing the slot opens its members in a list over it (under it on the top edge), the one
--- picked last under the cursor. Up / Down and Enter, a click, or a member's number (the bars' keys 1, 2, ...) run
--- one, and the gamepad's d-pad and A (src/pad.lua); Escape, B or a click elsewhere closes it. It opens and closes with
--- a short fold. The same popup also lists any rows for a pick (pick_list): the library's macros for a crossbar slot.
+-- A popup list over a slot: a group's members (open), or any rows to pick from (pick_list). Up / Down and Enter, a
+-- click, the bar's number keys, or the pad's d-pad and A pick; Escape or B closes.
 
 local data = require("src.data")
 local actions = require("src.actions")
@@ -9,7 +7,7 @@ local runner = require("src.runner")
 
 local M = {}
 
--- Set by bar.lua: picked() after a member ran (its slot shows that one now).
+-- Set by bar.lua and init.lua: picked() after a member ran.
 M.hooks = {}
 
 local WIN = "group"
@@ -18,11 +16,10 @@ M.WIDTH = WIDTH
 local DIM = { 160, 152, 136, 255 }
 local SUGGESTED = { 255, 214, 120, 255 }
 
-local open_macro = nil
-local open_pick = nil -- a plain list's callback(k), and its row count
+local open_macro = nil -- the group shown
+local open_bar = nil   -- the bar that opened it
+local open_pick = nil  -- pick_list's callback(k)
 local open_count = 0
--- The bar whose slot opened the list: its keys pick members by number, another bar's keys act as usual.
-local open_bar = nil
 
 local function clock(secs)
   secs = math.ceil(secs)
@@ -35,8 +32,7 @@ local function rows_of(macro, suggested)
   for k, m in ipairs(macro.group) do
     local a = actions.of(m)
     local left = a and actions.recast(a, recasts) or 0
-    local name = data.trim(m.name) ~= "" and m.name or (m.lines[1] or "")
-    rows[k] = { name, left > 0 and clock(left) or "", tostring(k), icon = a and { kind = a.kind, id = a.id } or nil,
+    rows[k] = { data.name_of(m), left > 0 and clock(left) or "", tostring(k), icon = a and { kind = a.kind, id = a.id } or nil,
       colour = suggested and suggested(m) and SUGGESTED or (a and not actions.usable(a, game.player()) and DIM) or nil }
   end
   return rows
@@ -52,12 +48,11 @@ local function close()
 end
 M.close = close
 
--- The bar the open list came from (nil: none, or not opened from a bar).
 function M.bar()
   return M.is_open() and open_bar or nil
 end
 
--- Runs member k of the open group and closes the list.
+-- Picks row k and closes.
 function M.pick(k)
   if open_pick then
     local f = open_pick
@@ -75,7 +70,7 @@ function M.pick(k)
   if M.hooks.picked then M.hooks.picked() end
 end
 
--- The controller's: the cursor one row up (-1) or down (1), wrapping; and Accept, which runs the row it is on.
+-- Moves the cursor by `delta` rows, wrapping.
 function M.step(delta)
   if not M.is_open() then return end
   local n = open_pick and open_count or #open_macro.group
@@ -88,8 +83,7 @@ function M.accept()
   M.pick(ui.get(WIN, "m").at or 1)
 end
 
--- Opens a group's list; `at` is where on screen ({x, y, above} in window pixels), else at the pointer; members
--- `suggested(member)` names (the battle menu's suggestions) show in gold; `bar` the bar whose slot opened it.
+-- `at`: {x, y, above} in window pixels, nil for the pointer; `suggested(member)` rows show gold.
 function M.open(macro, at, suggested, bar)
   if not macro.group or #macro.group == 0 then return end
   local rows = rows_of(macro, suggested)
@@ -109,8 +103,7 @@ function M.open(macro, at, suggested, bar)
   ui.open(WIN, at)
 end
 
--- Opens `rows` ({ name, "", "", icon = {kind, id}? }) for a pick: `on_pick(k)` gets the row chosen; the cursor
--- starts on `start`. `at` is as for open.
+-- rows: { name, "", "", icon? }; on_pick(k); the cursor starts on `start`.
 function M.pick_list(title, rows, at, on_pick, start)
   if #rows == 0 then return end
   ui.window(WIN, {
