@@ -59,6 +59,28 @@ cmd("trusts", "on")
 assert(trusts.H.enabled() == true)
 assert(cmd("trusts"):find("on"), "the trust list starts with its state")
 
-assert(cmd("reload") and reloaded == 1)
+-- /gs: GearSwap's words as vanagear takes them.
+local function gs(...) said = {} vg.gs({ ... }, ctx) return said[1] or "" end
+assert(gs("c", "cycle", "OffenseMode", "Acc"):find("acc") and modes.acc)
+assert(gs("c", "set", "HybridMode", "hybrid"):find("hybrid") and modes.hybrid)
+gs("c", "set", "DefenseMode", "Physical")
+assert(modes.pdt and modes.mdt, "a defense mode turns the damage taken gear on")
+gs("c", "set", "DefenseMode", "None")
+assert(not modes.pdt and not modes.mdt, "none turns it off")
+assert(gs("c", "set", "IdleMode", "regen"):find("regen") and modes.idle == "regen")
+gs("c", "toggle", "kiting")
+assert(modes.kite)
+gs("c", "toggle", "kiting")
+assert(not modes.kite)
+assert(gs("c", "update"):find("current"))
+assert(gs("c", "th", "on"):find("on") and modes.th, "other words are /vg's")
+assert(gs("th", "off"):find("off") and not modes.th)
+assert(gs("equip"):find("Usage"), "equip takes a set")
+assert(gs("validate"):find("not in this port"))
+reloaded = 0
+gs("reload")
+assert(reloaded == 1)
+
+assert(cmd("reload") and reloaded == 2)
 assert(cmd("stage"):find("not in this port yet"))
 chat.add = add

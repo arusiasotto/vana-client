@@ -57,6 +57,7 @@ M.LINES = {
   { "/vg trusts send | rebuild", "send every set again / build the sets again" },
   { "/vg trusts set <trust> <set> <slot> <item | remove | auto>", "change one slot of a trust's set" },
   { "/vg trusts use <trust> on | off <action>", "switch a spell, ability or weapon skill off or on for a trust" },
+  { "/gs c <word>, /gs equip <set>", "the same as /vg <word> and /vg wear <set>, so GearSwap macros keep working" },
   { "/vg mode <hybrid | acc | pdt | mdt | mb | macc | off>", "Gearshift's toggles" },
   { "/vg file, /vg reload", "which gear file is loaded / read it again" },
 }
@@ -103,7 +104,7 @@ function M.command(args, ctx)
       modes.pdt, modes.mdt = true, nil
     elseif arg == "mdt" then
       modes.pdt, modes.mdt = nil, true
-    elseif arg == "all" then
+    elseif arg == "all" or arg == "on" then
       modes.pdt, modes.mdt = true, true
     elseif arg == "off" then
       modes.pdt, modes.mdt = nil, nil
@@ -218,12 +219,54 @@ function M.command(args, ctx)
   elseif cmd == "mode" then
     say(run.toggle(arg ~= "" and arg or "off"))
   elseif cmd == "file" then
-    say(ctx.file() or "no gear file for this job (gearswap/ or ashitacast/ in its data folder): the set builder's sets")
+    say(ctx.file() or "no gear file for this job (ashitacast/ in its data folder): the set builder's sets")
   elseif cmd == "reload" then
     ctx.reload()
     say(ctx.file() or "no gear file for this job: the set builder's sets")
   else
     say("/vg " .. cmd .. " is not in this port yet; /vg help lists what is.")
+  end
+end
+
+-- /gs, as vanagear takes it for players coming from GearSwap: `/gs c <word>` is `/vg <word>` (Mote's mode names land on
+-- vanagear's), `/gs equip <set>` wears a set, `/gs reload` reads the file again; anything else is a /vg word.
+function M.gs(args, ctx)
+  local cmd = (args[1] or ""):lower()
+  local function vg(...) M.command({ ... }, ctx) end
+  if cmd == "c" then
+    local rest = {}
+    for i = 2, #args do rest[#rest + 1] = args[i] end
+    local first = (rest[1] or ""):lower()
+    local mode, value = (rest[2] or ""):lower(), rest[3]
+    if first == "cycle" or first == "set" then
+      if mode == "offensemode" or mode == "hybridmode" or mode == "weaponskillmode" or mode == "rangedmode" then
+        vg("tp", value or "")
+      elseif mode == "idlemode" then
+        vg("idle", value or "")
+      elseif mode == "castingmode" then
+        vg("nuke", (value and value:lower() ~= "normal") and "acc" or "")
+      elseif mode == "defensemode" or mode == "physicaldefensemode" or mode == "magicaldefensemode" then
+        vg("dt", (value and value:lower() == "none") and "off" or "on")
+      else
+        M.command(rest, ctx)
+      end
+    elseif first == "toggle" and mode == "kiting" then
+      vg("kite")
+    elseif first == "reset" and mode == "defensemode" then
+      vg("dt", "off")
+    elseif first == "update" then
+      say("Sets are current.")
+    else
+      M.command(rest, ctx)
+    end
+  elseif cmd == "equip" then
+    M.command({ "wear", table.concat(args, " ", 2) }, ctx)
+  elseif cmd == "reload" or cmd == "r" then
+    vg("reload")
+  elseif cmd == "validate" or cmd == "export" then
+    say("/gs " .. cmd .. " is not in this port yet.")
+  else
+    M.command(args, ctx)
   end
 end
 

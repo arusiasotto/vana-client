@@ -1,5 +1,5 @@
--- Gearshift with a fake game: a GearSwap file and a LuAshitacast profile each wear their precast gear before a
--- Cure's action packet and their midcast gear after it, in one batch; the client's packet is dropped.
+-- Gearshift with a fake game: a LuAshitacast profile wears its precast gear before a Cure's action packet and its
+-- midcast gear after it, in one batch; the client's packet is dropped.
 
 local sent, said = {}, {}
 local ITEMS = {
@@ -50,26 +50,6 @@ local function ids()
 end
 local core = require("src.core")
 
-FILES["gearswap/Tester_WHM.lua"] = [[
-  function get_sets()
-    sets.precast = { FC = { head = "Fast Hat", body = "Cast Coat" } }
-    sets.midcast = { Cure = { hands = "Healing Gloves" } }
-  end
-  function precast(spell) if spell.action_type == "Magic" then equip(sets.precast.FC) end end
-  function midcast(spell) if spell.english == "Cure" then equip(sets.midcast.Cure) end end
-]]
-local gs = require("src.gs")
-assert(gs.find() == "gearswap/Tester_WHM.lua", tostring(gs.find()))
-assert(gs.load(gs.find()), table.concat(said, " | "))
-gs.typed('/ma "Cure" <me>')
-local act = core.parse_action({ id = 0x01A, data = cast_packet() })
-assert(gs.action(act) == false)
-local gs_order = ids()
-assert(sent[#sent]:sub(5, 8) == string.pack("BBBB", 3, 6, 0, 0), "the gloves after the action")
-gs.unload()
-
-sent = {}
-core.sent = {}
 FILES["ashitacast/Tester_100/WHM.lua"] = [[
   local profile = {}
   profile.Sets = { Precast = { Head = "Fast Hat", Body = "Cast Coat" }, Cure = { Hands = "Heal Gloves" } }
@@ -80,12 +60,10 @@ FILES["ashitacast/Tester_100/WHM.lua"] = [[
 local lac = require("src.lac")
 assert(lac.find() == "ashitacast/Tester_100/WHM.lua", tostring(lac.find()))
 assert(lac.load(lac.find()), table.concat(said, " | "))
-act = core.parse_action({ id = 0x01A, data = cast_packet() })
+local act = core.parse_action({ id = 0x01A, data = cast_packet() })
 assert(lac.action(act) == false)
 local lac_order = ids()
 lac.unload()
 
--- GearSwap: two pieces as single equips, then the action, then the midcast piece.
-assert(gs_order == "050 050 01A 050", gs_order)
 -- LuAshitacast: its precast one equipset, its midcast single equips.
 assert(lac_order == "051 01A 050", lac_order)

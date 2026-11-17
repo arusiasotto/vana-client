@@ -1,19 +1,19 @@
 name = "Gearshift-vanadream"
-version = "0.1.0"
-description = "For the Vanadreams server: builds gear sets for each trust you call from the pieces in your bags and sends them with !trustgear (/vg trusts), and builds every set of your job from the gear you hold (//vg). Also swaps gear around your actions from GearSwap job files and LuAshitacast profiles. A copy of Gearshift: turn the original off while this one is on."
+version = "0.1.1"
+description = "For the Vanadreams server: builds gear sets for each trust you call from the pieces in your bags and sends them with !trustgear (/vg trusts), and builds every set of your job from the gear you hold (//vg). Also swaps gear around your actions from your LuAshitacast profile. A copy of Gearshift: turn the original off while this one is on."
 permissions = ["packets.read", "packets.write", "automation"]
 
 [settings.on]
 type = "bool"
 default = true
 label = "Gear Swapping"
-help = "Runs your GearSwap job file or LuAshitacast profile for the job you play (in this mod's data folder: gearswap/ or ashitacast/)."
+help = "Runs your LuAshitacast profile for the job you play (in this mod's data folder: ashitacast/)."
 
 [settings.builder]
 type = "bool"
 default = true
 label = "Set Builder"
-help = "Builds every set of your job from the gear you hold (//vg shows them). With Wear These Sets on in that window, it wears them around your actions when no GearSwap or LuAshitacast file is loaded for the job."
+help = "Builds every set of your job from the gear you hold (//vg shows them). With Wear These Sets on in that window, it wears them around your actions when no LuAshitacast profile is loaded for the job."
 
 [settings.cap]
 type = "enum"
@@ -35,7 +35,7 @@ label = "Trust Gear"
 help = "Vanadreams server: builds gear sets for each trust you call from the pieces in your bags and sends them with !trustgear (/vg trusts). Needs the Set Builder on."
 
 [commands.gs]
-help = "GearSwap's commands, for the loaded GearSwap file."
+help = "vanagear's GearSwap commands: /gs c <word> is /vg <word>, /gs equip <set> wears a set."
 args = "<command>"
 
 [commands.lac]
