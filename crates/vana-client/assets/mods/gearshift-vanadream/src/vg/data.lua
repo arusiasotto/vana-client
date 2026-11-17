@@ -39,5 +39,11 @@ function M.Weaponskills() return load("weaponskills") end
 function M.Abilities() return load("abilities") end
 function M.Traits() return load("traits") end
 function M.Gifts() return load("gifts") end
+function M.Enfeeble(name)
+  return load("enfeebles")[(tostring(name or ""):lower():gsub("[^%l%d]", ""))]
+end
+function M.WsElement(name)
+  return load("wselements")[(tostring(name or ""):lower():gsub("[^%l%d]", ""))]
+end
 
 return M

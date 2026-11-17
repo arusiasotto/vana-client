@@ -90,6 +90,10 @@ assert(why.won == run.state.built.Cure.slots[4].pick.rec.name)
 local top = why.list[1]
 assert(top.score >= why.list[#why.list].score)
 
--- A weapon skill set is built from the server's weaponskill data when the engine has it.
+-- plan.For lists the job's sets; Ws_Default is there for a fighter, and a weaponskill by name when a weapon is worn.
 local engine = require("src.vg.player")
-assert(engine.has("WS:1", {}) == (require("src.vg.data").Weaponskills()[1] ~= nil), "WS ids")
+local list = engine.names({ job = "WHM", job_id = 3, level = 75, sub_id = 0, owned = {}, locked = {}, player = {} })
+local have = {}
+for _, n in ipairs(list) do have[n] = true end
+assert(have.Idle and have.Cure and have.Precast, "WHM plan sets")
+assert(not have.Tp_Default, "WHM support job has no Tp_Default")

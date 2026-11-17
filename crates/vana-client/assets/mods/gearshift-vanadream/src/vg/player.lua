@@ -1,140 +1,109 @@
--- Your own sets, built by vanagear's engine: each of the builder's sets is a roles.lua mode (the job file's tweaks and
--- the band of your level laid over it, the caps lowered by what your traits and gifts already give), scored over every
--- piece you carry by src/vg/score.lua. A set with no mode here (an ability's, the odd job set) keeps the builder's own
--- way of picking.
---
--- As in vanagear, weapons and ammo are never chosen by scoring: only hand picks and /vg weapon fill those slots.
+-- Your own sets, built by vanagear's plan.For and score engine. Each set is a roles.lua mode (job tweaks and the band
+-- of your level, caps lowered by traits and gifts), scored over every piece you carry. Weapons and ammo are never
+-- chosen by scoring: swapping them resets TP; only hand picks and /vg weapon fill those slots.
 
 local vplan = require("src.vg.plan")
-local vdata = require("src.vg.data")
 local score = require("src.vg.score")
 local pieces_of = require("src.vg.pieces")
+local pick = require("src.build.pick")
+local core = require("src.core")
 
 local M = {}
 
--- The builder's set -> the roles.lua mode its pieces are scored by.
-M.MODE = {
-  Idle = "Idle", Idle_Regen = "Idle_Regen", Idle_Refresh = "Idle_Refresh", Resting = "Resting", Movement = "Movement",
-  Dt = "Dt", PDT = "Dt_Physical", MDT = "Dt_Magic", PetDT = "PetDT", Doomed = "Doomed", TH = "TH",
-  TP = "Tp_Default", TP_MNK = "Tp_Default", TP_Hybrid = "Tp_Hybrid", TP_Acc = "Tp_Acc",
-  TP_Pet = "PetTP", TP_Pet_DT = "PetDT", TP_Pet_Acc = "PetAcc", Automaton = "PetTP",
-  Idle_Pet = "PetIdle", Idle_Avatar = "PetIdle", Idle_Luopan = "PetIdle",
-  WS = "Ws_Default", RangedWS = "Ws_Default",
-  Precast = "Precast", Precast_Cure = "Cure_Precast", Precast_Song = "Song_Precast",
-  Cure = "Cure", Healing = "Cure", NaSpells = "Cursna",
-  Nuke = "Nuke", Nuke_MB = "Burst", MagicAcc = "Macc",
-  Enfeebling_MND = "Enfeebling", Enfeebling_INT = "Enfeebling",
-  Enhancing = "Enhancing", Stoneskin = "Stoneskin", Phalanx = "Phalanx", RegenSpell = "Regen", RefreshSpell = "Refresh",
-  Dark = "Dark", DrainAspir = "Drain", Divine = "Divine",
-  Ninjutsu_Nuke = "Ninjutsu", Ninjutsu_Debuff = "NinjutsuDebuff", Utsusemi = "Utsusemi",
-  Songs_Buff = "Song", Songs_Debuff = "SongDebuff",
-  BluPhys = "BluePhysical", BluMag = "BlueMagical", BluDebuff = "BlueDebuff", BluBuff = "BlueBuff", BluHeal = "WhiteWind",
-  Geo = "Geomancy",
-  Preshot = "Preshot", Midshot = "Midshot", QuickDraw = "QuickDraw", Roll = "PhantomRoll",
-  Enmity = "Enmity", Charm = "Charm", Reward = "Reward", BP_Delay = "BPDelay", BloodPact = "BPWard", Breath = "Breath",
-}
-
-local STANDING = { Idle = true, Idle_Regen = true, Idle_Refresh = true, Resting = true, Movement = true }
-
--- The game, through one table (tests replace it).
 M.H = {
   zone = function()
     local ok, info = pcall(function() return game.info() end)
     return ok and info and info.zone or 0
   end,
-  ability = function(id) return res.ability(id) end,
+  job_points = function(job_id)
+    local ok, t = pcall(function() return game.job_points() end)
+    local j = ok and t and t[job_id]
+    return j and j.spent or 0
+  end,
 }
 
--- What the engine needs to know of you: ctx from the builder (job, job_id, sub_id, race, level, owned) and the party.
-local function who_of(ctx)
-  local p = ctx.player or {}
-  return { Job = ctx.job_id, JobName = ctx.job, Level = ctx.level, Sub = ctx.sub_id or 0, SubLevel = p.sub_level or 0,
-    Race = ctx.race or 0, JobPoints = 0, Zone = M.H.zone() }
+-- The plan for the player right now: list of { Name, Mode, Slots, ... }, cached until the signature changes.
+local cache = { sig = nil, list = nil, by = nil }
+
+local function equipment()
+  local worn = core.worn()
+  local out = {}
+  for slot, name in pairs({ [0] = "Main", [1] = "Sub", [2] = "Range", [3] = "Ammo" }) do
+    local w = worn[slot]
+    if w and w.id then out[name] = { Id = w.id } end
+  end
+  return out
 end
 
--- The mode of a set, or nil when the engine has none for it. ctx.dual: a weapon in the off hand.
-function M.mode(name, ctx)
-  local job = vplan.Job(ctx.job)
-  local tweaks = vplan.BandTweaks(job, ctx.level or 99)
-  local band = vplan.Band(job, ctx.level or 99)
-  local mode
-  local ws_id = name:match("^WS:(%d+)$")
-  if ws_id then
-    local ws = vdata.Weaponskills()[tonumber(ws_id)]
-    if not ws or next(ws.wsc) == nil then return nil end
-    local a = M.H.ability(tonumber(ws_id))
-    local display = a and a.name or ws.key
-    mode = vplan.WsMode(ws, display)
-    -- what the wiki weaponskill pages add, then the job file's Weaponskills and the band's, stat by stat
-    local wiki = require("src.vg.wsguide")[display]
-    for k, v in pairs(wiki or {}) do mode.Stats[k] = v end
-    for _, from in ipairs({ job.Weaponskills, band and band.Weaponskills }) do
-      local extra = from and from[display]
-      if extra then
-        for _, part in ipairs({ "Stats", "Caps" }) do
-          if extra[part] then
-            mode[part] = mode[part] or {}
-            for k, v in pairs(extra[part]) do mode[part][k] = v end
-          end
-        end
-      end
-    end
-    mode.Drawn = true
-  else
-    local base = M.MODE[name]
-    if not base then return nil end
-    mode = vplan.Mode(base, tweaks)
-    if not mode.Stats then return nil end
-    mode.Name = name
-    -- an enfeeble reads one of MND and INT against the target's: the set for the other stat's casters
-    if name == "Enfeebling_MND" or name == "Enfeebling_INT" then
-      local stat, other = "MND", "INT"
-      if name == "Enfeebling_INT" then stat, other = other, stat end
-      mode.Stats[stat] = math.max(mode.Stats[stat] or 0, mode.Stats[other] or 0, 0.6) + 0.4
-      mode.Stats[other] = nil
-    end
-    if base:sub(1, 3) == "Tp_" then
-      if ctx.dual then
-        mode.Stats.DUAL_WIELD = mode.Stats.DUAL_WIELD or 1.2
-        mode.Caps = mode.Caps or {}
-        mode.Caps.DUAL_WIELD = mode.Caps.DUAL_WIELD or 35
-      else
-        mode.Stats.DUAL_WIELD = nil   -- under a shield or a two-hander it is worth nothing
-      end
-    end
-    if base:sub(1, 3) == "Tp_" then mode.Drawn = true elseif STANDING[name] then mode.Drawn = false end
-  end
-  vplan.LowerCaps(mode, vplan.Bonus(who_of(ctx)))
-  return mode
+local function who_of(ctx)
+  local p = ctx.player or {}
+  return {
+    Job = ctx.job_id, JobName = ctx.job, Level = ctx.level,
+    Sub = ctx.sub_id or 0, SubName = (ctx.sub_id and ctx.sub_id > 0 and (res.job(ctx.sub_id) or "")) or "",
+    SubLevel = p.sub_level or 0, Race = ctx.race or 0,
+    JobPoints = M.H.job_points(ctx.job_id), Zone = M.H.zone(),
+  }
+end
+
+local function signature(ctx)
+  local eq = equipment()
+  local locks = {}
+  for slot in pairs(ctx.locked or {}) do locks[#locks + 1] = slot end
+  table.sort(locks)
+  return table.concat({
+    ctx.job or "", ctx.job_id or 0, ctx.level or 0, ctx.sub_id or 0, (ctx.player and ctx.player.sub_level) or 0,
+    eq.Main and eq.Main.Id or 0, eq.Sub and eq.Sub.Id or 0, eq.Range and eq.Range.Id or 0,
+    table.concat(locks, ","),
+  }, "|")
+end
+
+-- The sets plan.For builds for you right now, and a lookup by name.
+function M.plan(ctx)
+  local sig = signature(ctx)
+  if cache.sig == sig and cache.list then return cache.list, cache.by end
+  local locked = {}
+  for slot in pairs(ctx.locked or {}) do locked[slot + 1] = true end   -- plan.For uses 1..16
+  local list = vplan.For(who_of(ctx), equipment(), { Locked = locked })
+  local by = {}
+  for _, o in ipairs(list) do by[o.Name] = o end
+  cache = { sig = sig, list = list, by = by }
+  return list, by
+end
+
+function M.forget()
+  cache = { sig = nil, list = nil, by = nil }
+end
+
+-- The names of the sets to build, in plan.For's order.
+function M.names(ctx)
+  local list = M.plan(ctx)
+  local out = {}
+  for _, o in ipairs(list) do out[#out + 1] = o.Name end
+  return out
 end
 
 function M.has(name, ctx)
-  if name:match("^WS:") then
-    local ws = vdata.Weaponskills()[tonumber(name:match("%d+"))]
-    return ws ~= nil and next(ws.wsc) ~= nil
-  end
-  return M.MODE[name] ~= nil
+  local _, by = M.plan(ctx)
+  return by[name] ~= nil
 end
 
--- Builds one set from the pieces in ctx.owned. Returns the builder's result shape: {slots = {[0..15] = {pick = ...}},
--- score}, or nil when the engine has no mode for the set.
+-- Builds one set. Returns the builder's result shape: {slots, score, engine, mode}, or nil when plan.For has no set
+-- by that name (or the set is empty-by-design).
 function M.build(name, ctx)
-  local mode = M.mode(name, ctx)
-  if not mode then return nil end
-  local pick = require("src.build.pick")
-  local who = who_of(ctx)
+  local _, by = M.plan(ctx)
+  local entry = by[name]
+  if not entry or not entry.Mode or entry.Empty then return nil end
+  if not entry.Mode.Stats or next(entry.Mode.Stats) == nil then
+    -- A scored set needs weights; an empty Stats table means nothing to dress for.
+    if not entry.Mode.Pet then return { slots = {}, score = 0, engine = true, mode = entry.Mode } end
+  end
   local pieces = {}
   for _, o in ipairs(ctx.owned) do
     local piece = pieces_of.of(o)
     if piece then pieces[#pieces + 1] = piece end
   end
-  -- Never the weapons and ammo (slots 1 to 4), nor a slot the player locked.
-  local slots = {}
-  for slot = 5, 16 do
-    if not (ctx.locked and ctx.locked[slot - 1]) then slots[#slots + 1] = slot end
-  end
-  local set, _, total = score.Build(score.Compile(mode), pieces, who, slots, { 0 }, true)
-  local out = { slots = {}, score = total, engine = true, mode = mode }
+  local set, _, total = score.Build(score.Compile(entry.Mode), pieces, who_of(ctx), entry.Slots, { 0 }, true)
+  local out = { slots = {}, score = total, engine = true, mode = entry.Mode }
   for slot = 0, 15 do
     local piece = set[slot + 1]
     if piece then
@@ -148,17 +117,17 @@ function M.build(name, ctx)
   return out
 end
 
--- What one piece is worth in a slot of a set (0 to 15) by the engine's weights: its own stats, before caps and set
--- bonuses. nil when the engine has no mode for the set.
+-- What one piece is worth in a slot of a set (0 to 15) by the engine's weights.
 local rated = {}
 function M.rate(name, ctx, o, slot)
-  local key = table.concat({ name, ctx.job or "", ctx.level or 0, ctx.sub_id or 0, ctx.dual and 1 or 0 }, "|")
+  local key = table.concat({ name, signature(ctx) }, "|")
   local compiled = rated[key]
   if compiled == nil then
-    local mode = M.mode(name, ctx)
-    compiled = mode and score.Compile(mode) or false
+    local _, by = M.plan(ctx)
+    local entry = by[name]
+    compiled = entry and entry.Mode and score.Compile(entry.Mode) or false
     if compiled then compiled.Who = who_of(ctx) end
-    rated = { [key] = compiled }   -- one set at a time: the cache is dropped when another is asked for
+    rated = { [key] = compiled }
   end
   if not compiled then return nil end
   local piece = pieces_of.of(o)
@@ -166,6 +135,19 @@ function M.rate(name, ctx, o, slot)
   local rate = 0
   for k, v in pairs(score.Vector(piece, slot + 1, compiled, { 0 })) do rate = rate + (compiled.w[k] or 0) * v end
   return rate
+end
+
+-- A catalogue-shaped def for the window (label / when), from a plan entry.
+function M.def(name, ctx)
+  local _, by = M.plan(ctx)
+  local entry = by[name]
+  if not entry then return nil end
+  local when = entry.Ability and ("ability: " .. entry.Ability)
+    or entry.Weaponskill and ("weapon skill: " .. entry.Weaponskill)
+    or entry.Spell and ("spell: " .. entry.Spell)
+    or entry.Empty and "yours to fill"
+    or "vanagear's " .. name
+  return { label = name, when = when, weights = {}, engine = true }
 end
 
 return M

@@ -143,8 +143,13 @@ function M.weapon_types()
   return out
 end
 
--- A set by name: a catalogue set, or "WS:<id>" from the weapon skill's facts.
+-- A set by name: vanagear's plan entry when the engine is on, else a catalogue set / "WS:<id>".
+local ctx
 function M.set_def(name)
+  if M.H.engine() and state.job then
+    local d = engine.def(name, ctx())
+    if d then return d end
+  end
   local id = name:match("^WS:(%d+)$")
   if id then
     id = tonumber(id)
@@ -156,36 +161,32 @@ function M.set_def(name)
   return sets.SETS[name]
 end
 
--- The job's sets in the window's order: the catalogue's, the ones a /vg toggle brings in, then a set per weapon skill
--- of the weapon types we hold.
+-- The job's sets in the window's order: vanagear's plan.For for the job, subjob and weapons you have right now.
 function M.job_sets(job)
-  local out, seen = {}, {}
-  for _, s in ipairs(sets.JOBS[job] or {}) do
-    out[#out + 1] = s
-    seen[s] = true
-  end
-  local function extra(name)
-    if not seen[name] and sets.SETS[name] then
-      seen[name] = true
-      out[#out + 1] = name
+  if not M.H.engine() then
+    -- The Gearshift catalogue when vanagear's engine is off.
+    local out, seen = {}, {}
+    for _, s in ipairs(sets.JOBS[job] or {}) do out[#out + 1] = s; seen[s] = true end
+    local function extra(name)
+      if not seen[name] and sets.SETS[name] then seen[name] = true; out[#out + 1] = name end
     end
+    if seen.Idle then
+      extra("Idle_Regen") extra("Idle_Refresh")
+      extra("Dt") extra("Doomed") extra("Sleeping") extra("Reraise") extra("Town")
+    end
+    if seen.TP_Pet or seen.Idle_Pet then extra("PetDT") end
+    if seen.TP_Pet then extra("TP_Pet_DT") extra("TP_Pet_Acc") end
+    local modes = M.modes()
+    if modes.th then extra("TH") end
+    if modes.kite or modes.idle == "speed" then extra("Movement") end
+    local types = M.weapon_types()
+    for _, id in ipairs(sets.ws_ids(job, wslist)) do
+      if types[wslist[id].skill] then out[#out + 1] = "WS:" .. id end
+    end
+    return out
   end
-  -- Idle for regen or refresh (/vg idle), a pet's fighting sets (/vg pet), and the Treasure Hunter and Movement
-  -- gear laid over everything else (/vg th, /vg kite).
-  if seen.Idle then
-    extra("Idle_Regen") extra("Idle_Refresh")
-    extra("Dt") extra("Doomed") extra("Sleeping") extra("Reraise") extra("Town")
-  end
-  if seen.TP_Pet or seen.Idle_Pet or seen.Idle_Avatar or seen.Idle_Luopan then extra("PetDT") end
-  if seen.TP_Pet then extra("TP_Pet_DT") extra("TP_Pet_Acc") end
-  local modes = M.modes()
-  if modes.th then extra("TH") end
-  if modes.kite or modes.idle == "speed" then extra("Movement") end
-  local types = M.weapon_types()
-  for _, id in ipairs(sets.ws_ids(job, wslist)) do
-    if types[wslist[id].skill] then out[#out + 1] = "WS:" .. id end
-  end
-  return out
+  if not state.job or state.job ~= job then return {} end
+  return engine.names(ctx())
 end
 
 -- A weapon in the off hand (dual wield is worth something only with one).
@@ -195,7 +196,7 @@ local function dual_wield()
   return rec ~= nil and rec.skill ~= nil and rec.skill >= 1 and rec.skill <= 12
 end
 
-local function ctx()
+ctx = function()
   local p = M.H.player() or {}
   local me = M.H.me() or {}
   local owns = {}
@@ -254,6 +255,7 @@ end
 -- after a loot still has its set); another job's are dropped.
 function M.rebuild()
   state.queue, state.fresh = {}, {}
+  engine.forget()
   if state.built_job ~= state.job then state.built, state.built_job = {}, state.job end
   if not state.job then return end
   for _, s in ipairs(M.job_sets(state.job)) do state.queue[#state.queue + 1] = s end
@@ -370,8 +372,9 @@ end
 
 -- The element rules over a casting set's pieces: the element's staff (affinity; up to level 75, mages), the obi when
 -- the day or the weather is the element.
-local OBI_SETS = { Nuke = true, Nuke_MB = true, Cure = true, DrainAspir = true, Divine = true, Dark = true,
-  Ninjutsu_Nuke = true, BluMag = true, QuickDraw = true, MagicAcc = true, Enfeebling_MND = true,
+local OBI_SETS = { Nuke = true, Nuke_MB = true, NukeACC = true, Burst = true, Cure = true, Drain = true,
+  DrainAspir = true, Divine = true, Dark = true, Ninjutsu = true, Ninjutsu_Nuke = true, BlueMagical = true,
+  BluMag = true, QuickDraw = true, MagicAcc = true, Macc = true, Enfeebling = true, Enfeebling_MND = true,
   Enfeebling_INT = true }
 -- game.time().weekday (0 Firesday .. 7 Darksday) -> the day's element.
 local DAY_ELEMENT = { [0] = "fire", "earth", "water", "wind", "ice", "thunder", "light", "dark" }
@@ -388,8 +391,15 @@ local function element_gear(pieces, set_name, el)
   local day_el = DAY_ELEMENT[t.weekday or -1]
   local w_el = weather and res and res.weather_element and sets.ELEMENT_ID[res.weather_element(weather) or -1]
   if day_el == el or w_el == el then
-    local obi = owned_named({ sets.OBIS[el], sets.OBI_ALL })
-    if obi then pieces[10] = obi end
+    if M.H.engine() then
+      local named = "Obi_" .. el:sub(1, 1):upper() .. el:sub(2)
+      local r = state.built[named] or state.built.Obi
+      local waist = r and r.slots[10] and r.slots[10].pick
+      if waist then pieces[10] = { name = pick.item(waist.id).name } end
+    else
+      local obi = owned_named({ sets.OBIS[el], sets.OBI_ALL })
+      if obi then pieces[10] = obi end
+    end
   end
 end
 
@@ -470,7 +480,7 @@ local function auto_idle(p)
   return auto.regen and "regen" or (auto.refresh and "refresh") or nil
 end
 
--- The set our status and toggles want between actions.
+-- The set our status and toggles want between actions (vanagear template names when the engine is on).
 function M.default_set()
   local p = M.H.player() or {}
   local job_sets = {}
@@ -481,7 +491,18 @@ function M.default_set()
       if job_sets[s] then return s end
     end
   end
+  local eng = M.H.engine()
   if p.status == 1 then
+    -- Engaged: Tp_<mode> (Default / Acc / Hybrid), or a pet fighting set.
+    local tp = modes.hybrid and "Hybrid" or (modes.acc and "Acc") or "Default"
+    if eng then
+      if M.H.pet() then
+        if modes.pet == "dt" then return first("PetDT", "PetTP", "Tp_" .. tp, "Tp_Default") end
+        if modes.pet == "acc" then return first("PetAcc", "PetTP", "Tp_" .. tp, "Tp_Default") end
+        return first("PetTP", "Tp_" .. tp, "Tp_Default")
+      end
+      return first("Tp_" .. tp, "Tp_Default")
+    end
     if modes.hybrid then return first("TP_Hybrid", "TP_MNK", "TP") end
     if modes.acc then return first("TP_Acc", "TP_MNK", "TP") end
     if M.H.pet() then
@@ -492,8 +513,10 @@ function M.default_set()
     return first("TP_MNK", "TP")
   end
   if p.status == 33 then return first("Resting", "Idle") end
-  if M.H.pet() then return first("Idle_Avatar", "Idle_Luopan", "Idle_Pet", "Idle") end
-  -- Standing still: /vg idle regen | refresh | speed (speed: the Movement gear over Idle), auto by HP and MP.
+  if M.H.pet() then
+    if eng then return first("PetIdle", "Idle") end
+    return first("Idle_Avatar", "Idle_Luopan", "Idle_Pet", "Idle")
+  end
   local idle = modes.idle or "auto"
   if idle == "auto" then idle = auto_idle(p) end
   if idle == "regen" then return first("Idle_Regen", "Idle") end
@@ -514,14 +537,51 @@ function M.loaded()
 end
 
 -- The sets an action wears: {precast, midcast} names, and its element / weapon skill.
+-- With the engine on, names are vanagear's (Cure, Nuke, Burst, Ws_Default, SavageBlade...); otherwise the catalogue's.
 function M.route(act)
   local job_sets = {}
   for _, s in ipairs(M.job_sets(state.job)) do job_sets[s] = true end
   local modes = M.modes()
+  local eng = M.H.engine()
+  local function have(name) return name and job_sets[name] and name or nil end
+
   if act.category == 3 then
     local sp = M.H.spell(act.param)
     if not sp then return nil end
     sp.id = sp.id or act.param
+    if eng then
+      local vplan = require("src.vg.plan")
+      local skill_name = ({
+        [32] = "Divine Magic", [33] = "Healing Magic", [34] = "Enhancing Magic", [35] = "Enfeebling Magic",
+        [36] = "Elemental Magic", [37] = "Dark Magic", [39] = "Ninjutsu", [40] = "Singing", [41] = "Singing",
+        [42] = "Singing", [43] = "Blue Magic", [44] = "Geomancy",
+      })[sp.skill]
+      local own = vplan.WsSetName(sp.name)
+      local kind = skill_name and vplan.SpellMode(skill_name, sp.name)
+      local mid = have(own) or have(kind)
+      -- family sets the templates wear (Regen II -> Regen, Aspir -> Drain)
+      if not have(own) then
+        local n = sp.name or ""
+        if n:find("^Phalanx") then mid = have("Phalanx") or mid end
+        if n:find("^Stoneskin") then mid = have("Stoneskin") or mid end
+        if n:find("^Regen") then mid = have("Regen") or mid end
+        if n:find("^Refresh") then mid = have("Refresh") or mid end
+        if n:find("^Drain") or n:find("^Aspir") then mid = have("Drain") or mid end
+        if n:find("helix") then mid = have("Helix") or mid end
+        if n:find("na$") or n == "Cursna" then mid = have("Cursna") or mid end
+      end
+      local n = sp.name or ""
+      local pre = have("Precast")
+      if n:find("^Cur") then pre = have("Cure_Precast") or pre end
+      if skill_name == "Singing" then pre = have("Song_Precast") or pre end
+      if (skill_name == "Elemental Magic" or (skill_name == "Ninjutsu" and (sp.name or ""):find("^%a+ton:"))) then
+        if modes.macc then mid = have("NukeACC") or mid end
+        if modes.mb then mid = have("Burst") or mid end
+      elseif skill_name == "Enfeebling Magic" and modes.macc then
+        mid = have("Macc") or mid
+      end
+      return { pre, mid, element = sets.ELEMENT_ID[sp.element or -1], cast = sp.cast_time }
+    end
     local r = sets.spell_sets(sp, blu)
     if r[2] == "Nuke" and modes.mb and job_sets.Nuke_MB then r[2] = "Nuke_MB" end
     if r[2] == "Nuke" and modes.macc and job_sets.MagicAcc then r[2] = "MagicAcc" end
@@ -529,7 +589,13 @@ function M.route(act)
       cast = sp.cast_time }
   elseif act.category == 7 then
     local id = act.param
+    local a = M.H.ability(id)
     local ws = wslist[id]
+    if eng then
+      local own = a and require("src.vg.plan").WsSetName(a.name)
+      if have(own) then return { nil, own, ws = ws } end
+      return { nil, have("Ws_Default"), ws = ws }
+    end
     local own = "WS:" .. id
     if job_sets[own] then return { nil, own, ws = ws } end
     if ws and ws.kind == "ranged" and job_sets.RangedWS then return { nil, "RangedWS", ws = ws } end
@@ -537,12 +603,19 @@ function M.route(act)
   elseif act.category == 9 then
     local a = M.H.ability(core.res_id(act))
     if not a then return nil end
+    if eng then
+      local own = require("src.vg.plan").WsSetName(a.name)
+      return { nil, have(own) or have("Enmity") }
+    end
     local r = sets.ability_sets(a.name, job_sets)
     return { nil, r[1] }
   elseif act.category == 16 then
-    return { job_sets.Preshot and "Preshot" or nil, job_sets.Midshot and "Midshot" or nil }
+    local mid = have("Midshot")
+    if eng and modes.acc then mid = have("Midshot_Acc") or mid end
+    return { have("Preshot"), mid }
   end
 end
+
 
 function M.action(act)
   if not M.loaded() or act.kind == "item" then return end
@@ -674,12 +747,23 @@ function M.lay_status_sets(pieces, p, modes)
     local zone = M.H.zone_name()
     if zone and TOWNS[zone] then lay(pieces, "Town") end
   end
-  if modes.pdt and modes.mdt then
-    lay(pieces, "Dt")
-  elseif modes.pdt then
-    lay(pieces, "PDT")
-  elseif modes.mdt then
-    lay(pieces, "MDT")
+  if M.H.engine() then
+    -- vanagear: /vg dt all|pdt|mdt
+    if modes.pdt and not modes.mdt then
+      lay(pieces, "Dt_Physical")
+    elseif modes.mdt and not modes.pdt then
+      lay(pieces, "Dt_Magic")
+    elseif modes.pdt or modes.mdt then
+      lay(pieces, "Dt")
+    end
+  else
+    if modes.pdt and modes.mdt then
+      lay(pieces, "Dt")
+    elseif modes.pdt then
+      lay(pieces, "PDT")
+    elseif modes.mdt then
+      lay(pieces, "MDT")
+    end
   end
   if (p.hpp or 100) < 40 then lay(pieces, "Dt") end
   local pet_hpp = M.H.pet_hpp()
