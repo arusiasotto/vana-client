@@ -25,7 +25,6 @@ local SKILL_NAME = { [1] = "hand_to_hand", [2] = "dagger", [3] = "sword", [4] = 
   [6] = "great_axe", [7] = "scythe", [8] = "polearm", [9] = "katana", [10] = "great_katana", [11] = "club",
   [12] = "staff", [25] = "archery", [26] = "marksmanship", [27] = "throwing" }
 
--- The game, through one table (tests replace it).
 M.H = {
   item = function(id) return res.item(id) end,
 }
@@ -46,7 +45,6 @@ function M.item(id)
   return r or nil
 end
 
--- ---- Item stats, read once ----
 
 local cache = {}
 -- An item's stats: by id, or by id and augment lines for an owned piece with them. The server's figures where its
@@ -102,7 +100,6 @@ function M.share(s, ref, set)
   return aligned / total, aligned
 end
 
--- ---- What may go in a slot ----
 
 -- Job and race may wear it, in this slot, at this level (nil: any level). The Vanadreams server lets the support job's
 -- gear be worn too (sub_id), at the main job's level.
@@ -133,7 +130,6 @@ local function sub_ok(rec, main_rec)
   return not grip
 end
 
--- ---- Picking ----
 
 -- Totals over the picked pieces (per stat), for the caps.
 local function totals(picks, skip)

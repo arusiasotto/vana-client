@@ -1,16 +1,40 @@
--- The trust window (/vg trusts window): a trust of the party at a time, who it is and what the server says it uses,
--- its sets with the piece in every slot (pick one yourself, or let the builder), and a row per spell, ability and
--- weapon skill it uses, switched off or on by a click (!trustuse).
+-- Trust gear tab (//vg page 2).
 
 local run = require("src.build.run")
 local trusts = require("src.trusts")
 local pick = require("src.build.pick")
+local grid = require("src.equip_grid")
 
 local M = {}
-local WIN = "gstrusts"
-local view = { trust = 1, set = 1, slot = nil }
+local PAGE = 2
+local view = { trust = 1, set = 1, slot = nil, uses_top = 0 }
 
 local GOOD, FAIR = { 240, 170, 60, 255 }, { 230, 220, 110, 255 }
+local OFF = { 150, 150, 150, 255 }
+local MUTED = { 140, 140, 140, 255 }
+local DIVIDER = { 100, 95, 85, 140 }
+
+local ROW_H = 17
+local USES_HEAD = 36
+
+local use_hits = {}
+
+local function page(e)
+  e.page = PAGE
+  return e
+end
+
+local function win_mod()
+  return require("src.build.window")
+end
+
+local function uses_x0()
+  return grid.SIZE + win_mod().USES_GAP
+end
+
+local function uses_visible_rows()
+  return math.max(1, math.floor((grid.SIZE - USES_HEAD - 10) / ROW_H))
+end
 
 local function current()
   local list = trusts.called()
@@ -26,23 +50,97 @@ local function set_entry(t)
   return plan[view.set], plan
 end
 
-local function slot_rows(t, entry)
-  local final = trusts.final_of_set(t, entry.key)
-  local rows = {}
-  for slot = 0, 15 do
-    local mine = trusts.own_pick(t, entry.name, pick.SLOT_NAMES[slot])
-    local note = mine == "remove" and "yours: empty" or (mine and "yours" or "")
-    rows[#rows + 1] = { run.SLOT_LABEL[slot], final[slot] or "-", note }
-  end
-  return rows
+local function id_of_name(name)
+  if not name or name == "-" then return nil end
+  local ids = run.state and run.state.names and run.state.names[name]
+  return ids and ids[1]
 end
 
-local function use_rows(t)
-  local rows = {}
-  for _, u in ipairs(trusts.uses_of(t)) do
-    rows[#rows + 1] = { trusts.pretty(u.name), u.kind, u.off and "Off" or "On" }
+local function trust_grid(t, entry)
+  local final = trusts.final_of_set(t, entry.key)
+  local ids, labels, tips, hand = {}, {}, {}, {}
+  for slot = 0, 15 do
+    local piece = final[slot]
+    local mine = trusts.own_pick(t, entry.name, pick.SLOT_NAMES[slot])
+    local title = run.SLOT_LABEL[slot]
+    if piece and piece ~= "-" then
+      ids[slot] = id_of_name(piece)
+      labels[slot] = piece
+      local note = mine == "remove" and "Slot left empty by you." or (mine and "Picked by you." or "")
+      tips[slot] = { title = title, text = piece .. (note ~= "" and (" — " .. note) or "") }
+      if mine then hand[slot] = true end
+    else
+      tips[slot] = { title = title, text = mine == "remove" and "Empty by your choice." or "Empty" }
+    end
   end
-  return rows
+  return grid.draw({ ids = ids, labels = labels, tips = tips, hand = hand, selected = view.slot }, grid.SIZE)
+end
+
+local function draw_uses_panel(t, out)
+  local x0, panel_w = uses_x0(), win_mod().USES_W
+  local uses = trusts.uses_of(t)
+  local vis = uses_visible_rows()
+  local max_top = math.max(0, #uses - vis)
+  view.uses_top = math.max(0, math.min(view.uses_top or 0, max_top))
+
+  use_hits = {}
+
+  out[#out + 1] = { type = "line", x1 = x0 - 6, y1 = 4, x2 = x0 - 6, y2 = grid.SIZE - 4, width = 1, colour = DIVIDER }
+  out[#out + 1] = { type = "text", x = x0, y = 4, text = "Uses", size = 1, colour = { 220, 220, 220, 255 } }
+  out[#out + 1] = { type = "text", x = x0, y = 18, text = "Click to toggle (grey = off)", size = 1, colour = MUTED }
+
+  if #uses == 0 then
+    out[#out + 1] = { type = "text", x = x0, y = USES_HEAD, text = "Waiting for the server…", size = 1, colour = MUTED }
+    return
+  end
+
+  if view.uses_top > 0 then
+    local uy = USES_HEAD - 14
+    out[#out + 1] = { type = "tip", x = x0 + panel_w - 26, y = uy, w = 24, h = 14, title = "", text = "Scroll up" }
+    out[#out + 1] = { type = "text", x = x0 + panel_w - 20, y = uy + 1, text = "^", size = 1, colour = { 200, 200, 200, 255 } }
+    use_hits[#use_hits + 1] = { scroll = -1, x = x0 + panel_w - 28, y = uy, w = 28, h = 14 }
+  end
+
+  for row = 1, vis do
+    local idx = view.uses_top + row
+    local u = uses[idx]
+    if not u then break end
+    local y = USES_HEAD + (row - 1) * ROW_H
+    local ink = u.off and OFF or { 220, 220, 220, 255 }
+    local label = trusts.pretty(u.name)
+    local tip = (u.off and "Off — click to turn on." or "On — click to turn off.") .. "  " .. (u.kind or "")
+    out[#out + 1] = { type = "tip", x = x0, y = y, w = panel_w, h = ROW_H - 2, title = label, text = tip }
+    out[#out + 1] = { type = "text", x = x0 + 2, y = y + 2, text = label, size = 1, colour = ink }
+    if u.kind and u.kind ~= "" then
+      out[#out + 1] = { type = "text", x = x0 + panel_w - 6, y = y + 2, text = u.kind, size = 1, align = "right",
+        colour = MUTED }
+    end
+    use_hits[#use_hits + 1] = { index = idx, x = x0, y = y, w = panel_w, h = ROW_H - 2 }
+  end
+
+  if view.uses_top < max_top then
+    local by = USES_HEAD + vis * ROW_H
+    out[#out + 1] = { type = "tip", x = x0 + panel_w - 26, y = by, w = 24, h = 14, title = "", text = "Scroll down" }
+    out[#out + 1] = { type = "text", x = x0 + panel_w - 20, y = by + 1, text = "v", size = 1, colour = { 200, 200, 200, 255 } }
+    use_hits[#use_hits + 1] = { scroll = 1, x = x0 + panel_w - 28, y = by, w = 28, h = 14 }
+  end
+end
+
+local function trust_body(t, entry)
+  if not entry then return {} end
+  local out = trust_grid(t, entry)
+  draw_uses_panel(t, out)
+  return out
+end
+
+local function slot_detail(t, entry)
+  if view.slot == nil then return "Click a slot in the grid to pick a piece for this trust's set." end
+  if not entry then return "" end
+  local final = trusts.final_of_set(t, entry.key)
+  local piece = final[view.slot] or "-"
+  local mine = trusts.own_pick(t, entry.name, pick.SLOT_NAMES[view.slot])
+  local note = mine == "remove" and " (empty by your choice)" or (mine and " (picked by you)" or "")
+  return run.SLOT_LABEL[view.slot] .. ": " .. piece .. note
 end
 
 local function describe(t)
@@ -55,53 +153,43 @@ local function describe(t)
     t.sub ~= "" and t.sub or "no support job", n), nil
 end
 
-function M.draw()
+local function hit_uses(x, y)
+  for _, h in ipairs(use_hits) do
+    if x >= h.x and x < h.x + h.w and y >= h.y and y < h.y + h.h then return h end
+  end
+end
+
+function M.elements()
   local t, list = current()
+  if #list == 0 then
+    return { page({ type = "text", id = "t_none", text = "No trusts in the party. Call one and its sets appear here." }) }
+  end
   local names = {}
   for i, u in ipairs(list) do names[i] = string.format("%s (%s%d)", u.name, u.job, u.level) end
-  if not t then
-    ui.window(WIN, {
-      title = "Trust gear", width = 640,
-      help = "Gear for the trusts you call: the sets the server wears for them, built from the pieces in your bags.",
-      elements = {
-        { type = "text", text = "No trusts in the party. Call one and its sets appear here." },
-        { type = "buttons", id = "actions", items = { "Close" } },
-      },
-    })
-    return
-  end
   local entry, plan = set_entry(t)
   local labels = {}
   for i, e in ipairs(plan) do labels[i] = e.name end
   local info_text, info_colour = describe(t)
   local b_queue = trusts.queued()
-  ui.window(WIN, {
-    title = "Trust gear", width = 640,
-    help = "Gear for the trusts you call: the sets the server wears for them, built from the pieces in your bags.",
-    elements = {
-      { type = "dropdown", id = "trust", label = "Trust", items = names, at = view.trust },
-      { type = "text", id = "info", text = info_text, colour = info_colour or false },
-      { type = "dropdown", id = "set", label = "Set", items = #labels > 0 and labels or { "-" }, at = view.set,
-        tip = "A set goes on over Engaged while its action goes off: a spell's kind, a weapon skill or a job ability." },
-      { type = "text", id = "when", text = entry and ("Worn for " .. entry.when .. ".") or "Waiting for the server's answer.",
-        dim = true },
-      { type = "list", id = "slots", rows = entry and slot_rows(t, entry) or {}, height = 16,
-        at = view.slot and (view.slot + 1) or nil,
-        columns = { { title = "Slot", width = 110 }, { title = "Piece", width = 300 }, { title = "", width = 160 } },
-        tip = "Pick a slot to choose its piece yourself or give it back to the builder." },
-      { type = "text", id = "uses_head", text = "Uses (click one to switch it off or on for this trust)", dim = true },
-      { type = "list", id = "uses", rows = use_rows(t), height = 8,
-        columns = { { title = "Action", width = 300 }, { title = "Kind", width = 160 },
-          { title = "State", width = 80, align = "right" } } },
-      { type = "text", id = "status", text = b_queue > 0 and (b_queue .. " line" .. (b_queue == 1 and "" or "s")
-        .. " waiting to go to the server.") or "Everything has been sent.", colour = b_queue > 0 and FAIR or GOOD },
-      { type = "buttons", id = "actions", items = { "Send all again", "Rebuild", "Reset set", "Close" } },
-    },
-  })
+  local body_w = win_mod().trust_canvas_w()
+  return {
+    page({ type = "dropdown", id = "t_trust", label = "Trust", items = names, at = view.trust }),
+    page({ type = "text", id = "t_info", text = info_text, colour = info_colour or false }),
+    page({ type = "dropdown", id = "t_set", label = "Set", items = #labels > 0 and labels or { "-" }, at = view.set,
+      tip = "A set goes on over Engaged while its action goes off: a spell's kind, a weapon skill or a job ability." }),
+    page({ type = "text", id = "t_when", text = entry and ("Worn for " .. entry.when .. ".") or
+      "Waiting for the server's answer.", dim = true }),
+    page({ type = "canvas", id = "t_gear", w = body_w, h = grid.SIZE,
+      draw = entry and trust_body(t, entry) or {},
+      tip = "Equipment grid on the left; Uses on the right. Click a slot or an action." }),
+    page({ type = "text", id = "t_slot_detail", text = entry and slot_detail(t, entry) or "", dim = true }),
+    page({ type = "text", id = "t_status", text = b_queue > 0 and (b_queue .. " line" .. (b_queue == 1 and "" or "s")
+      .. " waiting to go to the server.") or "Everything has been sent.", colour = b_queue > 0 and FAIR or GOOD }),
+    page({ type = "buttons", id = "t_actions", items = { "Send all again", "Rebuild trusts", "Reset set" } }),
+  }
 end
 
--- The pieces for a slot, as a menu: automatic, empty, then what we carry that the trust may wear.
-local function choose_slot(slot)
+local function choose_slot(slot, redraw)
   local t = current()
   local entry = t and set_entry(t)
   if not entry then return end
@@ -118,56 +206,70 @@ local function choose_slot(slot)
     else
       trusts.set_pick(t, entry.name, slot_name, cands[i - 2].name)
     end
-    M.draw()
+    redraw()
   end)
+end
+
+function M.on_event(e, redraw)
+  if e.kind == "set" and e.id == "t_trust" then
+    view.trust, view.set, view.slot, view.uses_top = e.index, 1, nil, 0
+    redraw()
+  elseif e.kind == "set" and e.id == "t_set" then
+    view.set, view.slot = e.index, nil
+    redraw()
+  elseif e.kind == "click" and e.id == "t_gear" and e.button == "left" then
+    local x0 = uses_x0()
+    if e.x >= x0 - 8 then
+      local h = hit_uses(e.x, e.y)
+      if h and h.scroll then
+        view.uses_top = math.max(0, (view.uses_top or 0) + h.scroll)
+        redraw()
+      elseif h and h.index then
+        local t = current()
+        local u = t and trusts.uses_of(t)[h.index]
+        if u then trusts.set_off(t, u.name, not u.off) end
+        redraw()
+      end
+    else
+      local slot = grid.hit(e.x, e.y)
+      if slot then
+        view.slot = slot
+        redraw()
+        choose_slot(slot, redraw)
+      end
+    end
+  elseif e.kind == "press" and e.id == "t_actions" then
+    local t = current()
+    local entry = t and set_entry(t)
+    if e.index == 1 then
+      trusts.send_all()
+      redraw()
+    elseif e.index == 2 then
+      trusts.rebuild()
+      redraw()
+    elseif e.index == 3 and entry then
+      trusts.reset_set(t, entry.name)
+      redraw()
+    end
+  end
+end
+
+function M.draw()
+  local w = require("src.build.window")
+  w.open_tab(2)
 end
 
 function M.toggle()
-  if ui.is_open(WIN) then ui.close(WIN) return end
-  M.draw()
-  ui.open(WIN)
+  local w = require("src.build.window")
+  if ui.is_open(w.WIN) then
+    if w.tab() == 2 then ui.close(w.WIN) else w.open_tab(2) end
+  else
+    w.open_tab(2)
+  end
 end
 
 function M.redraw()
-  if ui.is_open(WIN) then M.draw() end
-end
-
-function M.install()
-  ui.on(WIN, function(_, e)
-    if e.kind == "set" and e.id == "trust" then
-      view.trust, view.set, view.slot = e.index, 1, nil
-      M.draw()
-    elseif e.kind == "set" and e.id == "set" then
-      view.set, view.slot = e.index, nil
-      M.draw()
-    elseif e.kind == "select" and e.id == "slots" then
-      view.slot = e.index - 1
-      M.draw()
-      choose_slot(view.slot)
-    elseif e.kind == "select" and e.id == "uses" then
-      local t = current()
-      local u = t and trusts.uses_of(t)[e.index]
-      if u then trusts.set_off(t, u.name, not u.off) end
-      M.draw()
-    elseif e.kind == "press" and e.id == "actions" then
-      local t = current()
-      local entry = t and set_entry(t)
-      if not t then
-        ui.close(WIN)
-      elseif e.index == 1 then
-        trusts.send_all()
-        M.draw()
-      elseif e.index == 2 then
-        trusts.rebuild()
-        M.draw()
-      elseif e.index == 3 then
-        if entry then trusts.reset_set(t, entry.name) end
-        M.draw()
-      else
-        ui.close(WIN)
-      end
-    end
-  end)
+  if ui.is_open(require("src.build.window").WIN) then require("src.build.window").draw() end
 end
 
 return M

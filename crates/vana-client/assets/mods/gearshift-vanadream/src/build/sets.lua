@@ -289,7 +289,6 @@ M.MAGE_JOBS = { WHM = true, BLM = true, SMN = true, SCH = true, GEO = true }
 M.MELEE_SETS = { TP_Pet_DT = true, TP_Pet_Acc = true, TP = true, TP_Hybrid = true, TP_Acc = true, TP_MNK = true, TP_Pet = true, WS = true, RangedWS = true,
   Preshot = true, Midshot = true, Waltz = true, Steps = true, Jump = true, Automaton = true }
 
--- ---- Which set an action wears ----
 
 -- Spell skills (res.spell().skill).
 local SKILL = { divine = 32, healing = 33, enhancing = 34, enfeebling = 35, elemental = 36, dark = 37, summoning = 38,
@@ -354,7 +353,6 @@ function M.ability_sets(name, job_sets)
   return {}
 end
 
--- ---- Element gear (by name: their effect is not a number on the item) ----
 
 M.ELEMENTS = { "fire", "ice", "wind", "earth", "thunder", "water", "light", "dark" }
 -- res element ids (0 Fire .. 7 Dark) -> our names.

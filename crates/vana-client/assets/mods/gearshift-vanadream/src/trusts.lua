@@ -1,22 +1,4 @@
--- Trust gear for the Vanadreams server (port of vanagear's vg/trusts.lua): every trust you have called gets gear sets
--- built from your bags for its job and level, sent to the server as `!trustgear <trust id> <set> <16 item ids>`.
--- The trust never wears anything and your gear never leaves your bags: the server gives the trust the stats of the
--- pieces while you carry them in your inventory or a wardrobe, and swaps its sets as its actions go off.
---
--- The server's side (what vanagear speaks):
---   !trustgear <id> info            -> [VG trust] <id>|<name>|<main job>|<sub job>|<level>
---                                      [VG uses] <id>|<name>:<kind>,<name>:<kind>...
---   !trustuse  <id> info            -> [VG off] <id>|<key>,<key>...       (what the player switched off)
---   !trustgear <id> <set> <ids>     (16 item ids, Main 0 .. Back 15; "clear" deletes the set)
---   !trustuse  <id> off|on <action>
--- The server answers only for your own trusts. Those answer lines are dropped from the chat log, and so is the echo
--- of the lines we send.
---
--- A piece goes to one user: your own sets have first call on what you carry, then your trusts in party order, each
--- built from what is left, so a trust gets the next best piece or leaves the slot empty.
---
--- The sets are built by vanagear's own engine (src/vg: its weights, caps, set bonuses, latents and rounds, over the
--- server's item data and the augments the server applies), not by this mod's builder.
+-- Vanadreams trust gear (!trustgear / !trustuse); sets scored by src/vg, one piece per owner across party.
 
 local pick = require("src.build.pick")
 local run = require("src.build.run")
@@ -28,7 +10,6 @@ local vdata = require("src.vg.data")
 
 local M = {}
 
--- The game, through one table (tests replace it).
 M.H = {
   party = function() return game.party() end,
   player = function() return game.player() end,
@@ -41,10 +22,8 @@ M.H = {
   enabled = function() return settings.get("trustgear") ~= false end,
 }
 
--- Players' server ids are below 0x01000000; trusts are zone entities above it.
 local TRUST_ID = 0x01000000
 
--- ---- Names the server uses ----
 
 -- How the server keeps set names: "Savage Blade" -> "savageblade".
 function M.key(name)
@@ -62,7 +41,6 @@ function M.pretty(key)
   return table.concat(words, " ")
 end
 
--- ---- What a trust's sets are ----
 
 -- What an Engaged set values, by job: one of roles.lua's modes, or "Tank" below.
 M.MODE_FOR = {
@@ -187,7 +165,6 @@ function M.plan(t, uses)
   return list
 end
 
--- ---- The trusts in the party ----
 
 -- { id, index, name, job (abbreviation), job_id, level, sub, sub_id }, in party order.
 function M.called()
@@ -201,7 +178,6 @@ function M.called()
   return out
 end
 
--- ---- What the server said ----
 
 local info = {}            -- trust id -> { name, job, sub, level, uses = {{name, kind}}, off = {key = true} }
 local info_version = 0     -- bumped by every answer: a trust's sets are built again
@@ -260,7 +236,6 @@ function M.filter(text)
   end
 end
 
--- ---- Saved: what the server has, and the picks you made ----
 
 local function saved()
   local st = M.H.storage()
@@ -271,7 +246,6 @@ local function saved()
   return s
 end
 
--- ---- The send queue: one line at a time, so chat is not flooded ----
 
 local queue, send_at = {}, 0
 local function enqueue(key, line)
@@ -281,7 +255,6 @@ local function enqueue(key, line)
   queue[#queue + 1] = { key = key, line = line }
 end
 
--- ---- Pieces: one user each ----
 
 -- The pieces a set group names, by lower-case name: the most copies any one set needs (two of the same ring in one
 -- set need two rings; the same piece in two sets is one, as only one set is worn at a time).
@@ -338,7 +311,6 @@ local function worn_names()
   return { worn = set }
 end
 
--- ---- Building ----
 
 local built = {}           -- trust id -> { sig, plan, final = {key -> {slot -> name}}, ids = {key -> "..."} }
 
@@ -451,7 +423,6 @@ local function refresh(order, n)
   return true
 end
 
--- ---- Sending ----
 
 -- What changed since the server last had this trust's sets (everything with all = true).
 function M.send(t, all)
@@ -479,7 +450,6 @@ function M.send(t, all)
   if changed then s.sent[t.name] = next(now) and now or nil end
 end
 
--- ---- The work: the party, the answers, the builds ----
 
 local party_sig
 
@@ -535,7 +505,6 @@ function M.rebuild()
   checked_at = 0
 end
 
--- ---- Switching a trust's actions off and on ----
 
 function M.set_off(t, action, off)
   local i = info[t.id]
@@ -546,7 +515,6 @@ function M.set_off(t, action, off)
   return true
 end
 
--- ---- For the trust window ----
 
 -- What a trust's sets are now: {name, key, def, when}, in order (empty until it has answered).
 function M.plan_of(t)
@@ -631,7 +599,6 @@ end
 
 function M.queued() return #queue end
 
--- ---- /vg trusts ----
 
 local SLOT_BY_NAME = {}
 for slot, n in pairs(pick.SLOT_NAMES) do SLOT_BY_NAME[n] = slot end
@@ -760,7 +727,6 @@ function M.install()
   end)
 end
 
--- Test and debug access.
 M.info = info
 M.built = built
 M.queue = queue

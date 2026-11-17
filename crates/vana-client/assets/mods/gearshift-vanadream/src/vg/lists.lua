@@ -1,10 +1,4 @@
---[[
-    vanagear name lists (ported) the handlers sort actions by.
-
-    The Blue Magic and blood pact lists are from GetAwayCoxn's Luashitacast-Profiles (common/gcinclude.lua,
-    MIT licence, Copyright (c) 2022 GetAwayCoxn). The magical Ready moves are Ferrin's BST
-    profile's list.
-]]--
+-- Action name lists for specialty routing (BLU, SMN pacts, BST Ready).
 
 local lists = {};
 
@@ -82,13 +76,5 @@ lists.BPBuff = set({
     'Altana\'s Favor', 'Reraise', 'Reraise II', 'Reraise III', 'Raise', 'Raise II', 'Raise III', 'Wind\'s Blessing',
     'Healing Ruby', 'Healing Ruby II', 'Whispering Wind', 'Spring Water',
 });
-
--- Gear used from the slot, by the word a player types: /vg warp, /vg xp. Any other usable piece
--- answers to the first word of its name.
-lists.UseWords = {
-    ['Empress Band'] = 'xp', ['Emperor Band'] = 'xp', ['Chariot Band'] = 'xp', ['Kupofried\'s Ring'] = 'xp',
-    ['Resolution Ring'] = 'xp', ['Capacity Ring'] = 'cp', ['Trizek Ring'] = 'cp', ['Vocation Ring'] = 'vocation',
-    ['Tavnazian Ring'] = 'tav', ['Dim. Ring (Holla)'] = 'holla', ['Dim. Ring (Dem)'] = 'dem', ['Dim. Ring (Mea)'] = 'mea',
-};
 
 return lists;

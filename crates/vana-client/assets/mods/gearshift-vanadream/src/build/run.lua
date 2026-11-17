@@ -1,8 +1,4 @@
--- The set builder's engine: the whole item list indexed by slot (a slice a frame), our gear scanned, each set of the
--- job built for our level (one a frame, again when the job, the level or the bags change), and the sets worn around
--- actions as the other front ends wear theirs: precast, the action, midcast; between actions the set for our status.
--- Saved per character (storage.character.builder): only what the player chose by hand (a slot's piece, held through
--- rebuilds) and the toggles; every other pick follows the level.
+-- Set builder and auto-swap around actions (or lac when loaded).
 
 local core = require("src.core")
 local pick = require("src.build.pick")
@@ -10,10 +6,10 @@ local sets = require("src.build.sets")
 local wslist = require("src.build.ws")
 local blu = require("src.build.blu")
 local engine = require("src.vg.player")
+local vact = require("src.vg.actions")
 
 local M = {}
 
--- The game, through one table (tests replace it).
 M.H = {
   player = function() return game.player() end,
   me = function()
@@ -69,7 +65,6 @@ local state = {
 }
 M.state = state
 
--- ---- The saved choices ----
 
 local function saved()
   local st = M.H.storage()
@@ -91,7 +86,6 @@ function M.modes() return saved().modes end
 function M.active() return saved().active == true end
 function M.set_active(on) saved().active = on or nil end
 
--- ---- The level cap the references are for ----
 
 function M.cap()
   local c = M.H.cap_setting()
@@ -100,7 +94,6 @@ function M.cap()
   return (state.level or 1) > 75 and 99 or 75
 end
 
--- ---- Our gear ----
 
 local ALL_BAGS = { 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }
 local EQUIP = {}
@@ -127,7 +120,6 @@ local function scan()
   return owned, elsewhere, table.concat(sig, ",")
 end
 
--- ---- The sets of a job ----
 
 -- The weapon types we hold weapons of (their weapon skills get sets).
 local SKILL_NAME = { [1] = "hand_to_hand", [2] = "dagger", [3] = "sword", [4] = "great_sword", [5] = "axe",
@@ -226,7 +218,6 @@ function M.build(name)
   return r
 end
 
--- ---- The frame: the index, the scan and the build queue ----
 
 local function index_step()
   if state.ready then return end
@@ -332,7 +323,6 @@ function M.worker()
   end
 end
 
--- ---- Wearing sets ----
 
 -- A set's pieces: the hand picks first, then the build's (a set not built yet is asked for first).
 function M.pieces(name)
@@ -524,11 +514,28 @@ function M.default_set()
   return "Idle"
 end
 
--- ---- Actions ----
 
 local busy_until = 0
 -- An action wore its sets: the status set goes back on once it ends.
 local restore = false
+-- /vg stage: timers for Interim and midcast are cancelled when the cast ends or a new one starts.
+local cast_swaps = { gen = 0 }
+local STAGE_MIN_CAST = 0.35
+local STAGE_INTERIM_DELAY = 0.12
+local STAGE_MIDCAST_LEAD = 0.25
+
+local function bump_cast_swaps()
+  cast_swaps.gen = cast_swaps.gen + 1
+  return cast_swaps.gen
+end
+
+local function cast_swaps_live(gen)
+  return gen == cast_swaps.gen
+end
+
+local function staging_on(modes)
+  return modes.stage ~= false
+end
 
 -- Wearing the sets: the settings, and the player turned it on in the window (nothing moves after an update until
 -- they do).
@@ -580,13 +587,19 @@ function M.route(act)
       elseif skill_name == "Enfeebling Magic" and modes.macc then
         mid = have("Macc") or mid
       end
-      return { pre, mid, element = sets.ELEMENT_ID[sp.element or -1], cast = sp.cast_time }
+      if skill_name == "Summoning Magic" or sp.skill == 38 then
+        pre = vact.summoning_pre(job_sets) or pre
+        mid = vact.summoning_mid(sp.name, mid, job_sets)
+      end
+      local interim = staging_on(modes) and have("Interim") or nil
+      return { pre, mid, element = sets.ELEMENT_ID[sp.element or -1], cast = sp.cast_time, interim = interim }
     end
     local r = sets.spell_sets(sp, blu)
     if r[2] == "Nuke" and modes.mb and job_sets.Nuke_MB then r[2] = "Nuke_MB" end
     if r[2] == "Nuke" and modes.macc and job_sets.MagicAcc then r[2] = "MagicAcc" end
+    local interim = staging_on(modes) and job_sets.Interim and "Interim" or nil
     return { job_sets[r[1]] and r[1] or nil, job_sets[r[2]] and r[2] or nil, element = sets.ELEMENT_ID[sp.element or -1],
-      cast = sp.cast_time }
+      cast = sp.cast_time, interim = interim }
   elseif act.category == 7 then
     local id = act.param
     local a = M.H.ability(id)
@@ -604,8 +617,8 @@ function M.route(act)
     local a = M.H.ability(core.res_id(act))
     if not a then return nil end
     if eng then
-      local own = require("src.vg.plan").WsSetName(a.name)
-      return { nil, have(own) or have("Enmity") }
+      local pre, mid = vact.job_ability(a, job_sets, modes)
+      return { pre, mid }
     end
     local r = sets.ability_sets(a.name, job_sets)
     return { nil, r[1] }
@@ -637,8 +650,29 @@ function M.action(act)
       ws_gear(main, r.ws)
     end
   end
+  -- /vg stage on (default): precast, Interim during the bar, midcast just before the spell lands.
+  local cast = r.cast or 0
+  local staged = act.category == 3 and staging_on(M.modes()) and cast >= STAGE_MIN_CAST and r[2]
+  if staged then
+    local gen = bump_cast_swaps()
+    core.H.inject(act.packet)
+    if r.interim then
+      timer.after(STAGE_INTERIM_DELAY, function()
+        if not cast_swaps_live(gen) or not M.loaded() then return end
+        wear(M.pieces(r.interim), "single")
+      end)
+    end
+    local mid_at = math.max(0.05, cast - STAGE_MIDCAST_LEAD)
+    timer.after(mid_at, function()
+      if not cast_swaps_live(gen) or not M.loaded() then return end
+      if main then wear(main, "single") end
+    end)
+    busy_until = clock() + math.max(3, cast + 2)
+    restore = true
+    return false
+  end
   -- A weapon skill or an ability lands at once: its set goes first (the server also refuses weapons and ammo once a
-  -- weapon skill has started). A spell's or a shot's comes after, for the cast.
+  -- weapon skill has started). A spell's or a shot's comes after, for the cast (stage off or instant).
   local instant = act.category == 7 or act.category == 9
   local changed = main and instant and wear(main, "single")
   if act.category == 7 and M.H.ws_line() then
@@ -667,7 +701,10 @@ function M.on_action(a)
   local p = M.H.player()
   if not p or a.actor ~= p.id then return end
   -- A finish, or an interrupted cast / shot (param 28787).
-  if DONE[a.category] or ((a.category == 8 or a.category == 12) and a.param == 28787) then busy_until = 0 end
+  if DONE[a.category] or ((a.category == 8 or a.category == 12) and a.param == 28787) then
+    busy_until = 0
+    bump_cast_swaps()
+  end
   -- A worn charged piece used (category 5, the item's id): it is let go, and the status set comes back (a potion or
   -- food changes nothing).
   if a.category == 5 and a.param then
@@ -815,7 +852,6 @@ function M.toggle(mode)
   return mode .. (modes[mode] and " on" or " off")
 end
 
--- ---- /vg: locks, weapons, one slot of a set, why a piece won, upgrades in storage ----
 
 -- Slot words: ours, and the equipment menu's (ear1, ring2...).
 local SLOT_ALIAS = { ear1 = "left_ear", ear2 = "right_ear", lear = "left_ear", rear = "right_ear", ring1 = "left_ring",

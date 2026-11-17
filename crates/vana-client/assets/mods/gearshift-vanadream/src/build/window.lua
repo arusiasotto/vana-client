@@ -1,27 +1,82 @@
--- The set builder's window (//vg): the job's sets, each slot's piece and how much of the best-in-slot
--- reference it gives, what is worth getting; a slot picked by hand stays through rebuilds ("Automatic" frees it).
+-- //vg window: your sets and trust gear tabs.
 
 local run = require("src.build.run")
 local pick = require("src.build.pick")
 local sets = require("src.build.sets")
+local trust_page = require("src.trust_window")
+local grid = require("src.equip_grid")
 
 local M = {}
-local WIN = "gsbuilder"
+M.WIN = "gsvg"
+local PAGE = 1
 local SLOT_LABEL = { [0] = "Main", "Sub", "Range", "Ammo", "Head", "Body", "Hands", "Legs", "Feet", "Neck", "Waist",
   "L. Ear", "R. Ear", "L. Ring", "R. Ring", "Back" }
 local BAG_LABEL = { [1] = "Mog Safe", [2] = "Storage", [4] = "Mog Locker", [5] = "Mog Satchel", [6] = "Mog Sack",
   [7] = "Mog Case", [9] = "Mog Safe 2" }
--- Score bands against the reference.
 local GOOD, FAIR, LOW = { 240, 170, 60, 255 }, { 230, 220, 110, 255 }, { 120, 170, 230, 255 }
 
-local view = { set = 1, slot = nil }
+local view = { tab = 1, set = 1, slot = nil, job = nil }
+
+local function preferred_set_index(list)
+  local job, lvl = run.state.job, run.state.level or 99
+  if job == "RDM" and lvl <= 30 then
+    for i, s in ipairs(list) do
+      if s == "Tp_Default" then return i end
+    end
+  end
+  for i, s in ipairs(list) do
+    if s == "Idle" then return i end
+  end
+  for i, s in ipairs(list) do
+    if s == "Tp_Default" then return i end
+  end
+  return 1
+end
+
+local function sync_set_view(list)
+  local job = run.state.job
+  if job ~= view.job then
+    view.job, view.set = job, preferred_set_index(list)
+  else
+    view.set = math.max(1, math.min(view.set, math.max(1, #list)))
+  end
+end
+
+function M.apply_layout_scale()
+  local pct = settings.get("grid_scale")
+  if pct == nil then pct = 150 end
+  return grid.configure(pct / 100)
+end
+
+-- Your-sets tab: centres the grid with side margin.
+function M.canvas_w()
+  return math.max(560, grid.SIZE + 40)
+end
+
+-- Trust tab: equipment grid on the left, Uses panel on the right (same row).
+M.USES_GAP = 12
+M.USES_W = 260
+
+function M.trust_canvas_w()
+  return grid.SIZE + M.USES_GAP + M.USES_W
+end
+
+local function grid_click_x()
+  return grid.offset_x(M.canvas_w())
+end
+
+local function page(e)
+  e.page = PAGE
+  return e
+end
+
+function M.tab() return view.tab end
 
 local function item_name(id)
   local r = id and pick.item(id)
   return r and r.name or "-"
 end
 
--- The stats a piece gives the set, most valued first: "MAB+3 INT+2".
 local LABEL = { mab = "MAB", macc = "Mag. Acc.", acc = "Acc.", att = "Atk.", racc = "Rng. Acc.", ratt = "Rng. Atk.",
   stp = "Store TP", da = "Dbl. Atk.", ta = "Tpl. Atk.", qa = "Quad. Atk.", wsd = "WS Dmg.", fc = "Fast Cast",
   dt = "DT", pdt = "PDT", mdt = "MDT", mdb = "MDB", meva = "Mag. Eva.", haste = "Haste", crit = "Crit.",
@@ -56,11 +111,11 @@ end
 
 local function current()
   local list = job_sets()
+  sync_set_view(list)
   local name = list[view.set] or list[1]
   return name, name and run.set_def(name)
 end
 
--- We hold a piece of that name in the bags gear is worn from.
 local function held(name)
   for _, o in ipairs(run.state.owned or {}) do
     local rec = pick.item(o.id)
@@ -69,33 +124,41 @@ local function held(name)
   return false
 end
 
-local function slot_rows(name, def, r)
+local function id_of_name(name)
+  local ids = run.state.names and run.state.names[name]
+  return ids and ids[1]
+end
+
+local function player_grid(name, def, r)
   local hand = run.hand(run.state.job, name)
-  local rows = {}
+  local ids, labels, tips, hand_m = {}, {}, {}, {}
   for slot = 0, 15 do
     local o = r and r.slots[slot]
     local h = hand[pick.SLOT_NAMES[slot]]
-    local wearing, share, ref, worth = "-", "", "", ""
+    local title = SLOT_LABEL[slot]
     if h then
-      wearing = h.name .. " *" .. (held(h.name) and "" or " (not held)")
-    elseif o and o.pick then
-      wearing = item_name(o.pick.id)
+      ids[slot] = id_of_name(h.name)
+      labels[slot] = h.name
+      tips[slot] = { title = title, text = h.name .. (held(h.name) and "" or " (not in inventory)") }
+      hand_m[slot] = true
+    elseif o and o.pick and o.pick.id then
+      ids[slot] = o.pick.id
+      local extra = ""
+      if o.share and not (r and r.engine) then
+        extra = (" — %d%% of BIS"):format(math.floor(o.share * 100 + 0.5))
+      end
+      tips[slot] = { title = title, text = item_name(o.pick.id) .. extra }
     elseif not (sets.MAGE_JOBS[run.state.job] and not sets.MELEE_SETS[name] and not def.ws) and slot <= 2 then
-      wearing = "(kept)"
+      labels[slot] = "(kept)"
+      tips[slot] = { title = title, text = "Your weapon — left alone for TP." }
+    else
+      tips[slot] = { title = title, text = "Empty" }
     end
-    if o then
-      if o.share and o.pick and not h then share = ("%d%%"):format(math.floor(o.share * 100 + 0.5)) end
-      if o.ref then ref = item_name(o.ref.id) end
-      if o.worth then worth = item_name(o.worth.id) .. " (" .. ((pick.item(o.worth.id) or {}).level or "?") .. ")" end
-    end
-    local icon_id = (o and o.pick and o.pick.id)
-    rows[#rows + 1] = { SLOT_LABEL[slot], wearing, share, ref, worth,
-      icon = icon_id and { kind = "item", id = icon_id } or nil }
   end
-  return rows
+  local draw = grid.draw({ ids = ids, labels = labels, tips = tips, hand = hand_m, selected = view.slot }, M.canvas_w())
+  return draw
 end
 
--- Better pieces kept where they cannot be worn from.
 local function warnings(name, def, r)
   local out = {}
   local p = run.H.player() or {}
@@ -116,9 +179,11 @@ local function warnings(name, def, r)
   return table.concat(out, " ")
 end
 
--- The set's score against the best this level allows (the colour), and the cap's best in slot.
 local function score_line(r)
   if not r then return "Reading your gear and the item list...", nil end
+  if r.engine then
+    return ("Set score %.1f (vanagear's engine)."):format(r.score or 0), GOOD
+  end
   local reach = r.reach_score or 0
   if reach <= 0 then return ("Score %d"):format(math.floor(r.score + 0.5)), nil end
   local pct = r.score / reach * 100
@@ -128,7 +193,13 @@ local function score_line(r)
 end
 
 local function detail(name, def, r)
-  if not view.slot or not r then return "Pick a slot to see its piece next to the best in slot, and its alternatives." end
+  if view.slot == nil then
+    return "Click a slot in the grid to pick a piece or see how it compares to BIS."
+  end
+  if not r then return "" end
+  local hand = run.hand(run.state.job, name)
+  local h = hand[pick.SLOT_NAMES[view.slot]]
+  if h then return SLOT_LABEL[view.slot] .. ": " .. h.name .. " (picked by hand)" end
   local o = r.slots[view.slot]
   if not o then return "" end
   local parts = { SLOT_LABEL[view.slot] .. ":" }
@@ -138,7 +209,7 @@ local function detail(name, def, r)
   return table.concat(parts, " ")
 end
 
-function M.draw()
+local function player_elements()
   local list = job_sets()
   local name, def = current()
   local labels = {}
@@ -146,29 +217,44 @@ function M.draw()
   local r = name and run.state.built[name]
   if name and not r then run.want_first(name) end
   local score, colour = score_line(r)
-  local title = run.state.job and ("Gearshift: %s %d"):format(run.state.job, run.state.level or 0) or "Gearshift"
-  ui.window(WIN, {
-    title = title, width = 800,
-    help = "Your sets, built from the gear you hold for your level. Pick a slot to choose its piece yourself.",
-    elements = {
-      { type = "choice", id = "active", label = "Wear These Sets", items = { "Off", "On" }, at = run.active() and 2 or 1,
-        tip = "On: Gearshift wears these sets around your actions and between them. Off: they are only shown." },
-      { type = "dropdown", id = "set", label = "Set", items = #labels > 0 and labels or { "-" }, at = view.set,
-        tip = "The job's sets: what each is worn for is in its line below." },
-      { type = "text", id = "when", text = def and ("Worn " .. (def.when or "") .. ".") or "", dim = true },
-      { type = "text", id = "score", text = score, colour = colour or false },
-      { type = "list", id = "slots", rows = name and def and slot_rows(name, def, r) or {}, height = 16,
-        at = view.slot and (view.slot + 1) or nil,
-        columns = { { title = "Slot", width = 110 }, { title = "Wearing", width = 190 }, { title = "Match", width = 80,
-          align = "right" }, { title = "Best in slot", width = 180 }, { title = "Worth getting", width = 200 } } },
-      { type = "text", id = "detail", text = name and def and detail(name, def, r) or "", dim = true },
-      { type = "text", id = "warn", text = name and def and warnings(name, def, r) or "", colour = FAIR },
-      { type = "buttons", id = "actions", items = { "Rebuild", "Wear Now", "Trusts", "Close" } },
-    },
+  local eng = r and r.engine
+  local out = {
+    page({ type = "choice", id = "active", label = "Wear These Sets", items = { "Off", "On" }, at = run.active() and 2 or 1,
+      tip = "On: wears these sets around your actions and between them. Off: they are only shown." }),
+    -- Looks like a dropdown; opens ui.menu, which scrolls when the job has many sets (the built-in dropdown does not).
+    page({ type = "buttons", id = "set", label = "Set", items = {
+      #list > 0 and ("%s (%d/%d)"):format(labels[view.set] or "-", view.set, #list) or "-" },
+      tip = "The job's sets: click to open the scrollable list. Engaged melee uses Tp_Default / Tp_Acc / Tp_Hybrid; "
+        .. "Tp_Proc is an empty slot you fill by hand, not the fighting set." }),
+    page({ type = "text", id = "when", text = def and ("Worn " .. (def.when or "") .. ".") or "", dim = true }),
+    page({ type = "text", id = "score", text = score, colour = colour or false }),
+    page({ type = "canvas", id = "gear", w = M.canvas_w(), h = grid.SIZE,
+      draw = name and def and player_grid(name, def, r) or {},
+      tip = "Equipment layout as in the game menu. Click a cell to pick that slot." }),
+    page({ type = "text", id = "detail", text = name and def and detail(name, def, r) or "", dim = true }),
+  }
+  if not eng then
+    out[#out + 1] = page({ type = "text", id = "warn", text = name and def and warnings(name, def, r) or "", colour = FAIR })
+  end
+  out[#out + 1] = page({ type = "buttons", id = "actions", items = { "Rebuild", "Wear Now", "Close" } })
+  return out
+end
+
+function M.draw()
+  M.apply_layout_scale()
+  local list = job_sets()
+  sync_set_view(list)
+  local title = run.state.job and ("vanagear: %s %d"):format(run.state.job, run.state.level or 0) or "vanagear"
+  local els = { { type = "tabs", id = "tabs", items = { "Your sets", "Trust gear" }, at = view.tab } }
+  for _, e in ipairs(player_elements()) do els[#els + 1] = e end
+  for _, e in ipairs(trust_page.elements()) do els[#els + 1] = e end
+  ui.window(M.WIN, {
+    title = title, width = math.max(M.canvas_w(), M.trust_canvas_w() + 32),
+    help = "Your sets and trust gear, built from what you carry. Grid scale is on this mod's Extras page.",
+    elements = els,
   })
 end
 
--- The alternatives for a slot: the owned pieces that fit, best share first, then "Automatic".
 local function alternatives(name, def, slot)
   local r = run.state.built[name]
   local o = r and r.slots[slot]
@@ -214,40 +300,57 @@ local function choose_slot(slot)
   end)
 end
 
-function M.toggle()
-  if ui.is_open(WIN) then ui.close(WIN) return end
+function M.open_tab(tab)
+  view.tab = tab or 1
   M.draw()
-  ui.open(WIN)
+  if not ui.is_open(M.WIN) then ui.open(M.WIN) end
+end
+
+function M.toggle()
+  if ui.is_open(M.WIN) then ui.close(M.WIN) return end
+  view.tab = 1
+  M.open_tab(1)
 end
 
 function M.redraw()
-  if ui.is_open(WIN) then M.draw() end
+  if ui.is_open(M.WIN) then M.draw() end
 end
 
 function M.install()
-  ui.on(WIN, function(_, e)
-    if e.kind == "set" and e.id == "active" then
+  ui.on(M.WIN, function(_, e)
+    local redraw = function() M.draw() end
+    if e.kind == "set" and e.id == "tabs" then
+      view.tab = e.index
+      redraw()
+    elseif e.id and e.id:sub(1, 2) == "t_" then
+      trust_page.on_event(e, redraw)
+    elseif e.kind == "set" and e.id == "active" then
       run.set_active(e.index == 2)
-      M.draw()
-    elseif e.kind == "set" and e.id == "set" then
-      view.set, view.slot = e.index, nil
-      M.draw()
-    elseif e.kind == "select" and e.id == "slots" then
-      view.slot = e.index - 1
-      M.draw()
-      choose_slot(view.slot)
+      redraw()
+    elseif e.kind == "press" and e.id == "set" then
+      local labels = {}
+      for i, s in ipairs(job_sets()) do labels[i] = set_label(s) end
+      ui.menu(labels, function(i)
+        if not i then return end
+        view.set, view.slot = i, nil
+        redraw()
+      end)
+    elseif e.kind == "click" and e.id == "gear" and e.button == "left" then
+      local slot = grid.hit(e.x - grid_click_x(), e.y)
+      if slot then
+        view.slot = slot
+        redraw()
+        choose_slot(slot)
+      end
     elseif e.kind == "press" and e.id == "actions" then
       if e.index == 1 then
         run.rebuild()
-        M.draw()
+        redraw()
       elseif e.index == 2 then
         local name = current()
         if name then run.wear_set(name) end
-      elseif e.index == 3 then
-        local trusts = require("src.trusts")
-        if trusts.window then trusts.window() end
       else
-        ui.close(WIN)
+        ui.close(M.WIN)
       end
     end
   end)

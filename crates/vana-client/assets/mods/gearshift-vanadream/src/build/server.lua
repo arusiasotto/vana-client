@@ -1,7 +1,4 @@
--- What the Vanadreams server says about an item. The server's own tables (data/items.lua, from vanagear) are what it
--- enforces and what it adds up, so they beat the client's item text: its level, jobs, slots and weapon figures
--- override the record the game gives, and its mods become the stats gear is scored on. An item the tables do not
--- know keeps the client's record and the stats read from its description.
+-- Server item tables (data/items.lua) override client stats when present.
 
 local M = {}
 

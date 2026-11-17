@@ -1,13 +1,10 @@
--- Which sets to build for the job the player is on, and what each one values: vanagear's vg/plan.lua as it is.
--- A mode is roles.lua's weights and caps with the job file's tweaks laid over it, and the band of the job's level.
--- Trusts and the player's own sets both use this.
+-- Which sets exist for a job/level and their scoring modes (plan.For).
 
 local roles = require("src.vg.roles")
 local vdata = require("src.vg.data")
 
 local M = {}
 
--- The game, through one table (tests replace it).
 M.H = {
   ability = function(id) return res.ability(id) end,
   spell = function(id) return res.spell(id) end,

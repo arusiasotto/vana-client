@@ -1,23 +1,4 @@
--- //vg: vanagear's commands, for the ones this port has an equivalent of (vg/commands.lua in the Vanadreams launcher's
--- vanagear add-on). The words and their arguments are vanagear's; a word that is not here yet says so.
---
---   /vg                         the window
---   /vg help | commands         this list
---   /vg build                   rebuild the sets now
---   /vg status                  what is running
---   /vg dt [pdt | mdt | all | off]   damage taken gear over everything else
---   /vg tp default | hybrid | acc    which fighting set is worn
---   /vg nuke power | acc        damage or accuracy for nukes and enfeebles
---   /vg burst [on | off]        magic burst gear on nukes
---   /vg kite [on | off]         movement gear over everything else (hold the monster's attention, run it around)
---   /vg th [on | off]           treasure hunter gear over everything else
---   /vg idle auto | regen | refresh | speed   standing still
---   /vg pet tp | dt | acc       what the gear does for a pet while it fights
---   /vg lock <slot | all>, /vg unlock <slot | all>   keep a slot as it is
---   /vg weapon main | sub | range <item | none>      your weapon in every set
---   /vg why <set> <slot>, /vg upgrades, /vg set <set> <slot> <item | auto>, /vg wear <set>
---   /vg trusts [on | off | send | rebuild | <trust> [<set>] | set ... | use ...]
---   /vg mode ... , /vg file, /vg reload   Gearshift's own (kept)
+-- /vg and /gs command handlers (vanagear-compatible subset).
 
 local run = require("src.build.run")
 local trusts = require("src.trusts")
@@ -32,7 +13,6 @@ local function on_off(word, current)
   return not current
 end
 
--- What /vg help lists.
 M.LINES = {
   { "/vg", "open the window: your sets, the piece in each slot and why" },
   { "/vg build", "rebuild the sets now (also happens on job change, level up and new gear)" },
@@ -41,6 +21,7 @@ M.LINES = {
   { "/vg tp default | hybrid | acc", "which fighting set you wear" },
   { "/vg nuke power | acc", "damage or accuracy for nukes and enfeebles" },
   { "/vg burst [on | off]", "magic burst gear on nukes" },
+  { "/vg stage [on | off]", "precast, then interim safety gear while casting, then the spell's set just before it lands (on by default)" },
   { "/vg kite [on | off]", "movement gear over everything else: run a monster around while it holds its target" },
   { "/vg th [on | off]", "treasure hunter gear over everything else" },
   { "/vg idle auto | regen | refresh | speed", "standing still: auto puts regen on below 60% HP and refresh below 70% MP" },
@@ -52,7 +33,7 @@ M.LINES = {
   { "/vg set <set> <slot> <item | auto>", "change one slot of a built set (auto: the builder picks again)" },
   { "/vg wear <set>", "put a built set on now" },
   { "/vg trusts on | off", "give your called trusts the stats of a set from your bags; off stops sending" },
-  { "/vg trusts window", "the trust window: each trust's sets, a piece in every slot, and what it uses" },
+  { "/vg trusts window", "the Trust gear tab of //vg: each trust's sets, slots and uses" },
   { "/vg trusts", "your trusts and their sets; /vg trusts <trust> [<set>] shows one" },
   { "/vg trusts send | rebuild", "send every set again / build the sets again" },
   { "/vg trusts set <trust> <set> <slot> <item | remove | auto>", "change one slot of a trust's set" },
@@ -129,6 +110,16 @@ function M.command(args, ctx)
   elseif cmd == "burst" then
     modes.mb = on_off(arg, modes.mb) or nil
     say("Magic burst gear " .. (modes.mb and "on" or "off") .. ".")
+  elseif cmd == "stage" then
+    local on = modes.stage ~= false
+    if arg == "on" then
+      modes.stage = true
+    elseif arg == "off" then
+      modes.stage = false
+    else
+      modes.stage = not on
+    end
+    say("Spell staging " .. (modes.stage ~= false and "on" or "off") .. ".")
   elseif cmd == "kite" then
     modes.kite = on_off(arg, modes.kite) or nil
     run.rebuild()
@@ -228,8 +219,6 @@ function M.command(args, ctx)
   end
 end
 
--- /gs, as vanagear takes it for players coming from GearSwap: `/gs c <word>` is `/vg <word>` (Mote's mode names land on
--- vanagear's), `/gs equip <set>` wears a set, `/gs reload` reads the file again; anything else is a /vg word.
 function M.gs(args, ctx)
   local cmd = (args[1] or ""):lower()
   local function vg(...) M.command({ ... }, ctx) end

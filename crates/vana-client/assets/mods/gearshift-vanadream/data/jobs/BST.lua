@@ -30,7 +30,7 @@
 
 return {
     Fighter = true, Pet = true,
-    Modes = { 'ReadyPrecast', 'Reward', 'Charm', 'Call' },
+    Modes = { 'ReadyPrecast', 'Ready', 'Ready_Magic', 'Reward', 'Charm', 'Call' },
     Tweaks = {
         Idle = { Stats = { REFRESH = 0, REGEN = 4 } },
         PetTP = { Pet = { DOUBLE_ATTACK = 2.5, REGAIN = 0.5 } },

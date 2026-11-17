@@ -40,6 +40,16 @@ default = true
 label = "Trust Gear"
 help = "Vanadreams server: builds gear sets for each trust you call from the pieces in your bags and sends them with !trustgear (/vg trusts). Needs the Set Builder on."
 
+[settings.grid_scale]
+type = "int"
+default = 150
+min = 80
+max = 200
+step = 5
+scope = "character"
+label = "Grid Scale"
+help = "Size of the equipment grid in //vg, as a percent. 100% matches the game's Equipment window; 150% is the default (larger icons)."
+
 [commands.gs]
 help = "vanagear's GearSwap commands: /gs c <word> is /vg <word>, /gs equip <set> wears a set."
 args = "<command>"
@@ -59,6 +69,7 @@ forms = [
   { args = "tp default|hybrid|acc", help = "Which fighting set you wear." },
   { args = "nuke power|acc", help = "Damage or accuracy for nukes and enfeebles." },
   { args = "burst [on|off]", help = "Magic burst gear on nukes." },
+  { args = "stage [on|off]", help = "Precast, interim safety gear during the cast bar, then the spell's set just before it lands (on by default)." },
   { args = "kite [on|off]", help = "Movement gear over everything else: run a monster around while it holds its target." },
   { args = "th [on|off]", help = "Treasure hunter gear over everything else." },
   { args = "idle auto|regen|refresh|speed", help = "Standing still: auto puts regen on below 60% HP and refresh below 70% MP; speed puts the movement gear over Idle." },
@@ -70,7 +81,7 @@ forms = [
   { args = "set <set> <slot> <item|auto>", help = "Changes one slot of a built set; auto lets the builder pick again." },
   { args = "wear <set>", help = "Puts a built set on now." },
   { args = "trusts [on|off]", help = "Gives your called trusts the stats of a set from your bags; off stops sending to the server." },
-  { args = "trusts window", help = "Opens the trust window: each trust's sets, a piece in every slot, and what it uses." },
+  { args = "trusts window", help = "Opens //vg on the Trust gear tab: each trust's sets, a piece in every slot, and what it uses." },
   { args = "trusts <trust> [<set>]", help = "Shows a trust's sets, or one set's pieces." },
   { args = "trusts send", help = "Sends every set of every trust again." },
   { args = "trusts rebuild", help = "Builds the trusts' sets again." },

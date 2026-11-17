@@ -1,14 +1,4 @@
---[[
-    vanagear: the modes every job's sets are built from.
-
-    Each mode is Stats (weight of one point of a stat, in the units players read: 1% haste, 1%
-    damage taken, 1 point of STR) and Caps (the most gear can usefully give). Pet modes weigh
-    the pet's stats under Pet and PetCaps. The job files in jobs\ pick which of these a job gets
-    and change any weight; a weight set to 0 there turns that stat off for the job.
-
-    Stat names are the server's mod names (scripts/enum/mod.codegen.lua). PDT and MDT are
-    damage taken plus physical or magical damage taken, which share the -50% limit.
-]]--
+-- Base scoring modes (Stats/Caps); job files in data/jobs tweak weights.
 
 local roles = {};
 
@@ -220,6 +210,8 @@ roles.Modes = {
 
     -- Beastmaster abilities (Killer Instinct: The Beastmaster Compendium, FFXIAH node 227)
     ReadyPrecast = { Stats = { SIC_READY_RECAST = 5 } },
+    Ready = { Pet = { ACC = 1, ATT = 1, DOUBLE_ATTACK = 1, CRITHITRATE = 0.5 } },
+    Ready_Magic = { Pet = { MATT = 2, MACC = 1.5 } },
     Reward = { Stats = { REWARD_HP_BONUS = 2, MND = 1, REWARD_RECAST = 1 } },
     Charm = { Stats = { CHR = 1, CHARM_CHANCE = 2, MACC = 0.4, CHARM_TIME = 0.5 } },
     Call = { Stats = { JUG_LEVEL_RANGE = 10, CALL_BEAST_DELAY = 2 } },

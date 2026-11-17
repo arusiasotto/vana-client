@@ -1,6 +1,4 @@
--- The pieces vanagear's engine builds from (its vg/bags.lua): each item we carry as {Id, Name, Server (the server's
--- record), Aug (what its augments add), Races, Equippable}, and whether a player or trust can wear one in a slot.
--- A piece the server's tables do not know has no Server record and is not one (the server could not count it).
+-- Inventory rows as scorable pieces (wear rules, augments).
 
 local server = require("src.build.server")
 local vdata = require("src.vg.data")

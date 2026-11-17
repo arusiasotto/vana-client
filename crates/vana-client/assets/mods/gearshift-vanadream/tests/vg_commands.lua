@@ -39,6 +39,11 @@ assert(cmd("nuke", "power"):find("power") and not modes.macc)
 assert(cmd("burst", "on"):find("on") and modes.mb)
 assert(cmd("burst", "off"):find("off") and not modes.mb)
 
+assert(cmd("stage", "off"):find("off") and modes.stage == false)
+assert(cmd("stage", "on"):find("on") and modes.stage == true)
+assert(cmd("stage"):find("off") and modes.stage == false, "no word flips spell staging")
+assert(cmd("stage"):find("on") and modes.stage == true, "flip again")
+
 assert(cmd("kite", "on"):find("on") and modes.kite)
 assert(cmd("kite"):find("off") and not modes.kite, "no word flips it")
 assert(cmd("th", "on"):find("on") and modes.th)
@@ -82,5 +87,4 @@ gs("reload")
 assert(reloaded == 1)
 
 assert(cmd("reload") and reloaded == 2)
-assert(cmd("stage"):find("not in this port yet"))
 chat.add = add

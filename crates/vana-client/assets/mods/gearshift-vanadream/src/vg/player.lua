@@ -1,6 +1,4 @@
--- Your own sets, built by vanagear's plan.For and score engine. Each set is a roles.lua mode (job tweaks and the band
--- of your level, caps lowered by traits and gifts), scored over every piece you carry. Weapons and ammo are never
--- chosen by scoring: swapping them resets TP; only hand picks and /vg weapon fill those slots.
+-- Builds scored sets from plan.For (weapons/ammo excluded unless hand-picked).
 
 local vplan = require("src.vg.plan")
 local score = require("src.vg.score")
@@ -137,12 +135,24 @@ function M.rate(name, ctx, o, slot)
   return rate
 end
 
+local TP_WHEN = {
+  Interim = "while casting — safety gear (spell interruption, damage taken)",
+  Precast = "as a spell starts — fast cast and casting gear",
+  Tp_Default = "while fighting — your melee TP set (pick Main/Sub in the grid)",
+  Tp_Hybrid = "melee with a little damage taken",
+  Tp_Acc = "melee when you need more accuracy",
+  Ws_Default = "any weaponskill when no named WS set exists",
+  Tp_Proc = "not auto-worn: optional proc pieces you assign by hand",
+  Ws_Proc = "not auto-worn: optional proc pieces you assign by hand",
+}
+
 -- A catalogue-shaped def for the window (label / when), from a plan entry.
 function M.def(name, ctx)
   local _, by = M.plan(ctx)
   local entry = by[name]
   if not entry then return nil end
-  local when = entry.Ability and ("ability: " .. entry.Ability)
+  local when = TP_WHEN[name]
+    or entry.Ability and ("ability: " .. entry.Ability)
     or entry.Weaponskill and ("weapon skill: " .. entry.Weaponskill)
     or entry.Spell and ("spell: " .. entry.Spell)
     or entry.Empty and "yours to fill"

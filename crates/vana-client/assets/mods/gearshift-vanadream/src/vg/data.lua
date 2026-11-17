@@ -1,6 +1,4 @@
--- vanagear's data, as its engine asks for it (vg/data.lua): the server's mods by name, set bonuses, latents, augments,
--- weaponskills and abilities. The tables are generated (data/build.lua); each is read the first time it is asked for.
--- Tests replace M.H.
+-- Lazy loaders for generated data/*.lua tables.
 
 local M = {}
 

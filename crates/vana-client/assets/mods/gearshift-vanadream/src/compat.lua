@@ -23,7 +23,6 @@ local function tostring51(v)
   return tostring(v)
 end
 
--- ---- Tables: T{} / L{} lists and S{} sets ----
 
 local T_methods = {}
 local T_meta = { __index = T_methods }
@@ -67,7 +66,6 @@ function S_methods:empty() return next(self) == nil end
 function S_methods:length() local n = 0 for _ in pairs(self) do n = n + 1 end return n end
 function S_methods:it() local k return function() k = next(self, k) return k end end
 
--- ---- Strings (on the string table: every string has them in this mod) ----
 
 function string.startswith(s, p) return s:sub(1, #p) == p end
 function string.endswith(s, p) return p == "" or s:sub(-#p) == p end

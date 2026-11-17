@@ -1,6 +1,4 @@
--- LuAshitacast profiles, run as LuAshitacast runs them: the file returns the profile; its Handle* functions run
--- around every action packet we send (typed, macro or menu alike) and HandleDefault on the send tick while no action
--- is under way; gFunc.Equip / EquipSet fill a buffer sent when the handler returns; gData answers in its names.
+-- LuAshitacast profile runtime (gFunc / gData compat).
 
 local core = require("src.core")
 local compat = require("src.compat")
@@ -37,7 +35,6 @@ local function defaults()
     SpellOffset = 1.0, RangedBase = 10.0, RangedOffset = 0.5, ItemBase = 8, ItemOffset = 1.0, FastCast = 0, Snapshot = 0 }
 end
 
--- ---- Running the profile ----
 
 local function call(name, ...)
   local f = profile and profile[name]
@@ -55,7 +52,6 @@ local function call(name, ...)
   return true
 end
 
--- ---- Equipping ----
 
 local function item_want(v)
   if type(v) == "string" then
@@ -115,7 +111,6 @@ local function take(buf_name)
   return b
 end
 
--- ---- gFunc ----
 
 local function equip_into(buf, slot, item)
   local s = slot_of(slot)
@@ -255,7 +250,6 @@ local function make_gfunc()
   return g
 end
 
--- ---- gData ----
 
 local function entity_table(e)
   if not e then return nil end
@@ -381,7 +375,6 @@ local function make_ashitacore(run_command)
   return obj({ GetChatManager = function() return chatm end, GetMemoryManager = function() return memory end })
 end
 
--- ---- Loading ----
 
 function M.dirs()
   local p = game.player()
@@ -474,7 +467,6 @@ function M.loaded() return profile ~= nil end
 -- The item names the loaded profile's sets hold.
 function M.gear_names() return type(profile) == "table" and core.set_names(profile.Sets, slot_of) or {} end
 
--- ---- The action packet ----
 
 local PRE = { [3] = { "HandlePrecast", "set" }, [7] = { "HandleWeaponskill", "auto" }, [9] = { "HandleAbility", "auto" },
   [16] = { "HandlePreshot", "set" } }
@@ -548,7 +540,6 @@ function M.tick()
   core.send(packets_for(take(), "auto", "HandleDefault"))
 end
 
--- ---- Commands (/lac ...) ----
 
 function M.command(args)
   local cmd = (args[1] or ""):lower()

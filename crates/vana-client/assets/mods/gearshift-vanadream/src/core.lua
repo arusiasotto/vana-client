@@ -1,10 +1,7 @@
--- The engine both front ends share: the game through a small adapter (tests swap it), held items resolved for the
--- wanted slots, equip packets built and sent in order, the equipment just sent remembered until the server agrees,
--- and the actions we hold and send again with the gear around them.
+-- Shared equip/action packet helpers for builder and lac.
 
 local M = {}
 
--- ---- The game, through one table (tests replace it) ----
 
 M.H = {
   player = function() return game.player() end,
@@ -28,7 +25,6 @@ for id, name in pairs(M.BAG_NAMES) do M.BAG_IDS[name] = id end
 -- The bags gear is worn from.
 M.EQUIP_BAGS = { 0, 8, 10, 11, 12, 13, 14, 15, 16 }
 
--- ---- Item records and augments ----
 
 local records = {}
 function M.record(id)
@@ -90,7 +86,6 @@ function M.augments_match(extdata, wanted, id)
   return true
 end
 
--- ---- What is worn: the server's, with what we sent over it ----
 
 -- slot -> {bag, index, id, at, gen, was_bag, was_index, tries}: sent, not yet seen worn (`was_*`: what the slot held).
 M.sent = {}
@@ -144,7 +139,6 @@ function M.worn()
   return out
 end
 
--- ---- Resolving a want list ----
 
 local function bit(n) return 1 << n end
 
@@ -239,7 +233,6 @@ function M.resolve(wants, opt)
   return out, left
 end
 
--- ---- Packets ----
 
 function M.equip_packet(c)
   return packets.build(0x050, string.pack("BBBB", c.index, c.slot, c.bag, 0))
@@ -296,7 +289,6 @@ function M.send(pkts)
   for _, d in ipairs(pkts) do M.H.inject(d) end
 end
 
--- ---- Actions on the wire ----
 
 -- c2s 0x01A: target @4, its index @8, category @0x0a, param @0x0c; c2s 0x037: target @4, its index @0x0c, the item's
 -- index @0x0e and bag @0x10.

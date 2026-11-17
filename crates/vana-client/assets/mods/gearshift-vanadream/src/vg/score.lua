@@ -1,16 +1,4 @@
---[[
-    Ported from vanagear's vg/score.lua (the same weights, caps, set bonuses and latents, the same rounds); only the
-    plumbing differs: its Ashita calls are the mod's, and the long loops call the builder's pace.
-
-    vanagear: scoring gear and building a set.
-
-    A mode is a table of weights (how much one point of a stat is worth) and caps (the most of a
-    stat gear can usefully give). A set's score is the weighted sum of its stats, each stat cut
-    off at its cap. The set is built by filling every slot with its best piece, then going round
-    the slots again, trying every piece in each slot with the others held, until a round changes
-    nothing. The caps are why it goes round: once gear haste is at 25%, another haste piece is
-    worth nothing and its slot goes to something else.
-]]--
+-- Weighted set scoring with caps, set bonuses, latents (iterative slot rounds).
 
 local vdata = require('src.vg.data');
 local pieces_of = require('src.vg.pieces');

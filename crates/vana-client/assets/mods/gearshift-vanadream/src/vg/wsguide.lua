@@ -1,13 +1,4 @@
---[[
-    vanagear: what the wiki weaponskill pages say about gear, laid over every job's weaponskill
-    sets (M402, "the ws guides, fold those into every template"; read 22 Oct 2026).
-
-    The server's own scripts already give vanagear each weaponskill's stat modifiers, hit count
-    and kind (vg\plan.lua, wsMode). The BG-wiki and FFXIclopedia weaponskill pages were read
-    for every weapon type and state no gear priority beyond those modifiers, except the notes
-    below. Nothing here is a weight the pages gave; each is the stat the page named, at a
-    weight on roles.lua's Ws_Default scale. Pages that named nothing are not here.
-]]--
+-- Extra WS stat weights from wiki notes (merged in plan.For over server WSC data).
 
 -- "Chance of critical hit varies with TP" (or a flat crit bonus): crit rate and crit damage count
 local crit = { CRITHITRATE = 1, CRIT_DMG_INCREASE = 1 };

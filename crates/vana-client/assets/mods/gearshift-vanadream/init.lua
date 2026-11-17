@@ -1,6 +1,4 @@
--- Gear swapping from a player's LuAshitacast profile (ashitacast/<Name>_<Id>/<JOB>.lua or
--- ashitacast/<Name>_<JOB>.lua in this mod's data folder), loaded for the main job and run around the action packets we
--- send: the gear before an action, the action, the gear after it, in one batch. With no profile, the set builder.
+-- LuAshitacast profile per job if present; otherwise the set builder wears sets around outgoing actions.
 
 local core = require("src.core")
 local lac = require("src.lac")
@@ -9,15 +7,11 @@ local builder_window = require("src.build.window")
 local trusts = require("src.trusts")
 local trust_window = require("src.trust_window")
 builder_window.install()
-trust_window.install()
 trusts.window = trust_window.toggle
--- Trust gear (the Vanadreams server's !trustgear): built in the builder's worker, sent from the timer.
 builder.extra = trusts.step
 trusts.install()
--- The set builder's background work, one coroutine for the session.
 timer.after(0, function() builder.worker() end)
 
--- A file the player wrote runs instead of the set builder.
 local function file_loaded()
   return lac.loaded()
 end
@@ -43,7 +37,6 @@ local function start()
   load_for_job()
 end
 
--- The action packets we send: held, and sent again by the front end with the gear around them.
 local function on_out(p)
   if p.injected then return end
   local act = core.parse_action(p)
@@ -66,7 +59,6 @@ events.on("job_change", function(main)
   end
 end)
 events.on("settings_changed", start)
--- The first frame our main job is known loads its file (the mod can start before the server has said).
 events.on("frame", function()
   core.decode_augments()
   if not started and main_job() and main_job() ~= 0 then start() end
@@ -83,15 +75,16 @@ timer.every(0.5, function()
   trust_window.redraw()
 end)
 events.on("item_change", function() builder.refresh() end)
+events.on("settings_changed", function(key)
+  if key == "grid_scale" then builder_window.redraw() end
+end)
 
--- For other mods (Bag Manager): the item names the loaded file's sets hold, and which file.
 mods.provide("gear_names", function()
   if lac.loaded() then return { file = lac.file, names = lac.gear_names() } end
   return nil
 end)
 
 commands.register("lac", function(...) lac.command({ ... }) end)
--- vanagear's commands (src/vg.lua): the window, /vg build, dt, tp, nuke, burst and /vg trusts.
 local vg = require("src.vg")
 local vg_ctx = {
   window = function() builder_window.toggle() end,
@@ -99,5 +92,4 @@ local vg_ctx = {
   file = function() return lac.file end,
 }
 commands.register("vg", function(...) vg.command({ ... }, vg_ctx) end)
--- /gs, for players whose macros and habits are GearSwap's: /gs c <word> is /vg <word>, /gs equip <set> wears a set.
 commands.register("gs", function(...) vg.gs({ ... }, vg_ctx) end)

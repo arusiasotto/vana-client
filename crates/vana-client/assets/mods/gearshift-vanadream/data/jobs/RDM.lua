@@ -35,6 +35,8 @@
 
 return {
     Support = true, Skills = { 'Healing Magic', 'Enhancing Magic', 'Enfeebling Magic', 'Elemental Magic', 'Dark Magic', 'Divine Magic' },
+    -- Melee templates at every level (99-band tweaks refine Tp_Default); Support alone has no Tp_* line.
+    Modes = { 'Tp_Default', 'Tp_Hybrid', 'Ws_Default' },
     Tweaks = {
         Idle = { Stats = { REFRESH = 8, REGEN = 2, PDT = -2, MDT = -2 } },
         Enfeebling = { Stats = { MACC = 2, ENFEEBLE = 1.2, MND = 0.8, ENHANCES_SABOTEUR = 1 } },
@@ -45,12 +47,16 @@ return {
             Enfeebling = { Stats = { ENFEEBLE = 1.2, MND = 0.9, INT = 0.9, MACC = 0.8 } },                   -- Moonpirate: INT, MND and enfeebling skill; wands for INT and MND
             Resting = { Stats = { MPHEAL = 2.5 } },                                                          -- the chart: Pilgrim's Wand the only MP-while-healing weapon
             Idle = { Stats = { REFRESH = 8, MP = 0.02, PDT = 0, MDT = 0 } },                                   -- no Refresh gear exists yet
+            -- Low levels: most RDM time is sword/dagger melee; spell sets matter once you have MP and spells.
+            Tp_Default = { Stats = { ACC = 0.75, ATT = 0.55, DEX = 0.35, STR = 0.25 } },
+            Tp_Hybrid = { Stats = { ACC = 0.6, ATT = 0.45, PDT = -0.5, MDT = -0.4 } },
         } },
         { To = 60, Tweaks = {
             Enfeebling = { Stats = { ENFEEBLE = 1.5, MND = 0.8, INT = 0.8, MACC = 0.8 } },                   -- Moonpirate: Enfeebling Earring, Glamor Jupon, Mohbwa Scarf, Penitent's Rope; Red Mage 101: the A+ skill
             Precast = { Stats = { FASTCAST = 3.5 } },                                                        -- Red Mage 101: fast cast at 35 and 55, the artifact hat +10%
             Enhancing = { Stats = { ENHANCE = 1.3, ENH_MAGIC_DURATION = 1.5 } },                              -- the chart: Warlock's Tights enhancing skill +15
             Idle = { Stats = { REFRESH = 6, PDT = 0, MDT = 0 } },                                              -- the chart: Vermillion Cloak at 59, the first Refresh
+            Tp_Default = { Stats = { ACC = 0.65, ATT = 0.5, DEX = 0.35, STR = 0.3 } },
         } },
         { To = 75, Tweaks = {
             Enfeebling = { Stats = { ENFEEBLE = 1.8, MND = 0.8, INT = 0.8, MACC = 1.2 } },                   -- Moonpirate: the torques, Avocat Pigaches, Bricta's Cuffs; the chart: Nashira Seraweels
@@ -58,6 +64,7 @@ return {
             Idle = { Stats = { REFRESH = 8, PDT = -1, MDT = 0 } },                                             -- the chart: Dalmatica "frees up your head slot while still giving Refresh"
             Nuke = { Stats = { MATT = 1.6, INT = 0.9, MACC = 0.7 } },                                          -- the chart: Morrigan, Novio; Red Mage 101: nuking is secondary
             Burst = { Stats = { MAGIC_BURST_BONUS_CAPPED = 3, MATT = 1.2, INT = 0.8 } },                        -- Red Mage 101: bursts are the main use; the burst pages: Channeling Robe, Catalyst, Static Earring
+            Tp_Default = { Stats = { DEX = 0.35, ACC = 0.55, ATT = 0.3, DUAL_WIELD = 1.2 } },                 -- 75 sword/dagger line; weights follow the chart and Moonpirate
         } },
         { To = 99, Tweaks = {
             Enfeebling = { Stats = { ENFEEBLE = 1.4, MACC = 1.6, MND = 0.8, INT = 0.5 } },                   -- Community guide: skill over raw accuracy for the skill-based enfeebles; the MND set for Paralyze, Slow, Addle
@@ -68,6 +75,6 @@ return {
             Idle = { Stats = { REFRESH = 7, PDT = -3, MDT = -2 } },                                            -- Community guide: the artifact body's Refresh potency; Malignance for damage taken
             Burst = { Stats = { MAGIC_BURST_BONUS_CAPPED = 3, MAGIC_BURST_BONUS_UNCAPPED = 3, MATT = 1.2 } },  -- the burst pages: gear to the 40% cap, then Burst II; the job's trait at 85 and 95
             Tp_Default = { Stats = { DEX = 0.4, ACC = 0.6, ATT = 0.25, DUAL_WIELD = 1.5, PDT = -3, MDT = -2 } }, -- Community guide, TP at 99 only: Crocea Mors and Daybreak, DEX, accuracy, attack, dual wield, damage taken
-        }, Modes = { 'Tp_Default', 'Tp_Hybrid', 'Ws_Default' } },
+        } },
     },
 };
