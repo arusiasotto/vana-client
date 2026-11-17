@@ -106,9 +106,10 @@ local ours = run.state.built.Cure.slots[4].pick.id
 local head = tonumber(b.ids.cure:match("^%d+ %d+ %d+ %d+ (%d+)"))
 assert(ours == 1002, "our Cure hat is the Healer Hat, not " .. tostring(ours))
 assert(head ~= 1002 and head ~= 0, "the trust took our hat or none: " .. tostring(head))
--- A trust's sets name weapons too: our Cure set holds the better club, so the trust gets the other one.
-assert(run.state.built.Cure.slots[0].pick.id == 1007, "our Cure set takes the better club")
-assert(b.ids.cure:match("^(%d+) ") == "1008", "the trust's main hand is the club we do not use: " .. b.ids.cure)
+-- A trust's sets name weapons too; ours never do (only hand picks and /vg weapon fill those slots), so the trust gets
+-- the best club.
+assert(run.state.built.Cure.slots[0].pick == nil, "our sets leave the weapons alone")
+assert(b.ids.cure:match("^(%d+) ") == "1007", "the trust's main hand is the best club: " .. b.ids.cure)
 
 -- Every set with a piece is sent (the empty Weaponskill set is not: the server has none to clear), one line each,
 -- 1.2 s apart, with the 16 ids.
@@ -145,7 +146,7 @@ trusts.command({ "set", "Kupofried", "cure", "head", "Fast Hat" })
 guard = 0
 while trusts.step() and guard < 20 do guard = guard + 1 end
 pump()
-assert(#lines == 1 and lines[1]:match("^/say !trustgear 16777217 cure 1008 0 0 0 1001 "), table.concat(lines, "\n"))
+assert(#lines == 1 and lines[1]:match("^/say !trustgear 16777217 cure 1007 0 0 0 1001 "), table.concat(lines, "\n"))
 
 -- A use switched off goes to the server as !trustuse.
 lines = {}

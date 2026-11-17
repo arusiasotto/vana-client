@@ -40,7 +40,7 @@ res = setmetatable({
 }, { __index = function() return function() return nil end end })
 storage = { character = { builder = { jobs = {}, modes = {} } } }
 WEEKDAY = 6
-settings = { get = function(k) if k == "cap" then return "Auto" end return true end }
+settings = { get = function(k) if k == "cap" then return "Auto" end if k == "engine" then return false end return true end }
 packets.inject_out = function(d) sent[#sent + 1] = d end
 
 local run = require("src.build.run")

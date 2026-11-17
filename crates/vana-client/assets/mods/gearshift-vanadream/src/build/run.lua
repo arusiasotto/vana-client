@@ -9,6 +9,7 @@ local pick = require("src.build.pick")
 local sets = require("src.build.sets")
 local wslist = require("src.build.ws")
 local blu = require("src.build.blu")
+local engine = require("src.vg.player")
 
 local M = {}
 
@@ -47,6 +48,8 @@ M.H = {
     return type(name) == "table" and name.name or name
   end,
   storage = function() return storage.character end,
+  -- vanagear's engine picks the gear (off: the builder's references).
+  engine = function() return settings.get("engine") ~= false end,
   cap_setting = function() return settings.get("cap") end,
   ws_line = function() return settings.get("ws_line") ~= false end,
   -- Gear Swapping and Set Builder on: the sets are built (worn only with the window's switch on too).
@@ -185,6 +188,13 @@ function M.job_sets(job)
   return out
 end
 
+-- A weapon in the off hand (dual wield is worth something only with one).
+local function dual_wield()
+  local w = core.worn()[1]
+  local rec = w and w.id and pick.item(w.id)
+  return rec ~= nil and rec.skill ~= nil and rec.skill >= 1 and rec.skill <= 12
+end
+
 local function ctx()
   local p = M.H.player() or {}
   local me = M.H.me() or {}
@@ -192,7 +202,7 @@ local function ctx()
   for _, o in ipairs(state.owned or {}) do owns[o.id] = true end
   return { job = state.job, job_id = p.main_job, sub_id = p.sub_job, race = me.race, level = state.level, cap = M.cap(),
     owned = state.owned or {}, owns = owns, at_cap = state.at_cap or {}, at_level = state.at_level or {},
-    names = state.names,
+    names = state.names, player = p, dual = dual_wield(), locked = M.locks(),
     mage = sets.MAGE_JOBS[state.job], melee_sets = sets.MELEE_SETS, bis = nil }
 end
 
@@ -201,9 +211,13 @@ function M.build(name)
   local def = M.set_def(name)
   if not def or not state.ready or not state.at_cap then return nil end
   local c = ctx()
-  local ok, bis = pcall(require, "src.build.bis")
-  if ok and bis then c.bis = bis.lookup(M.cap(), state.job, name) end
-  local r = pick.build(c, def, name)
+  -- vanagear's engine where it has a mode for the set, else the builder's own way
+  local r = M.H.engine() and engine.build(name, c) or nil
+  if not r then
+    local ok, bis = pcall(require, "src.build.bis")
+    if ok and bis then c.bis = bis.lookup(M.cap(), state.job, name) end
+    r = pick.build(c, def, name)
+  end
   r.at = state.level
   state.built[name] = r
   state.fresh = state.fresh or {}
@@ -264,8 +278,9 @@ function M.refresh()
   state.elsewhere = elsewhere
   local sub = p.sub_job or 0
   if job ~= state.job or p.main_level ~= state.level or sub ~= state.sub then state.need_cands = true end
-  if job ~= state.job or p.main_level ~= state.level or sub ~= state.sub or sig ~= state.owned_sig then
-    state.job, state.level, state.sub, state.owned, state.owned_sig = job, p.main_level, sub, owned, sig
+  local dual = dual_wield()
+  if job ~= state.job or p.main_level ~= state.level or sub ~= state.sub or sig ~= state.owned_sig or dual ~= state.dual then
+    state.job, state.level, state.sub, state.owned, state.owned_sig, state.dual = job, p.main_level, sub, owned, sig, dual
     M.rebuild()
   end
 end
@@ -762,6 +777,7 @@ function M.lock(slot, on)
   end
   if not next(b.locks[job]) then b.locks[job] = nil end
   last_sig = nil
+  M.rebuild()   -- the engine leaves a locked slot out of every set
 end
 
 -- A piece we carry by name (any case), as it is spelled.
@@ -802,6 +818,14 @@ function M.set_slot(set_name, slot_name, item)
   return true, name
 end
 
+-- What an owned piece is worth in a slot of a set: by the engine's weights for a set it built, else the builder's.
+function M.rate(set_name, def, o, slot)
+  local r = state.built[set_name]
+  local v = r and r.engine and engine.rate(set_name, ctx(), o, slot)
+  if v then return v end
+  return pick.score(pick.stats_of(o.id, o.augments), def)
+end
+
 -- /vg why <set> <slot>: the piece that won and the ones behind it, by the set's score.
 function M.why(set_name, slot)
   local def, r = M.set_def(set_name), state.built[set_name]
@@ -815,7 +839,7 @@ function M.why(set_name, slot)
     local rec = pick.item(o.id)
     if not seen[o.name] and pick.fits(rec, slot, c.job_id, c.race, c.level, c.sub_id) then
       seen[o.name] = true
-      list[#list + 1] = { name = o.name, score = pick.score(pick.stats_of(o.id, o.augments), def) }
+      list[#list + 1] = { name = o.name, score = M.rate(set_name, def, o, slot) }
     end
   end
   table.sort(list, function(a, b) return a.score > b.score end)
@@ -832,11 +856,11 @@ function M.upgrades()
     if def and r then
       for slot = 4, 15 do
         local cur = r.slots[slot] and r.slots[slot].pick
-        local cur_score = cur and pick.score(cur.s, def) or 0
+        local cur_score = cur and (cur.owned and M.rate(name, def, cur.owned, slot) or pick.score(cur.s, def)) or 0
         for _, o in ipairs(state.elsewhere or {}) do
           local rec = pick.item(o.id)
           if pick.fits(rec, slot, c.job_id, c.race, c.level, c.sub_id) then
-            local sc = pick.score(pick.stats_of(o.id, o.augments), def)
+            local sc = M.rate(name, def, o, slot)
             if sc > cur_score and sc > 0 and not seen[o.name] then
               seen[o.name] = true
               out[#out + 1] = { name = o.name, bag = core.BAG_NAMES[o.bag] or tostring(o.bag), set = def.label or name,

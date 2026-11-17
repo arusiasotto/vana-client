@@ -37,5 +37,7 @@ function M.SlotBlocks() return load("slotblocks") end
 function M.Augments() return load("augments") end
 function M.Weaponskills() return load("weaponskills") end
 function M.Abilities() return load("abilities") end
+function M.Traits() return load("traits") end
+function M.Gifts() return load("gifts") end
 
 return M

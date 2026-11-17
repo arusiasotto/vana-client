@@ -96,7 +96,7 @@ local function slot_rows(name, def, r)
 end
 
 -- Better pieces kept where they cannot be worn from.
-local function warnings(def, r)
+local function warnings(name, def, r)
   local out = {}
   local p = run.H.player() or {}
   local me = run.H.me() or {}
@@ -105,9 +105,8 @@ local function warnings(def, r)
     for slot = 0, 15 do
       local o = r and r.slots[slot]
       if o and pick.fits(rec, slot, p.main_job or 0, me.race, run.state.level, p.sub_job) then
-        local s = pick.stats_of(e.id, e.augments)
-        local mine = o.pick and pick.score(o.pick.s, def) or 0
-        if pick.score(s, def) > mine and #out < 3 then
+        local mine = o.pick and (o.pick.owned and run.rate(name, def, o.pick.owned, slot) or pick.score(o.pick.s, def)) or 0
+        if run.rate(name, def, e, slot) > mine and #out < 3 then
           out[#out + 1] = ("%s is in your %s (%s)."):format(rec.name, BAG_LABEL[e.bag] or "bags", SLOT_LABEL[slot])
           break
         end
@@ -163,7 +162,7 @@ function M.draw()
         columns = { { title = "Slot", width = 110 }, { title = "Wearing", width = 190 }, { title = "Match", width = 80,
           align = "right" }, { title = "Best in slot", width = 180 }, { title = "Worth getting", width = 200 } } },
       { type = "text", id = "detail", text = name and def and detail(name, def, r) or "", dim = true },
-      { type = "text", id = "warn", text = name and def and warnings(def, r) or "", colour = FAIR },
+      { type = "text", id = "warn", text = name and def and warnings(name, def, r) or "", colour = FAIR },
       { type = "buttons", id = "actions", items = { "Rebuild", "Wear Now", "Trusts", "Close" } },
     },
   })
@@ -182,7 +181,8 @@ local function alternatives(name, def, slot)
       seen[e.key] = true
       local s = pick.stats_of(e.id, e.augments)
       local sh = o and o.ref and (pick.share(s, o.ref.s, def)) or 0
-      cands[#cands + 1] = { name = rec.name, augments = e.augments, share = sh, score = pick.score(s, def) }
+      cands[#cands + 1] = { name = rec.name, augments = e.augments, share = sh, score = run.rate(name, def, e, slot),
+        engine = r and r.engine }
     end
   end
   table.sort(cands, function(a, b)
@@ -198,7 +198,8 @@ local function choose_slot(slot)
   local cands = alternatives(name, def, slot)
   local items = { "Automatic" }
   for _, c in ipairs(cands) do
-    items[#items + 1] = ("%s (%d%%)"):format(c.name, math.floor(c.share * 100 + 0.5))
+    items[#items + 1] = c.engine and ("%s (%.1f)"):format(c.name, c.score)
+      or ("%s (%d%%)"):format(c.name, math.floor(c.share * 100 + 0.5))
   end
   ui.menu(items, function(i)
     if not i then return end
