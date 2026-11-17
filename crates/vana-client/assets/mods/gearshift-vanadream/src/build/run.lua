@@ -34,6 +34,18 @@ M.H = {
     end
     return false
   end,
+  pet_hpp = function()
+    for _, e in ipairs(game.entities() or {}) do
+      if e.pet then return e.hpp end
+    end
+  end,
+  -- The name of the zone we are in.
+  zone_name = function()
+    local info = game.info and game.info()
+    local zone = info and info.zone
+    local name = zone and res.zone and res.zone(zone)
+    return type(name) == "table" and name.name or name
+  end,
   storage = function() return storage.character end,
   cap_setting = function() return settings.get("cap") end,
   ws_line = function() return settings.get("ws_line") ~= false end,
@@ -100,7 +112,7 @@ local function scan()
       if rec and rec.slots and rec.slots ~= 0 then
         core.want_augments(it.extdata, it.id)
         local entry = { id = it.id, name = rec.name, key = bag .. ":" .. it.slot, bag = bag, index = it.slot,
-          augments = it.extdata and core.augments[it.extdata] or nil }
+          augments = it.extdata and core.augments[it.extdata] or nil, extdata = it.extdata }
         if EQUIP[bag] then owned[#owned + 1] = entry else elsewhere[#elsewhere + 1] = entry end
         -- The augments themselves, not whether they are decoded yet: an enchantment's timer changes the data when
         -- the item is put on, and must not rebuild every set.
@@ -157,7 +169,11 @@ function M.job_sets(job)
   end
   -- Idle for regen or refresh (/vg idle), a pet's fighting sets (/vg pet), and the Treasure Hunter and Movement
   -- gear laid over everything else (/vg th, /vg kite).
-  if seen.Idle then extra("Idle_Regen") extra("Idle_Refresh") end
+  if seen.Idle then
+    extra("Idle_Regen") extra("Idle_Refresh")
+    extra("Dt") extra("Doomed") extra("Sleeping") extra("Reraise") extra("Town")
+  end
+  if seen.TP_Pet or seen.Idle_Pet or seen.Idle_Avatar or seen.Idle_Luopan then extra("PetDT") end
   if seen.TP_Pet then extra("TP_Pet_DT") extra("TP_Pet_Acc") end
   local modes = M.modes()
   if modes.th then extra("TH") end
@@ -450,8 +466,6 @@ function M.default_set()
       if job_sets[s] then return s end
     end
   end
-  if modes.pdt and job_sets.PDT then return "PDT" end
-  if modes.mdt and job_sets.MDT then return "MDT" end
   if p.status == 1 then
     if modes.hybrid then return first("TP_Hybrid", "TP_MNK", "TP") end
     if modes.acc then return first("TP_Acc", "TP_MNK", "TP") end
@@ -602,6 +616,64 @@ local function overlay(pieces, set_name, stat)
   end
 end
 
+-- The towns where the Town set goes on (GetAwayCoxn's list, as vanagear has it).
+local TOWNS = {}
+for _, n in ipairs({ "Tavnazian Safehold", "Al Zahbi", "Aht Urhgan Whitegate", "Nashmau", "Southern San d'Oria [S]",
+  "Bastok Markets [S]", "Windurst Waters [S]", "San d'Oria-Jeuno Airship", "Bastok-Jeuno Airship",
+  "Windurst-Jeuno Airship", "Kazham-Jeuno Airship", "Southern San d'Oria", "Northern San d'Oria", "Port San d'Oria",
+  "Chateau d'Oraguille", "Bastok Mines", "Bastok Markets", "Port Bastok", "Metalworks", "Windurst Waters",
+  "Windurst Walls", "Port Windurst", "Windurst Woods", "Heavens Tower", "Ru'Lude Gardens", "Upper Jeuno",
+  "Lower Jeuno", "Port Jeuno", "Rabao", "Selbina", "Mhaura", "Kazham", "Norg", "Mog Garden",
+  "Celennia Memorial Library", "Western Adoulin", "Eastern Adoulin" }) do
+  TOWNS[n] = true
+end
+-- The status effects the ailment sets answer to (the server's effect ids).
+local SLEEP, DOOM, WEAKNESS = { [2] = true, [19] = true }, { [15] = true, [30] = true }, { [1] = true }
+
+-- A whole set laid over the pieces (no weapons: they would reset TP), when it holds anything.
+local function lay(pieces, set_name)
+  local r = state.built[set_name]
+  local mine = M.hand(state.job, set_name)
+  if not r then
+    M.want_first(set_name)
+  end
+  local any = false
+  for slot, piece in pairs(M.pieces(set_name)) do
+    if slot > 2 and piece.name then
+      pieces[slot] = piece
+      any = true
+    end
+  end
+  return any or next(mine) ~= nil
+end
+
+-- Vanagear's include.Default, over the status set: the Town set standing in a town, the damage taken gear (the toggle,
+-- or below 40% HP), the pet's below half its HP, and the ailment sets last, so what you wear for them beats the rest.
+function M.lay_status_sets(pieces, p, modes)
+  local function has(ids)
+    for _, b in ipairs(M.H.buffs() or {}) do
+      if ids[b.id] then return true end
+    end
+  end
+  if (p.status or 0) == 0 then
+    local zone = M.H.zone_name()
+    if zone and TOWNS[zone] then lay(pieces, "Town") end
+  end
+  if modes.pdt and modes.mdt then
+    lay(pieces, "Dt")
+  elseif modes.pdt then
+    lay(pieces, "PDT")
+  elseif modes.mdt then
+    lay(pieces, "MDT")
+  end
+  if (p.hpp or 100) < 40 then lay(pieces, "Dt") end
+  local pet_hpp = M.H.pet_hpp()
+  if pet_hpp and pet_hpp < 50 then lay(pieces, "PetDT") end
+  if has(SLEEP) then lay(pieces, "Sleeping") end
+  if has(DOOM) then lay(pieces, "Doomed") end
+  if has(WEAKNESS) then lay(pieces, "Reraise") end
+end
+
 -- The status set is worn when it changes (the status, a toggle, the level's picks, running) or after an action, not
 -- every tick: a piece changed by hand stays on until then.
 local last_sig
@@ -620,7 +692,8 @@ function M.tick()
   local running = moving()
   local p = M.H.player() or {}
   if running or modes.kite or (modes.idle == "speed" and (p.status or 0) == 0) then overlay(pieces, "Movement", "move") end
-  if modes.th then overlay(pieces, "TH", "th") end
+  if modes.th and p.status == 1 then overlay(pieces, "TH", "th") end
+  M.lay_status_sets(pieces, p, modes)
   last_default = name
   local sig = {}
   for slot = 0, 15 do sig[#sig + 1] = pieces[slot] and pieces[slot].name or "" end

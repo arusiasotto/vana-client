@@ -14,6 +14,15 @@ local ITEMS = {
   [1008] = { name = "Lesser Club", slots = 1, jobs = WHM, races = ALL, level = 1, skill = 11, damage = 4, delay = 240,
     description = "DMG:4 Delay:240 MND+5" },
 }
+-- What the server's tables say of them ("level|jobs|slot|skill|delay|dmg|mods|pets|inslot": WHM is job bit 2; mods
+-- DEF 1, MND 13, FASTCAST 170, CURE_POTENCY 374).
+require("src.build.server").H.items = function()
+  return {
+    [1001] = "1|4|16||||1=5,170=5||", [1002] = "40|4|16||||1=6,13=3,374=10||", [1003] = "1|4|16||||1=10||",
+    [1004] = "10|4|16||||1=4,13=2,374=5||", [1006] = "1|4|24576||||13=4||",
+    [1007] = "1|4|1|11|240|5|13=8||", [1008] = "1|4|1|11|240|4|13=5||",
+  }
+end
 local BAG = { { slot = 1, id = 1001 }, { slot = 2, id = 1002 }, { slot = 3, id = 1003 }, { slot = 4, id = 1004 },
   { slot = 5, id = 1006 }, { slot = 6, id = 1007 }, { slot = 7, id = 1008 } }
 local TRUST = 0x01000001
@@ -85,14 +94,14 @@ assert(trusts.filter("[VG uses] 16777217|cure_iv:cure,savage_blade:weaponskill")
 assert(trusts.filter("[VG off] 16777217|cureiv") == false)
 assert(trusts.info[TRUST].level == 75 and #trusts.info[TRUST].uses == 2 and trusts.info[TRUST].off.cureiv)
 
--- The sets: Engaged, Weaponskill (it uses one) and Cure (a weapon skill with no facts here gets no set of its own),
+-- The sets: Engaged, Weaponskill (it uses one), Cure, and Savage Blade (the server's data has its stat modifiers),
 -- built from what we do not hold.
 local guard = 0
 while trusts.step() and guard < 20 do guard = guard + 1 end
 local b = assert(trusts.built[TRUST], "no sets built")
 local keys = {}
 for _, e in ipairs(b.plan) do keys[#keys + 1] = e.key end
-assert(table.concat(keys, ",") == "engaged,weaponskill,cure", table.concat(keys, ","))
+assert(table.concat(keys, ",") == "engaged,weaponskill,cure,savageblade", table.concat(keys, ","))
 local ours = run.state.built.Cure.slots[4].pick.id
 local head = tonumber(b.ids.cure:match("^%d+ %d+ %d+ %d+ (%d+)"))
 assert(ours == 1002, "our Cure hat is the Healer Hat, not " .. tostring(ours))
@@ -128,7 +137,7 @@ assert(#lines == 0, "sent again with nothing changed: " .. table.concat(lines, "
 -- The send command sends everything again.
 trusts.command({ "send" })
 pump()
-assert(#lines == 3, #lines)
+assert(#lines == 4, #lines)
 
 -- A pick of ours for a slot goes out in its place.
 lines = {}

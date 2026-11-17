@@ -96,7 +96,8 @@ local function numbers(text)
   return out
 end
 
--- An item's server record, decoded once: {level, jobs, slots, skill, delay, damage, rslot, mods, pets}, or nil.
+-- An item's server record, decoded once: {level, jobs, slots, skill, delay, damage, rslot, mods, pets, inslot}, or nil.
+-- inslot[slot][mod] is a mod that counts only in that slot (the server's slot numbers, Main 0 to Back 15).
 -- jobs counts job n as bit n (the client's way; the server's is bit n-1).
 local records = {}
 function M.item(id)
@@ -108,16 +109,23 @@ function M.item(id)
     records[id] = false
     return nil
   end
-  local level, jobs, slot, skill, delay, dmg, mods, pets = line:match("^([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|(.*)$")
+  local level, jobs, slot, skill, delay, dmg, mods, pets, inslot =
+    line:match("^([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|?(.*)$")
   r = {
     level = tonumber(level), jobs = (tonumber(jobs) or 0) << 1, slots = tonumber(slot) or 0,
     skill = tonumber(skill), delay = tonumber(delay), damage = tonumber(dmg),
-    rslot = blocks[id] or 0, mods = numbers(mods), pets = {},
+    rslot = blocks[id] or 0, mods = numbers(mods), pets = {}, inslot = {},
   }
+  r.pet = r.pets
   for pet, k, v in pets:gmatch("(%d+)%.(%d+)=(%-?%d+)") do
     pet = tonumber(pet)
     r.pets[pet] = r.pets[pet] or {}
     r.pets[pet][tonumber(k)] = tonumber(v)
+  end
+  for slot_id, k, v in (inslot or ""):gmatch("(%d+)%.(%d+)=(%-?%d+)") do
+    slot_id = tonumber(slot_id)
+    r.inslot[slot_id] = r.inslot[slot_id] or {}
+    r.inslot[slot_id][tonumber(k)] = tonumber(v)
   end
   records[id] = r
   return r

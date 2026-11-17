@@ -32,6 +32,17 @@ M.SETS = {
   Resting = { label = "Resting", when = "/heal", caps = DEF, weapons = true,
     weights = { hmp = 10, hhp = 4, refresh = 15, regen = 4, mp = 0.02 } },
   Movement = { label = "Movement", when = "running", weights = { move = 10 } },
+  -- Laid over whatever is worn (vanagear's include.Default): damage taken, by the toggle or below 40% HP; a pet's below
+  -- half its HP; and the ailment sets. Sleeping, Reraise and Town are yours to fill (/vg set).
+  Dt = { label = "Damage taken", when = "/vg dt, and by itself below 40% HP", caps = DEF,
+    weights = { dt = -10, pdt = -10, mdt = -8, hp = 0.05, meva = 0.1, def = 0.02 } },
+  PetDT = { label = "Pet damage taken", when = "your pet below half its HP", caps = DEF,
+    weights = merge(DT, { ["pet.dt"] = -5, ["pet.pdt"] = -5, ["pet.mdt"] = -3, ["pet.bdt"] = -2, ["pet.def"] = 0.05 }) },
+  Doomed = { label = "Doomed", when = "under Doom or Bane: what makes the cure land",
+    weights = { mod_enhances_cursna_rcvd = 3, mod_enhances_holywater = 1, cursna = 1 } },
+  Sleeping = { label = "Sleeping", when = "asleep (yours to fill)", weights = {} },
+  Reraise = { label = "Reraise", when = "weakened after a raise (yours to fill)", weights = {} },
+  Town = { label = "Town", when = "standing in a town (yours to fill)", weights = {} },
   PDT = { label = "Physical defence", when = "the PDT toggle", caps = DEF,
     weights = { dt = -6, pdt = -6, pdt2 = -6, dt2 = -6, hp = 0.05, def = 0.05, eva = 0.05, block = 2 } },
   MDT = { label = "Magic defence", when = "the MDT toggle", caps = DEF,

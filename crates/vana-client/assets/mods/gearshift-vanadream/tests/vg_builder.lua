@@ -121,3 +121,35 @@ assert(run.set_slot("Idle_Regen", "head", "Plain Hat"))
 assert(run.pieces("Idle_Regen")[4].name == "Plain Hat")
 assert(run.set_slot("Idle_Regen", "head", "auto") and run.pieces("Idle_Regen")[4].name == "Regen Hat")
 assert(run.slot_index("ear1") == 11 and run.slot_index("ring2") == 14 and run.slot_index("head") == 4)
+
+-- Status sets laid over the status set (vanagear's include.Default): Dt below 40% HP and by /vg dt, your own Town,
+-- Sleeping and Doomed sets, each only where it holds a piece.
+modes.kite, modes.th, modes.idle = nil, nil, nil
+run.rebuild()
+settle()
+local BUFFS = {}
+game.buffs = function() return BUFFS end
+local function worn_now()
+  sent, core.sent, core.mine = {}, {}, {}
+  run.tick()
+  return worn_slots()
+end
+assert(worn_now()[4] == 1, "the Idle set's head is the regen hat")
+P.hpp = 30
+assert(worn_now()[4] == 4, "below 40% HP the Dt set puts the plain hat's defence on")
+P.hpp = 100
+modes.pdt = true
+assert(worn_now()[4] == 4, "/vg dt pdt lays the physical set over it")
+modes.pdt = nil
+assert(worn_now()[4] == 1, "and takes it off")
+
+-- Your own sets: empty until you fill a slot.
+assert(run.set_slot("Town", "head", "Plain Hat") and run.set_slot("Sleeping", "left_ring", "Mind Ring"))
+game.info = function() return { zone = 26 } end
+res.zone = function() return "Port Jeuno" end
+assert(worn_now()[4] == 4, "in a town the Town set goes on")
+res.zone = function() return "Somewhere" end
+assert(worn_now()[4] == 1)
+BUFFS[1] = { id = 2 }
+assert(worn_now()[13] == 5, "asleep: the Sleeping set goes on")
+BUFFS[1] = nil

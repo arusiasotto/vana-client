@@ -9,6 +9,13 @@ local ITEMS = {
   [1004] = { name = "Mender Hat", slots = HEAD, jobs = WHM, races = ALL, level = 10, description = 'DEF:4 MND+2\n"Cure" potency +5%' },
   [1006] = { name = "Mind Ring", slots = RING, jobs = WHM, races = ALL, level = 1, description = "MND+4" },
 }
+-- What the server's tables say of them (see trusts.lua's test).
+require("src.build.server").H.items = function()
+  return {
+    [1001] = "1|4|16||||1=5,170=5||", [1002] = "40|4|16||||1=6,13=3,374=10||", [1004] = "10|4|16||||1=4,13=2,374=5||",
+    [1006] = "1|4|24576||||13=4||",
+  }
+end
 local BAG = { { slot = 1, id = 1001 }, { slot = 2, id = 1002 }, { slot = 4, id = 1004 }, { slot = 5, id = 1006 } }
 local TRUST = 0x01000001
 local PARTY = {

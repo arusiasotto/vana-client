@@ -14,12 +14,17 @@
 --
 -- A piece goes to one user: your own sets have first call on what you carry, then your trusts in party order, each
 -- built from what is left, so a trust gets the next best piece or leaves the slot empty.
+--
+-- The sets are built by vanagear's own engine (src/vg: its weights, caps, set bonuses, latents and rounds, over the
+-- server's item data and the augments the server applies), not by this mod's builder.
 
 local pick = require("src.build.pick")
-local sets = require("src.build.sets")
-local wslist = require("src.build.ws")
 local run = require("src.build.run")
 local core = require("src.core")
+local vplan = require("src.vg.plan")
+local score = require("src.vg.score")
+local pieces_of = require("src.vg.pieces")
+local vdata = require("src.vg.data")
 
 local M = {}
 
@@ -59,114 +64,124 @@ end
 
 -- ---- What a trust's sets are ----
 
--- What an Engaged set values, by job: a set of the catalogue, or "TANK" below.
-local ENGAGED = {
-  WAR = "TP", MNK = "TP_MNK", THF = "TP", DRK = "TP", BST = "TP", SAM = "TP", NIN = "TP", DRG = "TP", DNC = "TP",
-  BLU = "TP", PUP = "TP", RDM = "TP", PLD = "TANK", RUN = "TANK", RNG = "Midshot", COR = "Midshot",
-  WHM = "Idle", BLM = "Idle", SCH = "Idle", BRD = "Idle", GEO = "Idle", SMN = "Idle",
+-- What an Engaged set values, by job: one of roles.lua's modes, or "Tank" below.
+M.MODE_FOR = {
+  WAR = "Tp_Default", MNK = "Tp_Default", THF = "Tp_Default", DRK = "Tp_Default", BST = "Tp_Default",
+  SAM = "Tp_Default", NIN = "Tp_Default", DRG = "Tp_Default", DNC = "Tp_Default", BLU = "Tp_Default",
+  PUP = "Tp_Default", PLD = "Tank", RUN = "Tank", RNG = "Midshot", COR = "Midshot",
+  WHM = "Idle_Refresh", BLM = "Idle_Refresh", SCH = "Idle_Refresh", RDM = "Tp_Default", BRD = "Idle_Refresh",
+  GEO = "Idle_Refresh", SMN = "Idle_Refresh",
 }
+
+-- Jobs that hold hate: their Engaged set is a tank's and they get an Ability set for enmity.
 M.TANKS = { PLD = true, RUN = true }
+
+-- Jobs that stand back and cast: no Weaponskill set unless they use one.
 local CASTERS = { WHM = true, BLM = true, SCH = true, BRD = true, GEO = true, SMN = true }
 
--- Vanagear's trust-only tank mode (PDT -6, MDT -5, HP, enmity, defence, accuracy, Store TP, double attack, haste),
--- in this builder's stat names.
-local DT_CAP = { dt = -50, pdt = -50, mdt = -50 }
-local TANK = { label = "Tank", when = "a trust that holds hate",
-  caps = { dt = -50, pdt = -50, mdt = -50, haste = 25 },
-  weights = { dt = -6, pdt = -6, mdt = -5, hp = 0.04, enmity = 1, def = 0.03, meva = 0.05, acc = 0.3, stp = 0.6,
-    da = 0.8, haste = 1.5 } }
-local ENMITY = { label = "Enmity", when = "a tank's job abilities", caps = DT_CAP,
-  weights = { enmity = 3, dt = -1.5, pdt = -1.5, mdt = -1, hp = 0.03 } }
+-- Trust-only modes, laid out like roles.lua's.
+local DT = { PDT = -50, MDT = -50 }
+local TRUST_MODES = {
+  Tank = {
+    Stats = { PDT = -6, MDT = -5, HP = 0.04, ENMITY = 1, DEF = 0.03, MEVA = 0.05, ACC = 0.3, STORETP = 0.6,
+      DOUBLE_ATTACK = 0.8, HASTE_GEAR = 1.5 },
+    Caps = { PDT = -50, MDT = -50, HASTE_GEAR = 25 },
+  },
+  Enmity = { Stats = { ENMITY = 3, PDT = -1.5, MDT = -1, HP = 0.03 }, Caps = DT },
+}
 
--- The server's spell kinds (trustgearutils::SpellKind): the name of its set here and the catalogue set it is built
--- from. Enfeebling reads INT for the jobs that cast it off INT.
+-- The server's spell kinds (trustgearutils::SpellKind): the name of its set here and the roles.lua mode it is built
+-- from.
 M.KINDS = {
-  { key = "cure", name = "Cure", set = "Cure" },
-  { key = "nuke", name = "Nuke", set = "Nuke" },
-  { key = "enfeebling", name = "Enfeebling", set = "Enfeebling_MND", int = "Enfeebling_INT" },
-  { key = "enhancing", name = "Enhancing", set = "Enhancing" },
-  { key = "dark", name = "Dark", set = "Dark" },
-  { key = "divine", name = "Divine", set = "Divine" },
-  { key = "song", name = "Song", set = "Songs_Buff" },
-  { key = "ninjutsu", name = "Ninjutsu", set = "Ninjutsu_Nuke" },
-  { key = "bluemagic", name = "Blue Magic", set = "BluPhys" },
-  { key = "geomancy", name = "Geomancy", set = "Geo" },
+  { key = "cure", name = "Cure", mode = "Cure" },
+  { key = "nuke", name = "Nuke", mode = "Nuke" },
+  { key = "enfeebling", name = "Enfeebling", mode = "Enfeebling" },
+  { key = "enhancing", name = "Enhancing", mode = "Enhancing" },
+  { key = "dark", name = "Dark", mode = "Dark" },
+  { key = "divine", name = "Divine", mode = "Divine" },
+  { key = "song", name = "Song", mode = "Song" },
+  { key = "ninjutsu", name = "Ninjutsu", mode = "Ninjutsu" },
+  { key = "bluemagic", name = "Blue Magic", mode = "BluePhysical" },
+  { key = "geomancy", name = "Geomancy", mode = "Geomancy" },
 }
 local KIND_BY_KEY = {}
 for _, k in ipairs(M.KINDS) do KIND_BY_KEY[k.key] = k end
-local INT_ENFEEBLERS = { BLM = true, DRK = true, BLU = true, GEO = true, SCH = true }
 
--- A weapon skill's id by the server's name for it ("savage_blade"), from the weapon skills we know.
-local ws_by_key
-local function ws_ids()
-  if ws_by_key then return ws_by_key end
-  ws_by_key = {}
-  for id in pairs(wslist) do
-    local a = M.H.ability(id)
-    if a and a.name then ws_by_key[(a.name:lower():gsub("'", ""):gsub("[^%w]+", "_"))] = id end
-  end
-  return ws_by_key
-end
+-- The spell kinds a job's trusts cast, until the server says what this one uses.
+local JOB_KINDS = {
+  WHM = { "cure", "enhancing", "divine" }, RDM = { "enfeebling", "enhancing", "cure", "nuke" },
+  BLM = { "nuke", "enfeebling", "dark" }, SCH = { "nuke", "cure", "enhancing" }, PLD = { "cure", "divine" },
+  DRK = { "dark" }, NIN = { "ninjutsu" }, BLU = { "bluemagic" }, BRD = { "song" }, GEO = { "geomancy", "nuke" },
+  RUN = { "enhancing" },
+}
 
--- An ability's catalogue set by the server's name for it ("mighty_strikes").
-local ability_by_key
-local function ability_sets()
-  if ability_by_key then return ability_by_key end
-  ability_by_key = {}
-  for name, def in pairs(sets.SETS) do
-    if def.ability then ability_by_key[(name:lower():gsub("'", ""):gsub("[^%w]+", "_"))] = name end
-  end
-  return ability_by_key
-end
-
--- The sets planned for a trust: {name, key, def, set (the catalogue name, for the references), when}. `uses` is what
--- the server said the trust uses ({name, kind}), nil until it does.
+-- The sets planned for a trust: {name, key, mode (a roles.lua mode table), when}. `uses` is what the server said the
+-- trust uses ({name, kind}), nil until it does.
 function M.plan(t, uses)
+  local job = vplan.Job(t.job)
+  -- the job template's band for the trust's level laid over its all-level tweaks, as your own sets are built
+  local tweaks = vplan.BandTweaks(job, t.level or 99)
+  local function named(name)
+    local m = TRUST_MODES[name]
+    if m then
+      local c = { Name = name, Stats = {}, Caps = {} }
+      for k, v in pairs(m.Stats) do c.Stats[k] = v end
+      for k, v in pairs(m.Caps or {}) do c.Caps[k] = v end
+      return c
+    end
+    return vplan.Mode(name, tweaks)
+  end
+
   local list, seen = {}, {}
-  local function add(name, def, set, when)
+  local function add(name, mode, when)
     local key = M.key(name)
-    if key ~= "" and not seen[key] and def then
+    if key ~= "" and not seen[key] then
       seen[key] = true
-      list[#list + 1] = { name = name, key = key, def = def, set = set, when = when }
+      list[#list + 1] = { name = name, key = key, mode = mode, when = when }
     end
   end
-  local function catalogue(name) return sets.SETS[name], name end
 
-  -- A trust needs no Idle set: it fights in Engaged and its abilities, spells and weapon skills swap in over that
-  -- (out of a fight the server falls back to Engaged).
-  local engaged = ENGAGED[t.job] or "TP"
-  if engaged == "TANK" then
-    add("Engaged", TANK, nil, "fighting: damage taken down and enmity")
-  else
-    add("Engaged", sets.SETS[engaged], engaged, "fighting")
-  end
+  -- A trust needs no Idle set: it fights in Engaged and its abilities, spells and weaponskills swap in over that (out
+  -- of a fight the server falls back to Engaged).
+  local tank = M.TANKS[t.job]
+  add("Engaged", named(M.MODE_FOR[t.job] or "Tp_Default"), tank and "fighting: damage taken down and enmity" or "fighting")
 
   local kinds, uses_ws = {}, false
-  for _, u in ipairs(uses or {}) do
-    if KIND_BY_KEY[u.kind] then kinds[u.kind] = true end
-    if u.kind == "weaponskill" then uses_ws = true end
-  end
-  if uses_ws then add("Weaponskill", sets.SETS.WS, "WS", "any weapon skill without a set of its own") end
-  for _, k in ipairs(M.KINDS) do
-    if kinds[k.key] then
-      local set = (k.int and INT_ENFEEBLERS[t.job]) and k.int or k.set
-      add(k.name, sets.SETS[set], set, string.lower(k.name) .. " spells")
+  if uses then
+    for _, u in ipairs(uses) do
+      if KIND_BY_KEY[u.kind] then kinds[u.kind] = true end
+      if u.kind == "weaponskill" then uses_ws = true end
     end
+  else
+    for _, k in ipairs(JOB_KINDS[t.job] or {}) do kinds[k] = true end
+    uses_ws = not CASTERS[t.job]
   end
-  if M.TANKS[t.job] then add("Ability", ENMITY, nil, "job abilities: enmity") end
+  if uses_ws then add("Weaponskill", named("Ws_Default"), "any weapon skill without a set of its own") end
+  for _, k in ipairs(M.KINDS) do
+    if kinds[k.key] then add(k.name, named(k.mode), string.lower(k.name) .. " spells") end
+  end
+  if tank then add("Ability", named("Enmity"), "job abilities: enmity") end
 
-  -- Each weapon skill it uses that we know the facts of gets a set of its own, and each job ability it uses that
-  -- the catalogue has gear for.
-  for _, u in ipairs(uses or {}) do
-    if u.kind == "weaponskill" then
-      local id = ws_ids()[u.name]
-      if id then
-        local def, set = run.set_def("WS:" .. id), "WS:" .. id
-        add(M.pretty(u.name), def, set, M.pretty(u.name))
+  -- Each weaponskill it uses that the server's scripts give stat modifiers for gets a set of its own, and each job
+  -- ability it uses that the server reads gear for (data/abilities.lua) gets its own swap-in.
+  if uses then
+    local ws_by_key, ability_by_key = {}, {}
+    for _, ws in pairs(vdata.Weaponskills()) do ws_by_key[ws.key] = ws end
+    for _, a in pairs(vdata.Abilities()) do ability_by_key[a.key] = a end
+    for _, u in ipairs(uses) do
+      local ws = ws_by_key[u.name]
+      if u.kind == "weaponskill" and ws and next(ws.wsc) ~= nil then
+        local display = M.pretty(u.name)
+        add(display, vplan.WsMode(ws, display), display)
       end
-    elseif u.kind == "ability" then
-      local set = ability_sets()[u.name]
-      if set then add(M.pretty(u.name), sets.SETS[set], set, M.pretty(u.name)) end
+      local a = ability_by_key[u.name]
+      if u.kind == "ability" and a then
+        local m = { Name = M.pretty(u.name), Stats = {}, Caps = {} }
+        for _, mod in ipairs(a.mods) do
+          if mod ~= "ONE_HOUR_RECAST" and vdata.ModId(mod) then m.Stats[mod] = 1 end
+        end
+        if next(m.Stats) ~= nil then add(m.Name, m, m.Name) end
+      end
     end
   end
   return list
@@ -326,22 +341,11 @@ end
 -- ---- Building ----
 
 local built = {}           -- trust id -> { sig, plan, final = {key -> {slot -> name}}, ids = {key -> "..."} }
-local cand_cache = {}      -- "job|level" -> candidates
-local cand_count = 0
 
-local function candidates(job_id, level, sub_id)
-  local key = job_id .. "|" .. level .. "|" .. (sub_id or 0)
-  local c = cand_cache[key]
-  if not c then
-    if cand_count >= 12 then cand_cache, cand_count = {}, 0 end
-    c = pick.candidates(run.state.index, job_id, nil, level, sub_id)
-    cand_cache[key] = c
-    cand_count = cand_count + 1
-  end
-  return c
+-- The trust as the engine needs it. Trusts have no race limit, and their support job's gear may be worn too.
+function M.who(t)
+  return { Job = t.job_id, JobName = t.job, Level = t.level, Sub = sub_of(t), SubLevel = 0, Race = 0 }
 end
-
-local function cap_for(level) return level > 75 and 99 or 75 end
 
 -- The pool for a trust: our equip bags less what we and the trusts before it hold.
 local function pool_for(order, upto)
@@ -371,15 +375,10 @@ local function pool_for(order, upto)
   return pool, table.concat(keys, ",")
 end
 
--- The final piece names of a set: our picks over what was built.
-local function final_of(t, entry, result)
+-- The final piece names of a set (slots 0 to 15): our picks over what was built (slots 1 to 16, vanagear's numbering).
+local function final_of(t, entry, set)
   local out = {}
-  for slot, o in pairs(result.slots) do
-    if o.pick then
-      local rec = pick.item(o.pick.id)
-      if rec then out[slot] = rec.name end
-    end
-  end
+  for slot, piece in pairs(set) do out[slot - 1] = piece.Name end
   local mine = saved().own[t.name] and saved().own[t.name][entry.name] or {}
   for slot, n in pairs(pick.SLOT_NAMES) do
     if mine[n] == "remove" then
@@ -425,12 +424,14 @@ local function refresh(order, n)
   if b and b.sig == sig then return false end
 
   local plan = M.plan(t, i.uses)
-  local at_level = candidates(t.job_id, t.level, sub_of(t))
-  local cap = cap_for(t.level)
-  local at_cap = candidates(t.job_id, cap)
-  local owns = {}
-  for _, o in ipairs(pool) do owns[o.id] = true end
-  local ok, bis = pcall(require, "src.build.bis")
+  local who = M.who(t)
+  local slots = {}
+  for slot = 1, 16 do slots[slot] = slot end
+  local pieces = {}
+  for _, o in ipairs(pool) do
+    local piece = pieces_of.of(o)
+    if piece then pieces[#pieces + 1] = piece end
+  end
 
   local nb = { sig = sig, plan = plan, final = {}, ids = {}, result = {} }
   local owned_index = {}
@@ -440,12 +441,9 @@ local function refresh(order, n)
     if not owned_index[key] then owned_index[key] = o.id end
   end
   for _, entry in ipairs(plan) do
-    local ctx = { job = t.job, job_id = t.job_id, sub_id = sub_of(t), race = nil, level = t.level, cap = cap, owned = pool, owns = owns,
-      at_cap = at_cap, at_level = at_level, names = run.state.names, mage = false, weapons = true, melee_sets = sets.MELEE_SETS,
-      bis = (ok and bis and entry.set) and bis.lookup(cap, t.job, entry.set) or nil }
-    local r = pick.build(ctx, entry.def, entry.key)
-    nb.result[entry.key] = r
-    nb.final[entry.key] = final_of(t, entry, r)
+    local set, _, total = score.Build(score.Compile(entry.mode), pieces, who, slots, { 0 }, true)
+    nb.result[entry.key] = { set = set, score = total }
+    nb.final[entry.key] = final_of(t, entry, set)
     nb.ids[entry.key] = ids_of(nb.final[entry.key], owned_index)
   end
   built[t.id] = nb
@@ -585,21 +583,32 @@ function M.reset_set(t, set_name)
   M.rebuild()
 end
 
--- The pieces we carry that the trust's job and level may wear in a slot, the set's best first: {name, score}.
+-- The pieces we carry that the trust's job and level may wear in a slot, the set's best first: {name, score}. The score
+-- is the piece's own weighted stats for the set (caps and set bonuses need a whole set).
 function M.alternatives(t, set_name, slot)
   local entry
   for _, e in ipairs(M.plan_of(t)) do
     if e.name == set_name then entry = e end
   end
+  local compiled = entry and score.Compile(entry.mode)
+  local who = M.who(t)
+  if compiled then compiled.Who = who end
   local list, seen = {}, {}
   for _, o in ipairs(run.state.owned or {}) do
-    local rec = pick.item(o.id)
-    if not seen[o.name] and pick.fits(rec, slot, t.job_id, nil, t.level, sub_of(t)) then
+    local piece = pieces_of.of(o)
+    if piece and not seen[o.name] and pieces_of.can_wear(piece, slot + 1, who, true) then
       seen[o.name] = true
-      list[#list + 1] = { name = o.name, score = entry and pick.score(pick.stats_of(o.id, o.augments), entry.def) or 0 }
+      local rate = 0
+      if compiled then
+        for k, v in pairs(score.Vector(piece, slot + 1, compiled, { 0 })) do rate = rate + (compiled.w[k] or 0) * v end
+      end
+      list[#list + 1] = { name = o.name, score = rate }
     end
   end
-  table.sort(list, function(a, b) return a.score > b.score end)
+  table.sort(list, function(a, b)
+    if a.score ~= b.score then return a.score > b.score end
+    return a.name < b.name
+  end)
   return list
 end
 

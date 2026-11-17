@@ -1371,16 +1371,172 @@
       "description": "For the Vanadreams server: builds gear sets for each trust you call from the pieces in your bags and sends them with !trustgear (/vg trusts), and builds every set of your job from the gear you hold (//vg). Also swaps gear around your actions from your LuAshitacast profile. A copy of Gearshift: turn the original off while this one is on.",
       "files": [
         {
+          "path": "data/abilities.lua",
+          "sha256": "687830a26e28ccea74695f44b944fb6c40ad3e200828fb6e6ca4c281ed15ea6b",
+          "size": 16917,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/abilities.lua"
+        },
+        {
+          "path": "data/augments.lua",
+          "sha256": "dca1d2caa6e43612d03e77b17c1f5ba894e613dc2b4d6716d0aa18050acaba9d",
+          "size": 22189,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/augments.lua"
+        },
+        {
           "path": "data/build.lua",
-          "sha256": "99dd60ae6ebb6d13b097e21580d8a9eaeaabdc88cd8a2778921bfd2869f8a324",
-          "size": 2570,
+          "sha256": "f233d97050e5a25c9813925fddfd8fe98606bb73994e0d7cef8e0945e8f8a681",
+          "size": 4002,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/build.lua"
         },
         {
+          "path": "data/gearsets.lua",
+          "sha256": "c00ecd1c89ff4142e66956d2557344fece09538b301a3b206c7e7828bd2675d0",
+          "size": 16190,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/gearsets.lua"
+        },
+        {
           "path": "data/items.lua",
-          "sha256": "a830ab2726d507a41403823fec068a01bd4ce0a1b01df8150947b7f704f9fcec",
-          "size": 948760,
+          "sha256": "29adddbc28153bbfa10dd7a5b4179972c6a940b846786714d3ce88405aba9aaf",
+          "size": 965679,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/items.lua"
+        },
+        {
+          "path": "data/jobs/BLM.lua",
+          "sha256": "ca69029b96afea60d71755e8126abead0e7fbb58463178edc5b7a44efdcd75c2",
+          "size": 6445,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/BLM.lua"
+        },
+        {
+          "path": "data/jobs/BLU.lua",
+          "sha256": "5647af1556aacf1b1dcc47c87be90a392a645faab60d95d0374fd0c761a09bb8",
+          "size": 5889,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/BLU.lua"
+        },
+        {
+          "path": "data/jobs/BRD.lua",
+          "sha256": "22c7bbb5c6d5dc1982c8cc4b9e4561774ed4786d5abd7db71280ca020c856855",
+          "size": 5041,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/BRD.lua"
+        },
+        {
+          "path": "data/jobs/BST.lua",
+          "sha256": "e1e20b487da09ba964acfb7075af79c1735a0c0f2a1fd16720d7a1166e71b940",
+          "size": 4899,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/BST.lua"
+        },
+        {
+          "path": "data/jobs/COR.lua",
+          "sha256": "b90874c73887f06a76d8b528c461cbf8e38003fd27ee179c71bb971ce459d9e4",
+          "size": 5237,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/COR.lua"
+        },
+        {
+          "path": "data/jobs/DNC.lua",
+          "sha256": "6ab19be30e77e6fcf704d8ff03c8789d2f8c34843fc5c8d6e3208cc09e776e06",
+          "size": 4692,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/DNC.lua"
+        },
+        {
+          "path": "data/jobs/DRG.lua",
+          "sha256": "51257b2ad5c17b2f11049ef0fa5ea831dd982b83d25a89c2ce6198b12181dd79",
+          "size": 5309,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/DRG.lua"
+        },
+        {
+          "path": "data/jobs/DRK.lua",
+          "sha256": "a9103cc17377f57edd692f301cb3e37065a2d87f733afa168c81f527c1f364f8",
+          "size": 4651,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/DRK.lua"
+        },
+        {
+          "path": "data/jobs/GEO.lua",
+          "sha256": "9594ad46052a9b5e2c8609767c4e170ce07c61231b527332ad475f7ee8ff8e1c",
+          "size": 4037,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/GEO.lua"
+        },
+        {
+          "path": "data/jobs/MNK.lua",
+          "sha256": "da825241edbb2de09f500cb35b15f2e1125c92f71b10168e61659b3a6c16410b",
+          "size": 4397,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/MNK.lua"
+        },
+        {
+          "path": "data/jobs/NIN.lua",
+          "sha256": "1ee39af30075725d8c438fd4c76a95f89274f759c69aef2e3eb9fcf965026fd8",
+          "size": 7680,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/NIN.lua"
+        },
+        {
+          "path": "data/jobs/PLD.lua",
+          "sha256": "24fc948820a3a8972ec1dac89a1a0ee64fd880d38bcaf6422330851099b02f12",
+          "size": 7454,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/PLD.lua"
+        },
+        {
+          "path": "data/jobs/PUP.lua",
+          "sha256": "3fe2d0e6794d7162b8e04bd891c5e12015be6bc3220fe0ea2921e0c852ff24f3",
+          "size": 5814,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/PUP.lua"
+        },
+        {
+          "path": "data/jobs/RDM.lua",
+          "sha256": "a40fc2350017eac19a9c5fdb9e4c11b82a312d9f8aff3b8c02f7ae07fb544fa9",
+          "size": 6885,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/RDM.lua"
+        },
+        {
+          "path": "data/jobs/RNG.lua",
+          "sha256": "8ff3a2c2313bd8d416df87ca0b2347feb60b8c44b08b6a5b95e910cfc81478b3",
+          "size": 4252,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/RNG.lua"
+        },
+        {
+          "path": "data/jobs/RUN.lua",
+          "sha256": "5affc95e950a3db5c080eff717fbfe66f0ccc8fd81e6bdd3658003ebae6f10ce",
+          "size": 5515,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/RUN.lua"
+        },
+        {
+          "path": "data/jobs/SAM.lua",
+          "sha256": "73bbbf810247edc0b06019db0c5f01fe9be6f4f1905b7c2364724e8f445df901",
+          "size": 3813,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/SAM.lua"
+        },
+        {
+          "path": "data/jobs/SCH.lua",
+          "sha256": "9364c83cdef1a458bd0ea133488597a07e201ab45e8a6c1ffe2b2438d04bc6a2",
+          "size": 6271,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/SCH.lua"
+        },
+        {
+          "path": "data/jobs/SMN.lua",
+          "sha256": "25b4f8cd752bf189af7894f6f2c7f5160d70be9f0729db4d59b07f4b38d02549",
+          "size": 6357,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/SMN.lua"
+        },
+        {
+          "path": "data/jobs/THF.lua",
+          "sha256": "821e8e0912152a2550f7ba803fe0b476f8c9ba8d8ad55bf70b7e5e5ae249a277",
+          "size": 3882,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/THF.lua"
+        },
+        {
+          "path": "data/jobs/WAR.lua",
+          "sha256": "4cb21660dbd924adeb19256a7e1f9b6b78a4385862d4272d3ad130a957c3ede0",
+          "size": 3636,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/WAR.lua"
+        },
+        {
+          "path": "data/jobs/WHM.lua",
+          "sha256": "710359658826e02fa541ec65587fdc74790d78a8aa54924ae297c4f0967766d4",
+          "size": 5828,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/jobs/WHM.lua"
+        },
+        {
+          "path": "data/latents.lua",
+          "sha256": "a5ce570b00cb51bfaf10de8ea408e7f9acfb34052dd43cb2a97c35c7fe53f2f2",
+          "size": 19246,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/latents.lua"
         },
         {
           "path": "data/mods.lua",
@@ -1395,6 +1551,12 @@
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/slotblocks.lua"
         },
         {
+          "path": "data/weaponskills.lua",
+          "sha256": "6f2aa1c9f358c56ada44ddf7fef624a462ea10a25a48705ae12b71c12efa3acc",
+          "size": 20230,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/weaponskills.lua"
+        },
+        {
           "path": "init.lua",
           "sha256": "7a48d1804ca4b934148daa62fa50f6f2fbaf05d188672979fa826d636a308a63",
           "size": 3431,
@@ -1402,7 +1564,7 @@
         },
         {
           "path": "mod.toml",
-          "sha256": "d4d0f584b25f7a55a5b0d41562b1d370ed63bb22ed7562181ceddc8d85c779a2",
+          "sha256": "743a0736ad8b9e7b56cf4f7ef31a8eb6a985f28662b628ab4be807a2524cac1a",
           "size": 4821,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/mod.toml"
         },
@@ -1420,26 +1582,26 @@
         },
         {
           "path": "src/build/pick.lua",
-          "sha256": "47e4bb84db4bd0055fe01260b0df6915a1b373f52d00f8b6f6e64fa143f3f9e8",
-          "size": 14012,
+          "sha256": "f93999b32ed41eb9bb7c0955b37f8b847fbd4e1eb01cb49fffc5b55c1c772bb4",
+          "size": 14342,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/pick.lua"
         },
         {
           "path": "src/build/run.lua",
-          "sha256": "6b7cbd2f86c280c90ab9af515631f511a413bd3b2dfbb385e8719ef7b2fda20d",
-          "size": 29076,
+          "sha256": "315051febbdeb8075295a409598b4b3c0480ae6d41481b98df99f3502983e709",
+          "size": 32211,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/run.lua"
         },
         {
           "path": "src/build/server.lua",
-          "sha256": "b3846540954f5362c4cf5e43270412caafef3bdd9453a6500cb62d7c00c56fd1",
-          "size": 8944,
+          "sha256": "8dedc249099f2e1a09784f72498ba3fe6add6a46ba928ed9867ee333a68e77ed",
+          "size": 9584,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/server.lua"
         },
         {
           "path": "src/build/sets.lua",
-          "sha256": "86dd6f67617d6ef93ffce568b3b061d0d0710c1418b93a14966ab8cc0093cb3f",
-          "size": 26179,
+          "sha256": "e9cab1e8ed61caffd558fe17fd1e3625ad2d558dec86ddf651505143d9c3842a",
+          "size": 27275,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/sets.lua"
         },
         {
@@ -1450,8 +1612,8 @@
         },
         {
           "path": "src/build/window.lua",
-          "sha256": "aa02c68697c6a09ee698fc26f9be214f9c59291eb91e6bae0dfe440607c63193",
-          "size": 10368,
+          "sha256": "6b97c45a5518e4ed02ba93bd04ff44ef1c8f191e34455e19aa5f1d16e069727a",
+          "size": 10390,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/window.lua"
         },
         {
@@ -1468,8 +1630,8 @@
         },
         {
           "path": "src/core.lua",
-          "sha256": "77f088304e0da563f4694ebb701cc55f370e189078156d7cd70b0337e917f4cf",
-          "size": 12902,
+          "sha256": "118f28eacf748b1a9820ba5811c8dddc4995c17051295dc817a6dd99c875a81e",
+          "size": 13048,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/core.lua"
         },
         {
@@ -1492,8 +1654,8 @@
         },
         {
           "path": "src/trusts.lua",
-          "sha256": "4219c83fb3e3a35f1187f085e65e431a0fe19d9911cdee786e7e25349c539844",
-          "size": 26787,
+          "sha256": "a1af094b4fad90a83a3a413a09a819cbc17e5c461a4a7e80170f3a382ee2f2f2",
+          "size": 27657,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/trusts.lua"
         },
         {
@@ -1501,12 +1663,42 @@
           "sha256": "a33d569ecbd1eecbbf03d4e7359a5a133d63fda23dd8022f9da6f50097528b88",
           "size": 12326,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/vg.lua"
+        },
+        {
+          "path": "src/vg/data.lua",
+          "sha256": "579bad99fd9f9a90ecdeb1dc73d2ba27ad0f0c1a1559c4109cc2e6f4372cda33",
+          "size": 1193,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/vg/data.lua"
+        },
+        {
+          "path": "src/vg/pieces.lua",
+          "sha256": "367e9255bf930735647f24c1edefc6b0f0300c0e7f33b79aba342747b16c21db",
+          "size": 5056,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/vg/pieces.lua"
+        },
+        {
+          "path": "src/vg/plan.lua",
+          "sha256": "0e2e405478d1b2c456856d7fc4482ae7654ee88dc72e0778ad07a4a293387dc5",
+          "size": 3073,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/vg/plan.lua"
+        },
+        {
+          "path": "src/vg/roles.lua",
+          "sha256": "94ad94ce1f89335a66a84b8da515eada38c80717d3c85f13baa58e52f6a01e7e",
+          "size": 22862,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/vg/roles.lua"
+        },
+        {
+          "path": "src/vg/score.lua",
+          "sha256": "398f3a115656b5708eed2e8a07ccf8f5d659b9e7c6966d3bac5663a386ff82d5",
+          "size": 14297,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/vg/score.lua"
         }
       ],
       "id": "gearshift-vanadream",
       "kind": "lua",
       "name": "Gearshift-vanadream",
-      "version": "0.1.1"
+      "version": "0.1.2"
     },
     {
       "authors": [],
