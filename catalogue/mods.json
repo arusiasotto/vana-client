@@ -1244,6 +1244,296 @@
     },
     {
       "authors": [],
+      "commands": {
+        "gs": {
+          "args": "<command>",
+          "help": "GearSwap's commands, for the loaded GearSwap file."
+        },
+        "lac": {
+          "args": "<command>",
+          "help": "LuAshitacast's commands, for the loaded profile."
+        },
+        "vg": {
+          "args": "",
+          "forms": [
+            {
+              "args": "help",
+              "help": "Lists the commands."
+            },
+            {
+              "args": "build",
+              "help": "Builds the sets again now."
+            },
+            {
+              "args": "status",
+              "help": "What is running, and your trusts."
+            },
+            {
+              "args": "dt [pdt|mdt|all|off]",
+              "help": "Damage taken gear over everything else: physical, magic or both."
+            },
+            {
+              "args": "tp default|hybrid|acc",
+              "help": "Which fighting set you wear."
+            },
+            {
+              "args": "nuke power|acc",
+              "help": "Damage or accuracy for nukes and enfeebles."
+            },
+            {
+              "args": "burst [on|off]",
+              "help": "Magic burst gear on nukes."
+            },
+            {
+              "args": "kite [on|off]",
+              "help": "Movement gear over everything else: run a monster around while it holds its target."
+            },
+            {
+              "args": "th [on|off]",
+              "help": "Treasure hunter gear over everything else."
+            },
+            {
+              "args": "idle auto|regen|refresh|speed",
+              "help": "Standing still: auto puts regen on below 60% HP and refresh below 70% MP; speed puts the movement gear over Idle."
+            },
+            {
+              "args": "pet tp|dt|acc",
+              "help": "What your gear does for your pet while it fights."
+            },
+            {
+              "args": "lock <slot|all>",
+              "help": "Keeps a slot as you have it: nothing equips it, kept for this job. unlock frees it."
+            },
+            {
+              "args": "weapon main|sub|range <item|none>",
+              "help": "Your weapon in every set; none leaves the slot alone."
+            },
+            {
+              "args": "why <set> <slot>",
+              "help": "The piece that won a slot and the ones behind it."
+            },
+            {
+              "args": "upgrades",
+              "help": "Pieces in storage that would win a slot of your sets."
+            },
+            {
+              "args": "set <set> <slot> <item|auto>",
+              "help": "Changes one slot of a built set; auto lets the builder pick again."
+            },
+            {
+              "args": "wear <set>",
+              "help": "Puts a built set on now."
+            },
+            {
+              "args": "trusts [on|off]",
+              "help": "Gives your called trusts the stats of a set from your bags; off stops sending to the server."
+            },
+            {
+              "args": "trusts window",
+              "help": "Opens the trust window: each trust's sets, a piece in every slot, and what it uses."
+            },
+            {
+              "args": "trusts <trust> [<set>]",
+              "help": "Shows a trust's sets, or one set's pieces."
+            },
+            {
+              "args": "trusts send",
+              "help": "Sends every set of every trust again."
+            },
+            {
+              "args": "trusts rebuild",
+              "help": "Builds the trusts' sets again."
+            },
+            {
+              "args": "trusts set <trust> <set> <slot> <item|remove|auto>",
+              "help": "Picks a piece yourself for one slot of a trust's set; auto frees it."
+            },
+            {
+              "args": "trusts use <trust> <on|off> <action>",
+              "help": "Switches a spell, ability or weapon skill off or on for a trust (!trustuse)."
+            },
+            {
+              "args": "mode <hybrid|acc|pdt|mdt|mb|macc|off>",
+              "help": "Gearshift's toggles: hybrid or accuracy TP, physical or magic defence, magic burst or magic accuracy nukes; off clears them."
+            },
+            {
+              "args": "file",
+              "help": "Shows the loaded gear file, or that the set builder's sets are worn."
+            },
+            {
+              "args": "reload",
+              "help": "Reads the gear file again."
+            }
+          ],
+          "help": "vanagear's commands: the window with the job's sets built from your bags, and your trusts' gear (Vanadreams server)."
+        }
+      },
+      "description": "For the Vanadreams server: builds gear sets for each trust you call from the pieces in your bags and sends them with !trustgear (/vg trusts), and builds every set of your job from the gear you hold (//vg). Also swaps gear around your actions from GearSwap job files and LuAshitacast profiles. A copy of Gearshift: turn the original off while this one is on.",
+      "files": [
+        {
+          "path": "data/build.lua",
+          "sha256": "99dd60ae6ebb6d13b097e21580d8a9eaeaabdc88cd8a2778921bfd2869f8a324",
+          "size": 2570,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/build.lua"
+        },
+        {
+          "path": "data/items.lua",
+          "sha256": "a830ab2726d507a41403823fec068a01bd4ce0a1b01df8150947b7f704f9fcec",
+          "size": 948760,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/items.lua"
+        },
+        {
+          "path": "data/mods.lua",
+          "sha256": "78c0f62a427e17a55c162b3522775004780d910d117974c161f434c5682346d3",
+          "size": 19212,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/mods.lua"
+        },
+        {
+          "path": "data/slotblocks.lua",
+          "sha256": "e268407556a88b0fbca4c45c81f50a8b24ee2f5b51fbbee21c2a4309119ffd80",
+          "size": 4646,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/data/slotblocks.lua"
+        },
+        {
+          "path": "init.lua",
+          "sha256": "0600fc30cfda7a66ce9624e4f958cf1cf2c2e4dec7fe5b0e3bd5b70314009dbc",
+          "size": 4508,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/init.lua"
+        },
+        {
+          "path": "mod.toml",
+          "sha256": "3c637d376290c5e2a4a7bfb670312e9d8c26d31b213717805be77f3593364742",
+          "size": 4847,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/mod.toml"
+        },
+        {
+          "path": "src/build/bis.lua",
+          "sha256": "b3a0d9ac3695d2bfa2e8557ed60147bc20a0c2d18939356144e8adf34975e76d",
+          "size": 51647,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/bis.lua"
+        },
+        {
+          "path": "src/build/blu.lua",
+          "sha256": "04203420f5de1128199346a0657fafecf404ae71b1e9c4afd0edd90840d8de6b",
+          "size": 4510,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/blu.lua"
+        },
+        {
+          "path": "src/build/pick.lua",
+          "sha256": "47e4bb84db4bd0055fe01260b0df6915a1b373f52d00f8b6f6e64fa143f3f9e8",
+          "size": 14012,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/pick.lua"
+        },
+        {
+          "path": "src/build/run.lua",
+          "sha256": "6b7cbd2f86c280c90ab9af515631f511a413bd3b2dfbb385e8719ef7b2fda20d",
+          "size": 29076,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/run.lua"
+        },
+        {
+          "path": "src/build/server.lua",
+          "sha256": "b3846540954f5362c4cf5e43270412caafef3bdd9453a6500cb62d7c00c56fd1",
+          "size": 8944,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/server.lua"
+        },
+        {
+          "path": "src/build/sets.lua",
+          "sha256": "86dd6f67617d6ef93ffce568b3b061d0d0710c1418b93a14966ab8cc0093cb3f",
+          "size": 26179,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/sets.lua"
+        },
+        {
+          "path": "src/build/stats.lua",
+          "sha256": "c4c20a1ffe9de90838d50347d57c059da2fdb45d8b38dce1fb3ff0ead7412f05",
+          "size": 18941,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/stats.lua"
+        },
+        {
+          "path": "src/build/window.lua",
+          "sha256": "aa02c68697c6a09ee698fc26f9be214f9c59291eb91e6bae0dfe440607c63193",
+          "size": 10368,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/window.lua"
+        },
+        {
+          "path": "src/build/ws.lua",
+          "sha256": "ed75f281fa4429df5a12e439fdbb8783dd23f048730ff134b9029ecbe462f43d",
+          "size": 31220,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/build/ws.lua"
+        },
+        {
+          "path": "src/compat.lua",
+          "sha256": "f95f7cdff5e89d6e02fbcc39427a6039af959570b7c23d8bc816f62257be8a9e",
+          "size": 5247,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/compat.lua"
+        },
+        {
+          "path": "src/core.lua",
+          "sha256": "77f088304e0da563f4694ebb701cc55f370e189078156d7cd70b0337e917f4cf",
+          "size": 12902,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/core.lua"
+        },
+        {
+          "path": "src/gs.lua",
+          "sha256": "97749a6781578efcb148f69645e7ebf6669e45000f74ffdd22598e63cc74e7c8",
+          "size": 27962,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/gs.lua"
+        },
+        {
+          "path": "src/lac.lua",
+          "sha256": "b8eb4ddd421798d63e5e042a5f2ccbccfd174c4435c0bc38e3993bc72a42f5b6",
+          "size": 22446,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/lac.lua"
+        },
+        {
+          "path": "src/modes.lua",
+          "sha256": "77faefbca23148dc5271e981d5491ea4b1b553c6cb3a810e65d69482211138ae",
+          "size": 4356,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/modes.lua"
+        },
+        {
+          "path": "src/names.lua",
+          "sha256": "3339fc27f8a2d66e93ad92cb7df5b151be344a04df81e6e3619b4e587b403750",
+          "size": 4242,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/names.lua"
+        },
+        {
+          "path": "src/texts.lua",
+          "sha256": "0f4b49b146188ea927da20da9a4196a333ef0799acb2830aada8e80eeb1ce99e",
+          "size": 10144,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/texts.lua"
+        },
+        {
+          "path": "src/trust_window.lua",
+          "sha256": "0bf10bcf63fda27c06bb7b799d84f677c149c2585ca1aaa9cc735011cadeb851",
+          "size": 6462,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/trust_window.lua"
+        },
+        {
+          "path": "src/trusts.lua",
+          "sha256": "4219c83fb3e3a35f1187f085e65e431a0fe19d9911cdee786e7e25349c539844",
+          "size": 26787,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/trusts.lua"
+        },
+        {
+          "path": "src/vg.lua",
+          "sha256": "fa67771313c6ad9212386de7ee1dd7411f7e521f58823420961122218603d405",
+          "size": 10506,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/vg.lua"
+        },
+        {
+          "path": "src/windower.lua",
+          "sha256": "c648c48fb9a8202783010f8185252b1cd8569f536510eeac4347419445b1eaf2",
+          "size": 6994,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/gearshift-vanadream/src/windower.lua"
+        }
+      ],
+      "id": "gearshift-vanadream",
+      "kind": "lua",
+      "name": "Gearshift-vanadream",
+      "version": "0.1.0"
+    },
+    {
+      "authors": [],
       "description": "Hides chosen parts of the interface in the Mog House, in town zones you name, while fighting or in cutscenes (the hide-the-HUD add-ons).",
       "files": [
         {

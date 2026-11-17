@@ -1,0 +1,76 @@
+name = "Gearshift-vanadream"
+version = "0.1.0"
+description = "For the Vanadreams server: builds gear sets for each trust you call from the pieces in your bags and sends them with !trustgear (/vg trusts), and builds every set of your job from the gear you hold (//vg). Also swaps gear around your actions from GearSwap job files and LuAshitacast profiles. A copy of Gearshift: turn the original off while this one is on."
+permissions = ["packets.read", "packets.write", "automation"]
+
+[settings.on]
+type = "bool"
+default = true
+label = "Gear Swapping"
+help = "Runs your GearSwap job file or LuAshitacast profile for the job you play (in this mod's data folder: gearswap/ or ashitacast/)."
+
+[settings.builder]
+type = "bool"
+default = true
+label = "Set Builder"
+help = "Builds every set of your job from the gear you hold (//vg shows them). With Wear These Sets on in that window, it wears them around your actions when no GearSwap or LuAshitacast file is loaded for the job."
+
+[settings.cap]
+type = "enum"
+default = "Auto"
+options = ["Auto", "75", "99"]
+label = "Level Cap"
+help = "The level cap the best-in-slot references are for: Auto takes 75 up to level 75 and 99 above it."
+
+[settings.ws_line]
+type = "bool"
+default = true
+label = "Weapon Skill Line"
+help = "With the set builder wearing sets: a chat line before each weapon skill naming the set it put on and how many pieces it changed. The model may show the set late or not at all (the game holds a look change during the weapon skill), but the gear is on before the skill."
+
+[settings.trustgear]
+type = "bool"
+default = true
+label = "Trust Gear"
+help = "Vanadreams server: builds gear sets for each trust you call from the pieces in your bags and sends them with !trustgear (/vg trusts). Needs the Set Builder on."
+
+[commands.gs]
+help = "GearSwap's commands, for the loaded GearSwap file."
+args = "<command>"
+
+[commands.lac]
+help = "LuAshitacast's commands, for the loaded profile."
+args = "<command>"
+
+[commands.vg]
+help = "vanagear's commands: the window with the job's sets built from your bags, and your trusts' gear (Vanadreams server)."
+args = ""
+forms = [
+  { args = "help", help = "Lists the commands." },
+  { args = "build", help = "Builds the sets again now." },
+  { args = "status", help = "What is running, and your trusts." },
+  { args = "dt [pdt|mdt|all|off]", help = "Damage taken gear over everything else: physical, magic or both." },
+  { args = "tp default|hybrid|acc", help = "Which fighting set you wear." },
+  { args = "nuke power|acc", help = "Damage or accuracy for nukes and enfeebles." },
+  { args = "burst [on|off]", help = "Magic burst gear on nukes." },
+  { args = "kite [on|off]", help = "Movement gear over everything else: run a monster around while it holds its target." },
+  { args = "th [on|off]", help = "Treasure hunter gear over everything else." },
+  { args = "idle auto|regen|refresh|speed", help = "Standing still: auto puts regen on below 60% HP and refresh below 70% MP; speed puts the movement gear over Idle." },
+  { args = "pet tp|dt|acc", help = "What your gear does for your pet while it fights." },
+  { args = "lock <slot|all>", help = "Keeps a slot as you have it: nothing equips it, kept for this job. unlock frees it." },
+  { args = "weapon main|sub|range <item|none>", help = "Your weapon in every set; none leaves the slot alone." },
+  { args = "why <set> <slot>", help = "The piece that won a slot and the ones behind it." },
+  { args = "upgrades", help = "Pieces in storage that would win a slot of your sets." },
+  { args = "set <set> <slot> <item|auto>", help = "Changes one slot of a built set; auto lets the builder pick again." },
+  { args = "wear <set>", help = "Puts a built set on now." },
+  { args = "trusts [on|off]", help = "Gives your called trusts the stats of a set from your bags; off stops sending to the server." },
+  { args = "trusts window", help = "Opens the trust window: each trust's sets, a piece in every slot, and what it uses." },
+  { args = "trusts <trust> [<set>]", help = "Shows a trust's sets, or one set's pieces." },
+  { args = "trusts send", help = "Sends every set of every trust again." },
+  { args = "trusts rebuild", help = "Builds the trusts' sets again." },
+  { args = "trusts set <trust> <set> <slot> <item|remove|auto>", help = "Picks a piece yourself for one slot of a trust's set; auto frees it." },
+  { args = "trusts use <trust> <on|off> <action>", help = "Switches a spell, ability or weapon skill off or on for a trust (!trustuse)." },
+  { args = "mode <hybrid|acc|pdt|mdt|mb|macc|off>", help = "Gearshift's toggles: hybrid or accuracy TP, physical or magic defence, magic burst or magic accuracy nukes; off clears them." },
+  { args = "file", help = "Shows the loaded gear file, or that the set builder's sets are worn." },
+  { args = "reload", help = "Reads the gear file again." },
+]
