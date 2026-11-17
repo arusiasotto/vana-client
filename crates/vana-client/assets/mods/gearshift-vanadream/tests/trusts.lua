@@ -9,9 +9,13 @@ local ITEMS = {
   [1003] = { name = "Plain Hat", slots = HEAD, jobs = WHM, races = ALL, level = 1, description = "DEF:10" },
   [1004] = { name = "Mender Hat", slots = HEAD, jobs = WHM, races = ALL, level = 10, description = 'DEF:4 MND+2\n"Cure" potency +5%' },
   [1006] = { name = "Mind Ring", slots = RING, jobs = WHM, races = ALL, level = 1, description = "MND+4" },
+  [1007] = { name = "Mind Club", slots = 1, jobs = WHM, races = ALL, level = 1, skill = 11, damage = 5, delay = 240,
+    description = "DMG:5 Delay:240 MND+8" },
+  [1008] = { name = "Lesser Club", slots = 1, jobs = WHM, races = ALL, level = 1, skill = 11, damage = 4, delay = 240,
+    description = "DMG:4 Delay:240 MND+5" },
 }
 local BAG = { { slot = 1, id = 1001 }, { slot = 2, id = 1002 }, { slot = 3, id = 1003 }, { slot = 4, id = 1004 },
-  { slot = 5, id = 1006 } }
+  { slot = 5, id = 1006 }, { slot = 6, id = 1007 }, { slot = 7, id = 1008 } }
 local TRUST = 0x01000001
 local PARTY = {
   { party = 0, id = 100, index = 1, name = "Tester", main_job = 3, main_level = 75, sub_job = 0, sub_level = 0 },
@@ -93,6 +97,9 @@ local ours = run.state.built.Cure.slots[4].pick.id
 local head = tonumber(b.ids.cure:match("^%d+ %d+ %d+ %d+ (%d+)"))
 assert(ours == 1002, "our Cure hat is the Healer Hat, not " .. tostring(ours))
 assert(head ~= 1002 and head ~= 0, "the trust took our hat or none: " .. tostring(head))
+-- A trust's sets name weapons too: our Cure set holds the better club, so the trust gets the other one.
+assert(run.state.built.Cure.slots[0].pick.id == 1007, "our Cure set takes the better club")
+assert(b.ids.cure:match("^(%d+) ") == "1008", "the trust's main hand is the club we do not use: " .. b.ids.cure)
 
 -- Every set with a piece is sent (the empty Weaponskill set is not: the server has none to clear), one line each,
 -- 1.2 s apart, with the 16 ids.
@@ -129,7 +136,7 @@ trusts.command({ "set", "Kupofried", "cure", "head", "Fast Hat" })
 guard = 0
 while trusts.step() and guard < 20 do guard = guard + 1 end
 pump()
-assert(#lines == 1 and lines[1]:match("^/say !trustgear 16777217 cure 0 0 0 0 1001 "), table.concat(lines, "\n"))
+assert(#lines == 1 and lines[1]:match("^/say !trustgear 16777217 cure 1008 0 0 0 1001 "), table.concat(lines, "\n"))
 
 -- A use switched off goes to the server as !trustuse.
 lines = {}

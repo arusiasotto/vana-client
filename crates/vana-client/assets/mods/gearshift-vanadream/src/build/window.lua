@@ -104,7 +104,7 @@ local function warnings(def, r)
     local rec = pick.item(e.id)
     for slot = 0, 15 do
       local o = r and r.slots[slot]
-      if o and pick.fits(rec, slot, p.main_job or 0, me.race, run.state.level) then
+      if o and pick.fits(rec, slot, p.main_job or 0, me.race, run.state.level, p.sub_job) then
         local s = pick.stats_of(e.id, e.augments)
         local mine = o.pick and pick.score(o.pick.s, def) or 0
         if pick.score(s, def) > mine and #out < 3 then
@@ -178,7 +178,7 @@ local function alternatives(name, def, slot)
   local seen, cands = {}, {}
   for _, e in ipairs(run.state.owned or {}) do
     local rec = pick.item(e.id)
-    if pick.fits(rec, slot, p.main_job or 0, me.race, run.state.level) and not seen[e.key] then
+    if pick.fits(rec, slot, p.main_job or 0, me.race, run.state.level, p.sub_job) and not seen[e.key] then
       seen[e.key] = true
       local s = pick.stats_of(e.id, e.augments)
       local sh = o and o.ref and (pick.share(s, o.ref.s, def)) or 0

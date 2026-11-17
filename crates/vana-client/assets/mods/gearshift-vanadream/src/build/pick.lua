@@ -104,10 +104,13 @@ end
 
 -- ---- What may go in a slot ----
 
--- Job and race may wear it, in this slot, at this level (nil: any level).
-function M.fits(rec, slot, job_id, race, level)
+-- Job and race may wear it, in this slot, at this level (nil: any level). The Vanadreams server lets the support job's
+-- gear be worn too (sub_id), at the main job's level.
+function M.fits(rec, slot, job_id, race, level, sub_id)
   if not rec or not rec.slots or rec.slots & (1 << slot) == 0 then return false end
-  if rec.jobs & (1 << job_id) == 0 then return false end
+  if rec.jobs & (1 << job_id) == 0 and not (sub_id and sub_id > 0 and rec.jobs & (1 << sub_id) ~= 0) then
+    return false
+  end
   if race and rec.races and rec.races & (1 << race) == 0 then return false end
   if level and (rec.level or 0) > level then return false end
   if (rec.superior_level or 0) > 0 then return false end
@@ -203,15 +206,15 @@ local function by_share(cands, ref, set, used)
   return best, best_sh
 end
 
--- The pieces the job and race may wear in each slot at a level (nil: any), from the index: {slot = {{id, rec, s}}},
+-- The pieces the job (and support job) and race may wear in each slot at a level (nil: any), from the index: {slot = {{id, rec, s}}},
 -- stats read as they go. Paced.
-function M.candidates(index, job_id, race, level)
+function M.candidates(index, job_id, race, level, sub_id)
   local out = {}
   for slot = 0, 15 do
     local list = {}
     for _, id in ipairs(index[slot] or {}) do
       local rec = M.item(id)
-      if M.fits(rec, slot, job_id, race, level) then
+      if M.fits(rec, slot, job_id, race, level, sub_id) then
         list[#list + 1] = { id = id, key = id, rec = rec, s = M.stats_of(id) }
       end
       M.pace()
@@ -225,8 +228,9 @@ end
 -- at_level (M.candidates at the cap and at our level), bis (curated {slot = item name or id} or nil), names (name -> id).
 -- Returns {slots = {slot = {pick, share, how, ref, worth}}, score}.
 function M.build(ctx, set, set_name)
-  -- Only pure mages swap weapons (main, sub or range resets TP), and not in melee sets.
-  local swap_weapons = ctx.mage and not set.ws and not ctx.melee_sets[set_name]
+  -- Only pure mages swap weapons (main, sub or range resets TP), and not in melee sets; a trust never wears anything, so
+-- its sets (ctx.weapons) name weapons in every slot.
+  local swap_weapons = ctx.weapons or (ctx.mage and not set.ws and not ctx.melee_sets[set_name])
   local function wanted(slot) return swap_weapons or not WEAPON_SLOTS[slot] end
 
   -- The owned pieces, wearable now, by slot.
@@ -234,7 +238,7 @@ function M.build(ctx, set, set_name)
   for _, o in ipairs(ctx.owned) do
     local rec = M.item(o.id)
     for slot = 0, 15 do
-      if wanted(slot) and M.fits(rec, slot, ctx.job_id, ctx.race, ctx.level) then
+      if wanted(slot) and M.fits(rec, slot, ctx.job_id, ctx.race, ctx.level, ctx.sub_id) then
         owned[slot] = owned[slot] or {}
         table.insert(owned[slot], { id = o.id, key = o.key, rec = rec, s = M.stats_of(o.id, o.augments), owned = o })
       end

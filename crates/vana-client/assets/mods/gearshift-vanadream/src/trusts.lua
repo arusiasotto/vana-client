@@ -193,6 +193,12 @@ local info_version = 0     -- bumped by every answer: a trust's sets are built a
 local checked_at = 0       -- the work looks again at this time (an answer, a party change or a pick resets it)
 local asked = {}           -- trust id -> true once its info was asked for
 
+-- A trust's support job: the server's word for it, else the party's. Its gear may be worn too (Vanadreams).
+local function sub_of(t)
+  local i = info[t.id]
+  return (i and (i.sub or 0) > 0) and i.sub or t.sub_id
+end
+
 -- The chat filter: the server's answers (kept, dropped from the log) and the echo of what we sent (dropped).
 local echoes = {}          -- line text -> time to forget it
 function M.filter(text)
@@ -323,12 +329,12 @@ local built = {}           -- trust id -> { sig, plan, final = {key -> {slot -> 
 local cand_cache = {}      -- "job|level" -> candidates
 local cand_count = 0
 
-local function candidates(job_id, level)
-  local key = job_id .. "|" .. level
+local function candidates(job_id, level, sub_id)
+  local key = job_id .. "|" .. level .. "|" .. (sub_id or 0)
   local c = cand_cache[key]
   if not c then
     if cand_count >= 12 then cand_cache, cand_count = {}, 0 end
-    c = pick.candidates(run.state.index, job_id, nil, level)
+    c = pick.candidates(run.state.index, job_id, nil, level, sub_id)
     cand_cache[key] = c
     cand_count = cand_count + 1
   end
@@ -402,7 +408,7 @@ end
 
 -- The whole of what a trust's sets depend on, as one string.
 local function signature(t, i, held_sig)
-  return table.concat({ tostring(run.state.owned_sig), info_version, i and #i.uses or -1, t.job_id, t.level, held_sig },
+  return table.concat({ tostring(run.state.owned_sig), info_version, i and #i.uses or -1, t.job_id, sub_of(t), t.level, held_sig },
     "|")
 end
 
@@ -419,7 +425,7 @@ local function refresh(order, n)
   if b and b.sig == sig then return false end
 
   local plan = M.plan(t, i.uses)
-  local at_level = candidates(t.job_id, t.level)
+  local at_level = candidates(t.job_id, t.level, sub_of(t))
   local cap = cap_for(t.level)
   local at_cap = candidates(t.job_id, cap)
   local owns = {}
@@ -434,8 +440,8 @@ local function refresh(order, n)
     if not owned_index[key] then owned_index[key] = o.id end
   end
   for _, entry in ipairs(plan) do
-    local ctx = { job = t.job, job_id = t.job_id, race = nil, level = t.level, cap = cap, owned = pool, owns = owns,
-      at_cap = at_cap, at_level = at_level, names = run.state.names, mage = false, melee_sets = sets.MELEE_SETS,
+    local ctx = { job = t.job, job_id = t.job_id, sub_id = sub_of(t), race = nil, level = t.level, cap = cap, owned = pool, owns = owns,
+      at_cap = at_cap, at_level = at_level, names = run.state.names, mage = false, weapons = true, melee_sets = sets.MELEE_SETS,
       bis = (ok and bis and entry.set) and bis.lookup(cap, t.job, entry.set) or nil }
     local r = pick.build(ctx, entry.def, entry.key)
     nb.result[entry.key] = r
@@ -588,7 +594,7 @@ function M.alternatives(t, set_name, slot)
   local list, seen = {}, {}
   for _, o in ipairs(run.state.owned or {}) do
     local rec = pick.item(o.id)
-    if not seen[o.name] and pick.fits(rec, slot, t.job_id, nil, t.level) then
+    if not seen[o.name] and pick.fits(rec, slot, t.job_id, nil, t.level, sub_of(t)) then
       seen[o.name] = true
       list[#list + 1] = { name = o.name, score = entry and pick.score(pick.stats_of(o.id, o.augments), entry.def) or 0 }
     end

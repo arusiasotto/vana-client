@@ -174,7 +174,7 @@ local function ctx()
   local me = M.H.me() or {}
   local owns = {}
   for _, o in ipairs(state.owned or {}) do owns[o.id] = true end
-  return { job = state.job, job_id = p.main_job, race = me.race, level = state.level, cap = M.cap(),
+  return { job = state.job, job_id = p.main_job, sub_id = p.sub_job, race = me.race, level = state.level, cap = M.cap(),
     owned = state.owned or {}, owns = owns, at_cap = state.at_cap or {}, at_level = state.at_level or {},
     names = state.names,
     mage = sets.MAGE_JOBS[state.job], melee_sets = sets.MELEE_SETS, bis = nil }
@@ -246,9 +246,10 @@ function M.refresh()
   local job = M.H.job(p.main_job)
   local owned, elsewhere, sig = scan()
   state.elsewhere = elsewhere
-  if job ~= state.job or p.main_level ~= state.level then state.need_cands = true end
-  if job ~= state.job or p.main_level ~= state.level or sig ~= state.owned_sig then
-    state.job, state.level, state.owned, state.owned_sig = job, p.main_level, owned, sig
+  local sub = p.sub_job or 0
+  if job ~= state.job or p.main_level ~= state.level or sub ~= state.sub then state.need_cands = true end
+  if job ~= state.job or p.main_level ~= state.level or sub ~= state.sub or sig ~= state.owned_sig then
+    state.job, state.level, state.sub, state.owned, state.owned_sig = job, p.main_level, sub, owned, sig
     M.rebuild()
   end
 end
@@ -267,7 +268,7 @@ function M.step()
     local p = M.H.player() or {}
     local me = M.H.me() or {}
     state.at_cap = pick.candidates(state.index, p.main_job, me.race, M.cap())
-    state.at_level = pick.candidates(state.index, p.main_job, me.race, state.level)
+    state.at_level = pick.candidates(state.index, p.main_job, me.race, state.level, p.sub_job)
     if state.built_job ~= state.job then state.built, state.built_job = {}, state.job end
     return true
   end
@@ -739,7 +740,7 @@ function M.why(set_name, slot)
   local list, seen = {}, {}
   for _, o in ipairs(state.owned or {}) do
     local rec = pick.item(o.id)
-    if not seen[o.name] and pick.fits(rec, slot, c.job_id, c.race, c.level) then
+    if not seen[o.name] and pick.fits(rec, slot, c.job_id, c.race, c.level, c.sub_id) then
       seen[o.name] = true
       list[#list + 1] = { name = o.name, score = pick.score(pick.stats_of(o.id, o.augments), def) }
     end
@@ -761,7 +762,7 @@ function M.upgrades()
         local cur_score = cur and pick.score(cur.s, def) or 0
         for _, o in ipairs(state.elsewhere or {}) do
           local rec = pick.item(o.id)
-          if pick.fits(rec, slot, c.job_id, c.race, c.level) then
+          if pick.fits(rec, slot, c.job_id, c.race, c.level, c.sub_id) then
             local sc = pick.score(pick.stats_of(o.id, o.augments), def)
             if sc > cur_score and sc > 0 and not seen[o.name] then
               seen[o.name] = true

@@ -12,7 +12,8 @@ M.H = {
   blocks = function() return require("data.slotblocks") end,
 }
 
--- Server mod name -> the stat key gear is scored on (src/build/stats.lua names them). Mods not here are not scored.
+-- Server mod name -> the stat key gear is scored on (src/build/stats.lua names them). Mods not here are kept as
+-- "mod_<name>"; nothing weighs them unless a set says so.
 local KEY = {
   DEF = "def", HP = "hp", HPP = "hpp", MP = "mp", MPP = "mpp",
   STR = "str", DEX = "dex", VIT = "vit", AGI = "agi", INT = "int", MND = "mnd", CHR = "chr",
@@ -35,6 +36,7 @@ local KEY = {
   SUBTLE_BLOW_II = "sb2", COUNTER = "counter", KICK_ATTACK_RATE = "kick", ZANSHIN = "zanshin", TP_BONUS = "tpb",
   REGAIN = "regain", HASTE_GEAR = "haste", DAMAGE_LIMITP = "pdl", DOUBLE_ATTACK_DMG = "dadmg",
   TRIPLE_ATTACK_DMG = "tadmg", COUNTER_DAMAGE = "counterdmg", CONSERVE_TP = "ctp", FENCER_CRITHITRATE = "fencer",
+  ALL_WSDMG_ALL_HITS = "wsd", ALL_WSDMG_FIRST_HIT = "wsd1", ANY_FTP_BONUS = "ftp",
   OCCULT_ACUMEN = "occult", SHIELD_BASH = "shieldbash", WEAPON_BASH = "weaponbash", STEP_ACCURACY = "stepacc",
   -- Defence
   DMG = "dt", DMGPHYS = "pdt", DMGPHYS_II = "pdt2", DMGMAGIC = "mdt", DMGMAGIC_II = "mdt2", DMGBREATH = "bdt",
@@ -83,7 +85,8 @@ local function load()
   blocks = M.H.blocks() or {}
   mod_key = {}
   for id, name in pairs(M.H.mods() or {}) do
-    if KEY[name] then mod_key[id] = KEY[name] end
+    -- A mod no stat above names is kept as "mod_<name>", for a set that weighs it (job abilities, pets, spell effects).
+    mod_key[id] = KEY[name] or ("mod_" .. name:lower())
   end
 end
 

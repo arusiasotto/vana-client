@@ -148,10 +148,14 @@ end
 
 local function bit(n) return 1 << n end
 
--- Can we wear it now: our main job's bit, its level, the slot (races are not checked: the game refuses).
+-- Can we wear it now: our main job's bit (or the support job's: the Vanadreams server allows it), its level, the slot
+-- (races are not checked: the game refuses).
 local function wearable(r, slot, p)
   if not r or not r.slots or r.slots & bit(slot) == 0 then return false end
-  if p.main_job and r.jobs and r.jobs ~= 0 and r.jobs & bit(p.main_job) == 0 then return false end
+  if p.main_job and r.jobs and r.jobs ~= 0 and r.jobs & bit(p.main_job) == 0
+    and not (r.server and (p.sub_job or 0) > 0 and r.jobs & bit(p.sub_job) ~= 0) then
+    return false
+  end
   if r.level and p.main_level and r.level > p.main_level then return false end
   return true
 end

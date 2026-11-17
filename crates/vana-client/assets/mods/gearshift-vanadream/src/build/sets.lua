@@ -252,9 +252,9 @@ function M.ws_set(id, ws, name)
   if ws.kind == "magic" then
     w = { wsd = 6, mab = 3, macc = 0.6, mdmg = 0.3, tpb = 0.02 }
   elseif ws.kind == "ranged" then
-    w = { wsd = 8, ratt = 1, racc = 1, tpb = 0.02, crit = 1 }
+    w = { wsd = 8, wsd1 = 6.5, ftp = 0.2, ratt = 1, racc = 1, tpb = 0.02, crit = 1 }
   else
-    w = { wsd = 8, att = 0.7, acc = 0.6, tpb = 0.02, da = 2, ta = 3, crit = 1 }
+    w = { wsd = 8, wsd1 = 6.5, ftp = 0.2, att = 0.7, acc = 0.6, tpb = 0.02, da = 2, ta = 3, crit = 1 }
   end
   for stat, pct in pairs(ws.mods or {}) do w[stat] = (w[stat] or 0) + pct / 100 * 1.6 end
   local sk = M.SKILL_STAT[ws.skill]
