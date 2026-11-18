@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 /// Menu sounds: type-0x3d "SeSep" resources in DAT 0 named "0001".. (FUN_10036d10 ..), = se ids.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum Ui {
     /// "0001": cursor moved (menu events 1/2).

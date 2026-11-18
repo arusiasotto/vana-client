@@ -74,6 +74,10 @@ pub mod w {
     pub const GP_BLEND: usize = 44;
     /// Emission op 0x8e: the ground frame FUN_100d3750 multiplied into the local matrix (columns side, down, front).
     pub const GROUND: usize = 54;
+    /// D3m / ground projection: the mesh's bounding radius (ops 0x2e / 0x48, FUN_10041a40).
+    pub const RADIUS: usize = 63;
+    /// An MMB mesh's box centre (3) and half extents x, y (z from RADIUS), for its cull (FUN_10183760).
+    pub const MMB_BOX: usize = 49;
     pub const SLOTS: usize = 64;
     pub const SLOT_COUNT: usize = 64;
     pub const WORDS: usize = SLOTS + SLOT_COUNT;
@@ -142,7 +146,7 @@ pub const NONE: u32 = u32::MAX;
 pub const OUT_WORDS: usize = 44;
 /// Per element back to the CPU (a frame late): sort key +0x12c, status bits, world position, rotation, scale,
 /// colour.
-pub const BACK_WORDS: usize = 20;
+pub const BACK_WORDS: usize = 27;
 pub mod back {
     pub const KEY: usize = 0;
     pub const STATUS: usize = 1;
@@ -157,10 +161,28 @@ pub mod back {
     pub const VEL: usize = 16;
     /// Update op 0x60's screen flash this frame: the bytes it adds (B, G, R as in +0xf8; FUN_10014f70).
     pub const FLASH: usize = 19;
-    /// STATUS: op 0x2e / 0x48 asked to expire (life = 1); drawn this frame.
+    pub const UV: usize = 20;
+    pub const BIAS: usize = 22;
+    /// A point light's intensity and range (emission ops 0x7e / 0x7f).
+    pub const L_INT: usize = 23;
+    pub const L_RANGE: usize = 24;
+    /// S[k + n] and S[k + 3] for the generator's emission op 0x3e + n (STATUS bits 8..9 = n; ops 0x98..0x9a).
+    pub const SLOT_A: usize = 25;
+    pub const SLOT_B: usize = 26;
+    /// STATUS: op 0x2e / 0x48 asked to expire (life = 1); drawn this frame; SLOT_A / SLOT_B are set.
     pub const KILL: u32 = 1;
     pub const DRAWN: u32 = 2;
+    pub const SLOTS: u32 = 4;
+    pub const LIGHT: u32 = 16;
 }
+
+/// Update op 0x59's wrap: retail's float constants, a little short of 2 pi and pi.
+#[cfg(test)]
+#[allow(clippy::approx_constant)]
+const OP59_TURN: f32 = 6.283184;
+#[cfg(test)]
+#[allow(clippy::approx_constant)]
+const OP59_HALF: f32 = 3.141592;
 
 /// Matrix slot (a generator's attach matrix, or an element's spawn snapshot): the matrix, scale vectors
 /// +0x78 (position) and +0x84 (size), and per-generator values the update stream reads.
@@ -248,6 +270,8 @@ pub fn wgsl_consts() -> String {
         ("E_ROT", w::ROT),
         ("E_MAX_LIFE", w::MAX_LIFE),
         ("E_SCALE", w::SCALE),
+        ("E_RADIUS", w::RADIUS),
+        ("E_MMB_BOX", w::MMB_BOX),
         ("E_FADE", w::FADE),
         ("E_COLOR", w::COLOR),
         ("E_FLAGS", w::FLAGS),
@@ -455,7 +479,27 @@ pub fn update_ref(
             a
         }
     };
-    let byte = |v: f32| ((v * 255.0) as i32 as u32 & 0xff) as u8;
+    // Below 0 stores 0 (0x1004bc69 / FUN_1004e220), larger values wrap.
+    let byte = |v: f32| if v * 255.0 < 0.0 { 0 } else { ((v * 255.0) as u32 & 0xff) as u8 };
+    // effects.wgsl fade_dist: |view position|, plus a mesh's radius x scale; 0 behind the eye for the others.
+    let fade_dist = |e: &Elem| -> f32 {
+        let fl = e.0[w::FLAGS];
+        let v = if fl & 4 != 0 {
+            if fl & 8 != 0 { e.v3(w::POS) } else { f.view_rot.transform_vector3(e.v3(w::POS)) }
+        } else {
+            f.view.transform_point3(world(e))
+        };
+        let kind = e.0[w::KIND];
+        if kind == dk::MESH || kind == dk::GROUND_PROJ {
+            let kx = if parent != NONE && slot_words[parent as usize * SLOT_WORDS + slot::SIZE_SCALED] != 0 {
+                sf(slot::SCALE_B)
+            } else {
+                1.0
+            };
+            return v.length() + (e.f(w::RADIUS) * e.f(w::SCALE) * kx).abs();
+        }
+        if v.z > 0.0 { 0.0 } else { v.length() }
+    };
     let mut ip = e.0[w::STREAM] as usize;
     let mut guard = 0;
     while ip < ops.len() && guard < 256 {
@@ -520,12 +564,24 @@ pub fn update_ref(
             }
             // FUN_100499d0 case 0x1004a0a2: kept below near, faded to far, else 0 (near is tested first).
             0x2e => {
-                let d = (f.eye - world(e)).length();
+                let d = fade_dist(e);
                 let (near, far) = (of(1), of(2));
                 if d == 0.0 || d >= near && d > far {
                     e.set(w::FADE, 0.0);
                 } else if d >= near {
                     e.set(w::FADE, e.f(w::FADE) * (1.0 - (d - near) / (far - near)));
+                }
+            }
+            0x48 => {
+                let d = fade_dist(e);
+                if d == 0.0 {
+                    e.set(w::FADE, 0.0);
+                } else if d >= of(1) && d < of(2) {
+                    e.set(w::FADE, e.f(w::FADE) * (1.0 - (d - of(2)) / (of(1) - of(2))));
+                } else if d >= of(1) && d >= of(3) && d < of(4) {
+                    e.set(w::FADE, e.f(w::FADE) * (1.0 - (d - of(3)) / (of(4) - of(3))));
+                } else if d < of(1) || d >= of(4) {
+                    e.set(w::FADE, 0.0);
                 }
             }
             0x3c => e.set_cb(2, byte(kg(e, s))),
@@ -546,6 +602,13 @@ pub fn update_ref(
                 e.set(k, wrap(e.f(k) + half(kg(e, s)) * dt))
             }
             0x66..=0x68 => e.set(w::ROT + (code - 0x66) as usize, half(kg(e, s))),
+            0x59 => e.set(w::ROT + 2, (e.f(w::KEY_PREV) * of(1) + of(2)) % OP59_TURN - OP59_HALF),
+            0x5a => {
+                let k = e.f(w::KEY_PREV) - of(4);
+                for i in 0..3 {
+                    e.set(w::SCALE + i, if k > 0.0 { of(1 + i) + k * of(5) } else { of(1 + i) });
+                }
+            }
             0x6b..=0x6d => {
                 let v = e.sf(s + 2) + k0(e, s, f.dayfrac);
                 e.set(w::POS + (code - 0x6b) as usize, v)

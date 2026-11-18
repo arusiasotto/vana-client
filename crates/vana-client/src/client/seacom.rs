@@ -1,7 +1,8 @@
 //! "menu    comment" (FUN_101dd2b0 / FUN_101ddcb0 / FUN_101dde60 / FUN_101dd330): three lines of 40 bytes. Mode 2 the
 //! own search comment (MODLOG "Search: arealist"; searchma's Edit Comment via comgenre), sent on close as c2s 0x0E0
 //! when it or the type changed; mode 0 our bazaar message (MODLOG "Set Bazaar": its Edit Comment), as c2s
-//! 0x0DE.
+//! 0x0DE; mode 3 the linkshell message (the holder / pearlsack submenu's caption under the mouse, linkshell.rs), sent
+//! on close as c2s 0x0E2. Mode 1 is the /check target's bazaar message, which only shows (inspect.rs).
 
 use super::World;
 use super::game_ui::GameUi;
@@ -39,7 +40,8 @@ impl Default for Store {
     }
 }
 
-/// The open editor: +0x15, the line whose box is open; +0x16 the mode (0 bazaar, 2 search comment).
+/// The open editor: +0x15, the line whose box is open; +0x16 the mode (0 bazaar, 2 search comment, 3 linkshell
+/// message).
 #[derive(Clone, Copy, Debug)]
 pub struct Editor {
     pub line: usize,
@@ -57,8 +59,24 @@ pub fn open_bazaar(w: &mut World) {
     w.seacom_edit = Some(Editor { line: 0, mode: 0 });
 }
 
+/// Mode 3 (type 0x73) edits the linkshell message's lines, block 3. Nothing opens it: retail's only opener,
+/// menu_comment_fn (FUN_101e7530), is called from case 4 of link2 / link3's handlers, the caption's number, and the
+/// submenus carry registry flag 0x200000, so their caption never takes the cursor. The mode's store and close are kept
+/// as the window class has them.
 fn store(w: &mut World, mode: u8) -> &mut Store {
-    if mode == 0 { &mut w.bazaar_msg } else { &mut w.seacom }
+    match mode {
+        0 => &mut w.bazaar_msg,
+        3 => &mut w.ls_edit_msg,
+        _ => &mut w.seacom,
+    }
+}
+
+fn store_ref(w: &World, mode: u8) -> &Store {
+    match mode {
+        0 => &w.bazaar_msg,
+        3 => &w.ls_edit_msg,
+        _ => &w.seacom,
+    }
 }
 
 /// FUN_101ddae0(msg, 1): our s2c 0x0CA message (MyFlag) cut into three lines of 40, trailing spaces trimmed, into
@@ -194,10 +212,22 @@ fn padded(lines: &[String; 3]) -> Vec<u8> {
 
 /// FUN_101dd330. Mode 0: when the lines changed, c2s 0x0DE {the 123 bytes, NUL} (FUN_100e55b0, 0x80 bytes). Mode 2:
 /// when the lines or the type changed, all blank sends "" (block 5 line 0 cleared), else the padded lines; then c2s
-/// 0x0E0 (FUN_100e5980).
+/// 0x0E0 (FUN_100e5980). Mode 3 (win_comment_v08, FUN_101de900): when the lines changed (FUN_101deaf0(3, 6)), all
+/// blank sends "" (block 6 line 0 cleared), else the lines that have a first byte joined by a line feed
+/// (FUN_101dec20, DAT_10351e4c) and block 6 takes them; then, with linkshell 1 worn (FUN_100e9870), c2s 0x0E2 with
+/// flag 0x40 (FUN_100eae20), as /lsmes set.
 fn close(w: &mut World) {
     w.field_fep = None;
     let Some(e) = w.seacom_edit.take() else { return };
+    if e.mode == 3 {
+        let s = &mut w.ls_edit_msg;
+        if s.lines == s.sent {
+            return;
+        }
+        let text = ls_text(s);
+        super::linkshell::set_message(w, &text);
+        return;
+    }
     if e.mode == 0 {
         let s = &mut w.bazaar_msg;
         if s.lines == s.sent {
@@ -210,6 +240,18 @@ fn close(w: &mut World) {
         return;
     }
     commit(w);
+}
+
+/// The linkshell message as mode 3's close sends it, the last-sent copy brought up to date.
+fn ls_text(s: &mut Store) -> Vec<u8> {
+    if s.lines.iter().all(|l| l.chars().all(|c| c == ' ')) {
+        s.sent[0].clear();
+        return Vec::new();
+    }
+    s.sent = s.lines.clone();
+    let lines: Vec<Vec<u8>> =
+        s.lines.iter().filter(|l| !l.is_empty()).map(|l| crate::dat::font::encode_sjis(l)).collect();
+    lines.join(&b'\n')
 }
 
 /// The search comment's send (FUN_101dd330 mode 2 / FUN_100e5980): c2s 0x0E0 when the lines or the type changed.
@@ -290,7 +332,7 @@ fn install_time() -> u32 {
 /// The editor as the modern layer draws it: the mode, the three lines, the line being edited.
 pub(super) fn view(w: &World) -> Option<(u8, [String; 3], usize, Option<(Vec<String>, usize)>)> {
     let e = w.seacom_edit?;
-    let s = if e.mode == 0 { &w.bazaar_msg } else { &w.seacom };
+    let s = store_ref(w, e.mode);
     let fep = w.field_fep.as_ref().map(|f| (f.cands.iter().map(|c| c.text.clone()).collect(), f.sel));
     Some((e.mode, s.lines.clone().map(|l| super::fep::plain(w, &l)), e.line, fep))
 }
@@ -302,7 +344,8 @@ pub(super) fn set_edit_line(w: &mut World, k: usize) {
     }
 }
 
-/// Help slot 2: 0xe 0x32 while the editor is open; title slot 2 0xd 0x0f "Set Bazaar" in mode 0 (none in mode 2).
+/// Help slot 2: 0xe 0x32 while the editor is open; title slot 2 0xd 0x0f "Set Bazaar" in mode 0 (none in modes 2
+/// and 3).
 pub fn bars(gu: &GameUi, w: &World, bars: &mut super::hudtop::BarText) {
     if let Some(e) = w.seacom_edit {
         bars.help[2] = gu.menu_msg(0x32, "");
@@ -312,8 +355,10 @@ pub fn bars(gu: &GameUi, w: &World, bars: &mut super::hudtop::BarText) {
     }
 }
 
-/// FUN_101ddcb0: the lines at (x0 + 0x14, y0 + 4 + 16 k), 335 px, the edited one as the live box, and the genre dot
-/// (FUN_1020b4b0) at (x0 + 8, y0 + 8) in mode 2; in mode 0 at x0 + 4, x1 - x0 - 8 wide, no dot.
+/// FUN_101ddcb0 (30261102_0: win_comment_v10, FUN_101df280): the lines at (x0 + 0x14, y0 + 4 + 16 k), 335 px, the
+/// edited one as the live box, and the genre dot (FUN_1020b4b0) at (x0 + 8, y0 + 8) in mode 2; in the other modes at
+/// x0 + 4, x1 - x0 - 8 wide, no dot. A line not being edited is expanded with the auto-translate brackets
+/// (FUN_101b8850(.., 1, 0)) before it is fitted.
 pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
     let mut rects = Vec::new();
     let Some(e) = w.seacom_edit.filter(|_| !w.modern) else {
@@ -323,15 +368,16 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
     gu.force_flags(EDITOR, Some(0x1000));
     let Some(win) = gu.lobby_window_off(EDITOR, sw, sh, (0.0, 0.0), None, false, &[]) else { return rects };
     let [x0, y0, ww, _] = win.frame;
-    let (s, dx, width) = if e.mode == 0 { (&w.bazaar_msg, 4.0, ww - 8.0) } else { (&w.seacom, 20.0, 335.0) };
+    let s = store_ref(w, e.mode);
+    let (dx, width) = if e.mode == 2 { (20.0, 335.0) } else { (4.0, ww - 8.0) };
     for (k, l) in s.lines.iter().enumerate() {
         let (x, y) = (x0 + dx, y0 + 4.0 + 16.0 * k as f32);
-        let l = super::fep::plain(w, l);
         if k == e.line {
+            let l = super::fep::plain(w, l);
             let caret = if (w.started.elapsed().as_secs_f32() * 60.0) as u32 % 30 < 20 { "|" } else { "" };
             gu.text(&format!("{l}{caret}"), x, y, 0, [0x80; 4]);
         } else {
-            gu.text_fit(&l, x, y, width, WHITE);
+            gu.text_fit(&super::fep::braced(w, l), x, y, width, WHITE);
         }
     }
     let list = w
@@ -347,4 +393,21 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
     rects.push(win.frame);
     rects.extend(list);
     rects
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FUN_101dec20 / win_comment_v08 mode 3: lines with a first byte joined by a line feed; all blank is "" and only
+    /// clears the sent copy's first line.
+    #[test]
+    fn ls_message_text() {
+        let mut s = Store { lines: ["Meet at".into(), String::new(), " eight".into()], ..Default::default() };
+        assert_eq!(ls_text(&mut s), b"Meet at\n eight");
+        assert_eq!(s.sent, s.lines);
+        s.lines = [" ".into(), String::new(), "  ".into()];
+        assert_eq!(ls_text(&mut s), b"");
+        assert_eq!(s.sent, [String::new(), String::new(), " eight".to_string()]);
+    }
 }

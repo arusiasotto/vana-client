@@ -220,6 +220,18 @@ impl Dictionary {
     /// Groups (0x4c-byte header: kind, language, group id, 0, title[32], completion[32], u32 count, u32 bytes) then
     /// entries (4 id bytes, u8 length, text; languages 1 and 4 add a second string). Only English groups are kept.
     pub fn parse(data: &[u8]) -> Result<Self> {
+        Self::parse_lang(data, LANG_EN)
+    }
+
+    /// The groups of one language byte (1 Japanese, 2 English, 3 German, 4 French: the client's language + 1; the
+    /// group loader FUN_101bc090 by the group's own byte). English and German entries are a word whose key is its
+    /// text (FUN_101bbfa0). In a Japanese or French group (FUN_101bbe00) every entry outside the item kinds 7..0x12
+    /// carries a second string after the text: the kana reading in Japanese, the text without its accents in French.
+    /// When it holds more than its NUL it is the word's key (FUN_101bddc0), the key completion matches and sorts by;
+    /// else the key is the text. This client is English only: the French extras (a second word keyed by the text
+    /// itself for each entry with a second string, and a second title word keyed by the title inside its brackets
+    /// when FUN_101c9e70 finds it differs from the completion) are not built.
+    pub fn parse_lang(data: &[u8], language: u8) -> Result<Self> {
         let mut groups = Vec::new();
         let mut at = 0;
         let cstr = |b: &[u8]| decode_sjis(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]);
@@ -229,21 +241,25 @@ impl Dictionary {
             let count = u32::from_le_bytes(h[0x44..0x48].try_into().unwrap()) as usize;
             let body = data.get(at + 0x4c..at + 0x4c + bytes).context("group runs past the file")?;
             at += 0x4c + bytes;
-            if h[0] != GROUP_KIND || h[1] != LANG_EN {
+            if h[0] != GROUP_KIND || h[1] != language {
                 continue;
             }
             // Each phrase takes at least 5 bytes; a bad count must not reserve more than the group holds.
             let mut phrases = Vec::with_capacity(count.min(body.len() / 5));
             let mut p = 0;
             while p + 5 <= body.len() && phrases.len() < count {
-                let (lang, id, len) = (body[p + 1], body[p + 3], body[p + 4] as usize);
+                let (kind, id, len) = (body[p], body[p + 3], body[p + 4] as usize);
                 let text = cstr(body.get(p + 5..p + 5 + len).context("phrase runs past its group")?);
                 p += 5 + len;
-                if matches!(lang, 1 | 4) {
+                let mut key = text.clone();
+                if matches!(h[1], 1 | 4) && !(7..=0x12).contains(&kind) {
                     let l2 = body.get(p).copied().unwrap_or(0) as usize;
+                    if l2 >= 2 {
+                        key = cstr(body.get(p + 1..p + 1 + l2).context("phrase key runs past its group")?);
+                    }
                     p += 1 + l2;
                 }
-                phrases.push((id, text.clone(), text));
+                phrases.push((id, text, key));
             }
             groups.push(Group { id: h[2], title: cstr(&h[4..0x24]), key: cstr(&h[0x24..0x44]), phrases });
         }
@@ -383,6 +399,28 @@ fn is_variable(chars: &[char], at: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The other languages' files (slot 0x18: ja 55545, de 55785, fr 56205): the same 42 groups; Japanese and French
+    /// entries carry the second key.
+    #[test]
+    fn second_keys() {
+        let cfg = crate::config::Config::load();
+        let Ok(index) = DatIndex::open(&cfg.ffxi_dir()) else { return };
+        for (file, lang) in [(55545, 1), (55785, 3), (56205, 4)] {
+            let Ok(data) = index.read(file) else { return };
+            let d = Dictionary::parse_lang(&data, lang).unwrap();
+            let all: Vec<&(u8, String, String)> = d.groups.iter().flat_map(|g| &g.phrases).collect();
+            let key = |text: &str| all.iter().find(|p| p.1 == text).map(|p| p.2.as_str());
+            assert_eq!((d.groups.len(), all.len()), (42, 2685));
+            match lang {
+                // The kana reading; a phrase written in kana already has none.
+                1 => assert_eq!(key("初めまして。"), Some("ハジメマシテ。")),
+                3 => assert!(all.iter().all(|p| p.1 == p.2)),
+                // The text without accents (and here without its full stop).
+                _ => assert_eq!(key("Pardon."), Some("Pardon")),
+            }
+        }
+    }
 
     /// File 55665: 42 English groups; Greetings 1 is "Nice to meet you."; @J / @C / @Y name references resolve; a
     /// block in a chat line expands between the brackets.

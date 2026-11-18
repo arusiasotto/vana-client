@@ -846,6 +846,8 @@ pub struct ActorGpu {
     pub lights: [u8; 4],
     /// The area 4cc it stands in (vtable +0x188, the floor's +0xb0): its environment lights it (0 = the zone's).
     pub area: u32,
+    /// Model +0xa8 != 0 (event op 0x59 7 / 8, scheduler op 0xc1): lit by the scenery's lights, not the actors'.
+    pub bg_lit: bool,
     /// Cloth particles written from the CPU (only cloth-shot does: the game's step on the GPU, render/cloth.rs), two
     /// vec4s each in model space: position (w 1 = set) and normal (w 1 = set), in SkinMesh's order; missing ones
     /// draw skinned.
@@ -2713,6 +2715,12 @@ impl ZoneRenderer {
         gpu.queue.put(&self.parts_gpu, at, bytemuck::bytes_of(&*p));
     }
 
+    /// Door part `slot`'s translation now (the door actor's +0x624 for its part 0).
+    pub fn part_pos(&self, slot: u32) -> Option<[f32; 3]> {
+        let p = self.parts.get(slot as usize)?;
+        Some(PartGpu::at(p.pos_from, p.pos_to, p.pos_time, self.now))
+    }
+
     /// Door `door`'s parts in the world as drawn now (FUN_100acef0: base * T(t) * Rx * Ry * Rz, as vs_main).
     pub fn door_frames(&self, door: u32) -> Option<Vec<Mat4>> {
         let (slots, bases) = (self.door_parts.get(&door)?, self.door_bases.get(&door)?);
@@ -3522,6 +3530,7 @@ impl ZoneRenderer {
                 flash: [0.0, 1.0],
                 lights: [0; 4],
                 area: 0,
+                bg_lit: false,
                 cloth: Vec::new(),
                 cloth_state: Default::default(),
                 mips: 0,
@@ -3573,7 +3582,7 @@ impl ZoneRenderer {
         let area = match self.area_keys.iter().position(|&k| k == actor.area) {
             Some(s) if actor.area != 0 => (s + 1) as f32,
             _ => 0.0,
-        };
+        } + if actor.bg_lit { 65536.0 } else { 0.0 };
         actor.origin = model.w_axis.truncate();
         let Some(skin) = actor.skin.as_mut() else { return };
         while !self.poses.len().is_multiple_of(16) {
@@ -3688,6 +3697,7 @@ impl ZoneRenderer {
             flash: [0.0, 1.0],
             lights: [0; 4],
             area: 0,
+            bg_lit: false,
             cloth: Vec::new(),
             cloth_state: Default::default(),
             mips,

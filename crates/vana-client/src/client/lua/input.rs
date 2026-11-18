@@ -640,7 +640,7 @@ fn filter_list(w: &mut World, kind: Filters, mut e: serde_json::Value, taken: bo
     if w.lua.vms.iter().all(|v| filters_of(&v.st.borrow(), kind).is_empty()) {
         return taken;
     }
-    let host = std::mem::take(&mut w.lua);
+    let host = super::Host::park(&mut w.lua);
     let mut blocked = taken;
     for vm in host.vms.iter().filter(|v| v.suspended.is_none()) {
         let funcs: Vec<Function> = {

@@ -206,7 +206,9 @@ fn read(w: &mut World, name: &str) {
         super::textcmd::refuse(w, 0x60);
         return;
     }
-    let (title, text) = profile::decode_body(&m.data);
+    // A message polcore's reader refuses (FUN_10015400 returns 0) is error 0x10 to FFXiMain's read job; ours shows
+    // it with nothing in it.
+    let (title, text) = profile::decode_body(&m.data).unwrap_or_default();
     let dec = crate::dat::font::decode_sjis;
     let mut lines = vec![format!("From: {}", from_name(w, &m))];
     match m.header.kind {

@@ -82,9 +82,103 @@ impl GroundTilt {
     }
 }
 
+/// FUN_100a4ed0's feet probe state for an info[0] == info[2] == 2 model: the counter (+0x5f0, None before the first
+/// update, +0x5ec) and the position it last saw.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FeetGate {
+    count: Option<u8>,
+    last: Vec3,
+}
+
+impl FeetGate {
+    /// Before the first update: the counter still needs its seed.
+    pub fn fresh(&self) -> bool {
+        self.count.is_none()
+    }
+}
+
+/// View depth (+0xbc) up to which a moving actor probes each frame (_DAT_10329cec).
+pub const FEET_NEAR: f32 = 10.0;
+/// Ours, not a rule: depth up to which the model poses on the CPU each frame, a little past FEET_NEAR, so an actor that
+/// comes into probe range has last frame's pose as retail always does (FUN_100cbde0 poses every drawn frame).
+pub const FEET_POSE: f32 = 12.0;
+
+/// One frame of the feet probe gate. `depth`: view depth (+0xbc); `bound`: +0x120 bit 7 (bit 8, took part, is not
+/// modelled); `seed`: rand() for a fresh counter. Returns (probe now, pose on the CPU this frame for next frame's probe).
+///
+/// FUN_100a4ed0: a moving actor (more than 1e-7) probes each frame when near or bound; otherwise, and for every
+/// actor standing still, when the counter (from rand() % 120) passes 120: every 121st frame, then it resets. The first
+/// update probes (with no posed feet yet, as retail before the first pose: model +0x30 bit 4). The probe reads last
+/// frame's drawn pose, so a model poses on the CPU when it could probe next frame.
+/// *(Not modelled: the probe on attach sync, +0x5e1, and while not grounded, +0x5e0 == 0, even standing still.)*
+pub fn feet_gate(g: &mut FeetGate, seed: u32, pos: Vec3, depth: f32, bound: bool) -> (bool, bool) {
+    let moved = pos.distance(g.last) > 1e-7;
+    g.last = pos;
+    let probe = match g.count {
+        None => {
+            g.count = Some((seed % 120) as u8);
+            true
+        }
+        Some(_) if moved && (depth <= FEET_NEAR || bound) => true,
+        Some(c) => {
+            let c = c + 1;
+            g.count = Some(if c > 120 { 0 } else { c });
+            c > 120
+        }
+    };
+    let pose = depth <= FEET_POSE || bound || g.count.is_some_and(|c| c >= 120);
+    (probe, pose)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs the gate for `frames` frames at `depth`, `step` added to the position each frame; returns the frames that
+    /// probed, and whether each probe found last frame posed.
+    fn gate_run(depth: f32, bound: bool, step: Vec3, frames: usize) -> (Vec<usize>, bool) {
+        let mut g = FeetGate::default();
+        let (mut pos, mut posed, mut out, mut all_posed) = (Vec3::ZERO, false, Vec::new(), true);
+        for f in 0..frames {
+            let (probe, pose) = feet_gate(&mut g, 0, pos, depth, bound);
+            if probe {
+                out.push(f);
+                all_posed &= posed || f == 0;
+            }
+            posed = pose;
+            pos += step;
+        }
+        (out, all_posed)
+    }
+
+    #[test]
+    fn feet_gate_rates() {
+        let mv = Vec3::new(0.1, 0.0, 0.0);
+        let every: Vec<usize> = (0..50).collect();
+        // Standing still, near or bound or far: the first update, then every 121st frame (counter from 0).
+        for (depth, bound) in [(5.0, false), (50.0, true), (50.0, false)] {
+            assert_eq!(gate_run(depth, bound, Vec3::ZERO, 300), (vec![0, 121, 242], true), "{depth} {bound}");
+        }
+        // Moving near or bound: every frame, last frame always posed.
+        assert_eq!(gate_run(5.0, false, mv, 50), (every.clone(), true));
+        assert_eq!(gate_run(50.0, true, mv, 50), (every, true));
+        // Moving far: the counter only, posed the frame before.
+        assert_eq!(gate_run(50.0, false, mv, 300), (vec![0, 121, 242], true));
+    }
+
+    /// Coming into range: posed from FEET_POSE on, so the first near probe has last frame's pose.
+    #[test]
+    fn feet_gate_posed_before_near() {
+        let mut g = FeetGate::default();
+        let mut posed = false;
+        for (f, depth) in [20.0, 15.0, 11.5, 9.5, 9.0].into_iter().enumerate() {
+            let (probe, pose) = feet_gate(&mut g, 0, Vec3::new(f as f32, 0.0, 0.0), depth, false);
+            if probe && f > 0 {
+                assert!(posed, "{depth}");
+            }
+            posed = pose;
+        }
+    }
 
     fn slope(deg: f32) -> Vec3 {
         // Rising toward +x: the up-facing normal leans to -x.

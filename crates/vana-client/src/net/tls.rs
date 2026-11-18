@@ -273,6 +273,19 @@ pub fn connect(host: &str, port: u16) -> Result<TlsStream> {
     connect_pinned(&crate::config::known_servers_path(), host, port)
 }
 
+/// A TLS handshake that failed after the TCP connect (the server's answer, not the network's). Its I/O error is in
+/// the message only, so callers retrying on I/O failures stop on it.
+#[derive(Debug)]
+pub struct HandshakeFailed(pub std::io::Error);
+
+impl std::fmt::Display for HandshakeFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TLS handshake failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for HandshakeFailed {}
+
 /// What a pin or a certificate is, for a refusal.
 fn describe(pin: &Pin) -> String {
     match pin {
@@ -329,7 +342,7 @@ pub fn connect_pinned(store: &Path, host: &str, port: u16) -> Result<TlsStream> 
                     describe(&sent)
                 );
             }
-            return Err(e.into());
+            return Err(HandshakeFailed(e).into());
         }
     };
     if let Some(got) = seen

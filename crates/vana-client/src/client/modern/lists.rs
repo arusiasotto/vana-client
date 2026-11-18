@@ -386,7 +386,7 @@ pub(super) fn off(w: &World, kind: Kind, id: u16) -> bool {
 fn row_view(w: &World, kind: Kind, id: u16) -> (String, String, bool) {
     match kind {
         Kind::Magic => {
-            let mp = w.actions.as_ref().and_then(|a| a.spell(id)).map_or(0, |r| r.mp);
+            let mp = magic::spell_mp(w, id);
             let recast = magic::spell_recast(w, id);
             let right = if recast > 0.0 { format!("{}   {mp} MP", magic::clock(recast)) } else { format!("{mp} MP") };
             (magic::spell_name(w, id), right, off(w, kind, id))
@@ -414,7 +414,7 @@ fn cost_lines(w: &World, win: &ListWin) -> Vec<(&'static str, String)> {
     let at = win.rows.get(win.scroll + win.cursor).copied();
     match (win.kind, at) {
         (Kind::Magic, Some(s)) => {
-            let mp = w.actions.as_ref().and_then(|a| a.spell(s)).map_or(0, |r| r.mp);
+            let mp = magic::spell_mp(w, s);
             vec![("MP Cost", mp.to_string()), ("Next", magic::clock(magic::spell_recast(w, s)))]
         }
         (Kind::Mount, _) => {
@@ -428,7 +428,7 @@ fn cost_lines(w: &World, win: &ListWin) -> Vec<(&'static str, String)> {
                     2 | 10 | 5 | 8 => vec![next],
                     3 => vec![("TP Cost", a.tp.to_string()), next],
                     4 | 9 => vec![("TP", w.vitals.map_or(0, |v| v.2).to_string())],
-                    6 => vec![("MP Cost", a.cost.to_string())],
+                    6 => vec![("MP Cost", magic::ability_mp(w, a.cost).to_string())],
                     _ => Vec::new(),
                 }
             }

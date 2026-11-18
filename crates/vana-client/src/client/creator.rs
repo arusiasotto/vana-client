@@ -774,12 +774,10 @@ pub fn screen_shot(shot: &ScreenShot, out: &std::path::Path) -> Result<()> {
     };
     // The nation step plays file 24 + nation's mov1 instead (FUN_1023ae20); --frame is its time at 30 a second.
     let mut fly = if shot.step == 6 {
-        let mut f = super::flyover::Flyover::new(super::flyover::FlyoverData::load_file(
-            &index,
-            &keys,
-            24 + shot.nation as u32,
-            "mov1",
-        )?)
+        let mut f = super::flyover::Flyover::new(
+            super::flyover::FlyoverData::load_file(&index, &keys, 24 + shot.nation as u32, "mov1")?,
+            super::select::NATION_VOICES,
+        )
         .unfaded();
         for _ in 0..(shot.frame * 2.0) as u32 {
             f.advance(1.0 / 60.0);
@@ -792,7 +790,7 @@ pub fn screen_shot(shot: &ScreenShot, out: &std::path::Path) -> Result<()> {
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         match &mut fly {
             Some(f) => {
-                f.render(&gpu, format, &mut enc, &view, &depth, [w, h], w as f32 / h.max(1) as f32);
+                f.render(&gpu, format, &mut enc, (&view, None), &depth, [w, h], w as f32 / h.max(1) as f32, None);
             }
             None => cr.render(
                 &gpu,

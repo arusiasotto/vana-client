@@ -40,6 +40,8 @@ fn angle_to(a: f32, b: f32) -> f32 {
 
 /// LSB's event Mode bits (`EVENT_MODE`), as FUN_100aeea0 and the packet handlers read them.
 pub mod mode {
+    /// FUN_100983f0: with it a bound player's c2s 0x015 still goes out, carrying the event body's place.
+    pub const SEND_POSITION: u32 = 0x04;
     pub const NO_PARTICIPANT_ANIM: u32 = 0x20;
     pub const NO_DIALOGUE: u32 = 0x40;
     pub const NO_IDLE_WAIT: u32 = 0x100;
@@ -616,6 +618,10 @@ pub struct State {
     /// Op 0x5f sub 1 (+0x124 bit 29): s2c 0x038 schedulers naming this actor are dropped (LAB_1009dee0) until sub 0
     /// or the event's end (FUN_100ae3f0 / FUN_100bd3xx clear it).
     pub no_038: HashSet<u32>,
+    /// Ops 0x60 0 / 1 (+0x124 bit 30) and 0x74 (bit 31): s2c 0x039 / 0x03A drop schedulers naming these actors
+    /// (FUN_1009dd20 at 0x1009de81, FUN_1009d9d0 at 0x1009daf7); the event end clears them (0x100ae5ad).
+    pub no_039: HashSet<u32>,
+    pub no_03a: HashSet<u32>,
     /// First person at the event's start (DAT_10351bb8 = DAT_10475578, FUN_100ad2c0): op 0x46 sub 1 leaves it, sub 0
     /// and the end put it back (FUN_100acf70).
     first_saved: bool,
@@ -624,7 +630,8 @@ pub struct State {
     pub event_status: HashMap<u32, u8>,
     /// Op 0x7e's chocobo or mount by actor (ChocoboIndex, the chocobo look, the mount id).
     pub event_rides: HashMap<u32, super::ride::Model>,
-    /// Op 0xab sub 3 (+0x120 bit 2): the event status of these actors is not written (ops 0x7e, 0xac 1).
+    /// Op 0xab sub 3 (+0x120 bit 2): the event status of these actors is not written (op 0x7e and the door ops
+    /// 0x4c / 0x4d / 0x4f / 0x8e / 0x8f; op 0xac sub 1 writes it regardless).
     status_lock: HashSet<u32>,
     /// Op 0xab 0x0f / 0x10 (DAT_10489900): s2c 0x00D positions of player characters that are not bound keep the sent
     /// height; the event's end clears it (FUN_100ae3f0).
@@ -633,6 +640,8 @@ pub struct State {
     snap: HashSet<u32>,
     /// Despawned while bound (0x1009a04d keeps an event participant); removed at the end.
     despawned: HashSet<u32>,
+    /// Actors a slot reset took out of the event: no pose of the VM body is drawn for them any more.
+    detached: HashSet<u32>,
     /// 0x46: true = normal camera (FUN_10082b20).
     camera_flag: bool,
     /// s2c 0x052 mode 0 arrived.
@@ -664,6 +673,11 @@ pub struct Live {
 }
 
 impl Live {
+    /// Bound to this event (+0x120 bit 7).
+    pub fn is_bound(&self, id: u32) -> bool {
+        self.st.bound.contains(&id)
+    }
+
     /// Op 0x33's bit 21 on a bound actor (entity +0x120 bit 21): no ground snap and, through FUN_10084640, no tilt.
     pub fn no_ground(&self, me: u32, id: u32) -> bool {
         self.rt.actors().any(|(a, b)| b.no_ground && (if a == PLAYER { me } else { a }) == id)
@@ -711,6 +725,8 @@ impl State {
             no_name: HashSet::new(),
             no_turn_steps: HashSet::new(),
             no_038: HashSet::new(),
+            no_039: HashSet::new(),
+            no_03a: HashSet::new(),
             raw_pc_y: false,
             first_saved: false,
             poses: HashMap::new(),
@@ -719,6 +735,7 @@ impl State {
             status_lock: HashSet::new(),
             snap: HashSet::new(),
             despawned: HashSet::new(),
+            detached: HashSet::new(),
             camera_flag: false,
             released: false,
             cb0: true,
@@ -1139,6 +1156,22 @@ impl Host for LiveHost<'_> {
                     a.q.fade_region(crate::motionq::OVERLAY_TALK, 8.0);
                 }
             }
+            Effect::Op { op: 0x60, sub: Some(s @ (0 | 1)), actor, .. } => {
+                let id = self.wid(actor);
+                if s == 1 {
+                    self.st.no_039.insert(id);
+                } else {
+                    self.st.no_039.remove(&id);
+                }
+            }
+            Effect::Op { op: 0x74, actor, args, .. } => {
+                let id = self.wid(actor);
+                if Self::arg_int(&args, 0).unwrap_or(0) & 1 != 0 {
+                    self.st.no_03a.insert(id);
+                } else {
+                    self.st.no_03a.remove(&id);
+                }
+            }
             // FUN_100b72c0 subs 0 / 1: the thread's actor (+0x124 bit 29 = sub).
             Effect::Op { op: 0x5f, sub: Some(s @ (0 | 1)), actor, .. } => {
                 let id = self.wid(actor);
@@ -1312,6 +1345,18 @@ impl Host for LiveHost<'_> {
                 }
             }
             // FUN_100b6a60 0..3: the actor's turn (+0xdc) / look (+0xe0) percent, read while an event runs.
+            // Subs 7 / 8 (FUN_1008a790 -> vt+0x22c FUN_10082370): model +0xa8 = val (the event actor's val@2, or
+            // actor@2's val@6); not 0, the actor takes the scenery's lights (FUN_1018b9a0 / 9e0 / ba20 by +0xa8 == 0).
+            Effect::Op { op: 0x59, sub: Some(s @ (7 | 8)), actor, args } => {
+                let (id, v) = if s == 7 {
+                    (Some(self.wid(actor)), Self::arg_int(&args, 1))
+                } else {
+                    (self.arg_actor(&args, 1), Self::arg_int(&args, 2))
+                };
+                if let (Some(a), Some(v)) = (id.and_then(|id| self.w.actors.get_mut(&id)), v) {
+                    a.bg_lit = v != 0;
+                }
+            }
             Effect::Op { op: 0x59, sub: Some(s @ 0..=3), actor, args } => {
                 let id = self.wid(actor);
                 if let (Some(a), Some(x)) = (self.w.actors.get_mut(&id), Self::arg_int(&args, 0)) {
@@ -1323,18 +1368,43 @@ impl Host for LiveHost<'_> {
                 }
             }
             // FUN_100bb180 sub 1: the event actor's event status +0x174 = val@2, which a bound actor poses with (5 / 0x55
-            // ride on its ChocoboIndex / mount id, ride.rs).
+            // ride on its ChocoboIndex / mount id, ride.rs). Unlike the door ops, 0xab 3's lock does not stop it.
             Effect::Op { op: 0xac, sub: Some(1), actor, args } => {
                 let id = self.wid(actor);
-                if let Some(s) = Self::arg_int(&args, 0).filter(|_| !self.st.status_lock.contains(&id)) {
+                if let Some(s) = Self::arg_int(&args, 0) {
                     self.st.event_status.insert(id, s as u8);
+                    // One field (+0x174) holds door states too.
+                    self.w.doors.event.remove(&id);
                 }
             }
-            // FUN_100bb180 subs 2 / 3: the event actor's entity +0x138 bit 31 (its schedulers mute while its model is
-            // hidden); sub 3 clears it and asks for the entity again (c2s 0x016, FUN_100aec70).
-            Effect::Op { op: 0xac, sub: Some(s @ (2 | 3)), actor, .. } => {
+            // FUN_100bb180 subs 2 / 3: actor@2's entity +0x138 bit 31 (its schedulers mute while its model is hidden);
+            // sub 3 clears it and asks for the entity again (c2s 0x016, FUN_100aec70).
+            // FUN_100bb180 sub 0: the event actor's server status +0x16c = val@2 (no lock check); sub 4: actor@2's +0x13c
+            // |= val@6 & 3 (bit 0 keep_event_pos; bit 1 has no reader in this build).
+            Effect::Op { op: 0xac, sub: Some(0), actor, args } => {
                 let id = self.wid(actor);
-                if let Some(e) = self.w.entities.get_mut(&id) {
+                if let (Some(v), Some(e)) = (Self::arg_int(&args, 0), self.w.entities.get_mut(&id)) {
+                    e.motion.status = v as u8;
+                }
+            }
+            Effect::Op { op: 0xac, sub: Some(4), args, .. } => {
+                if let (Some(e), Some(v)) =
+                    (self.arg_actor(&args, 0).and_then(|id| self.w.entities.get_mut(&id)), Self::arg_int(&args, 1))
+                    && v & 1 != 0
+                {
+                    e.keep_event_pos = true;
+                }
+            }
+            // The actor is actor@2 (FUN_100afac0(2)), in the scripts another one than the running actor nearly every
+            // time (census: 1,400 of 1,430, all in zone 280).
+            Effect::Op { op: 0xac, sub: Some(s @ (2 | 3)), args, .. } => {
+                if let Some(e) = self.arg_actor(&args, 0).and_then(|id| self.w.entities.get_mut(&id)) {
+                    log::debug!(
+                        "event: {} (index {:#x}) {}",
+                        e.name,
+                        e.index,
+                        if s == 2 { "reserved" } else { "released" }
+                    );
                     e.ev_reserved = s == 2;
                     if s == 3 {
                         let _ = self.w.net.commands.send(NetCommand::CharReq(e.index));
@@ -1424,6 +1494,40 @@ impl Host for LiveHost<'_> {
                     && let Some(e) = self.w.entities.get_mut(&id)
                 {
                     e.area_override = if s == 7 { Self::arg_int(&args, 1).unwrap_or(0) as u32 } else { 0 };
+                }
+            }
+            // Op 0x71 0x50..0x55 (FUN_10163130 / 101632a0 / 1019ec00, +0x10..+0x14): the credits roll.
+            Effect::Op { op: 0x71, sub: Some(s @ 0x50..=0x55), args, .. } => {
+                let v = |k: usize| Self::arg_int(&args, k).unwrap_or(0);
+                match s {
+                    0x50 => {
+                        let file = super::credits::TEXT_FILE + v(0) as u32;
+                        let name = self.w.name.clone();
+                        match self.index.read(file) {
+                            Ok(d) => {
+                                log::info!("event credits: file {file} open");
+                                self.w.credits = Some(super::credits::Credits::open(&d, &name));
+                            }
+                            Err(e) => log::warn!("event credits: file {file}: {e:#}"),
+                        }
+                    }
+                    0x51 => self.w.credits = None,
+                    0x52 => {
+                        if let Some(c) = self.w.credits.as_mut() {
+                            c.start(v(0));
+                        }
+                    }
+                    0x54 => {
+                        if let Some(c) = self.w.credits.as_mut() {
+                            c.set_rect([v(0), v(1), v(2), v(3)]);
+                        }
+                    }
+                    0x55 => {
+                        if let Some(c) = self.w.credits.as_mut() {
+                            c.set_colour(v(0) as u32);
+                        }
+                    }
+                    _ => {}
                 }
             }
             // Subs 5 / 6: actor@6's motion clock never runs ahead of actor@2's (model +0x798, FUN_100cb400); 6 ends
@@ -1541,10 +1645,13 @@ impl Host for LiveHost<'_> {
                 let id = self.wid(actor);
                 self.st.hidden.insert(id);
             }
-            // FUN_100b10f0 sub 0: the event actor's name = str@2 (24 bytes, +0x7c) unless it has an alternate name.
+            // FUN_100b10f0 sub 0 -> FUN_10093430: the event actor's name = str@2 (24 bytes, +0x7c) unless it has a
+            // Monstrosity name (+0x210 != 0).
             Effect::Op { op: 0xb5, sub: Some(0), actor, args, .. } => {
                 let id = self.wid(actor);
-                if let (Some(Arg::Name(n)), Some(e)) = (args.first(), self.w.entities.get_mut(&id)) {
+                if let (Some(Arg::Name(n)), Some(e)) =
+                    (args.first(), self.w.entities.get_mut(&id).filter(|e| e.monstrosity == 0))
+                {
                     e.name = n.chars().take(20).collect();
                 }
             }
@@ -1641,9 +1748,11 @@ impl Host for LiveHost<'_> {
                     0x8e => Some(0x2d),
                     _ => Some(0x2e),
                 };
-                if let Some(v) = v {
-                    let id = self.wid(actor);
+                // FUN_100b6950..: no write while 0xab 3's lock (+0x120 bit 2) is on.
+                let id = self.wid(actor);
+                if let Some(v) = v.filter(|_| !self.st.status_lock.contains(&id)) {
                     self.w.doors.event.insert(id, v);
+                    self.st.event_status.remove(&id);
                 }
             }
             // FUN_10178900(val, 1): the sub-area loads (no 0x0F2); sub 2 tells the server (0x0F2 state 2).
@@ -1684,20 +1793,20 @@ impl Host for LiveHost<'_> {
                 }
             }
             Effect::Op { op: 0xb6, sub: Some(sub), actor, args } => self.event_look(sub, actor, &args),
-            // Zone actions (XiZone, DAT_106175ac vtable +0x18 / +0x1c): schedulers of the zone's effects by 4cc.
+            // Zone actions (XiZone, DAT_106175ac vtable +0x18 / +0x1c): schedulers of the zone's effects by 4cc, run
+            // as 0x45's are, so their camera paths, fades and crossfades play (an event area's scene: 516's kon0).
             Effect::Op { op: op @ (0x2d | 0x51), args, .. } => {
-                let who = |a: Option<&Arg>| match a {
-                    Some(Arg::Actor(0)) | None => crate::fx::sched::Who::None,
-                    Some(Arg::Actor(a)) => crate::fx::sched::Who::Actor(self.wid(*a)),
-                    _ => crate::fx::sched::Who::None,
+                let raw = |a: Option<&Arg>| match a {
+                    Some(Arg::Actor(a)) => *a,
+                    _ => 0,
                 };
-                let (a, b) = (who(args.first()), who(args.get(1)));
+                let (actor, target) = (raw(args.first()), raw(args.get(1)));
                 if let (Some(Arg::Name(n)), Some(file)) = (args.get(2), self.w.effects.zone_file()) {
-                    let name = u32::from_le_bytes(crate::dat::generator::fourcc(n));
+                    let tag = n.clone();
                     if op == 0x2d {
-                        self.w.effects.on_event_scheduler(file, name, a, b)
+                        self.effect(Effect::Scheduler { file, tag, actor, target, param: 0 })
                     } else {
-                        self.w.effects.stop_event_scheduler(file, name, a, b)
+                        self.effect(Effect::SchedulerStop { file, tag, actor, target })
                     }
                 }
             }
@@ -1755,6 +1864,13 @@ impl Host for LiveHost<'_> {
                 let who = self.arg_actor(&args, 0).unwrap_or(self.wid(actor));
                 if let Some(a) = self.w.actors.get_mut(&who) {
                     a.look.mode = super::actmotion::LookMode::Off;
+                }
+            }
+            // Op 0x63: the event actor's emote by motion set val@1 (+0x1c0, state 9 at +0x1bc).
+            Effect::Op { op: 0x63, actor, args, .. } => {
+                let id = self.wid(actor);
+                if let (Some(a), Some(n)) = (self.w.actors.get_mut(&id), Self::arg_int(&args, 0)) {
+                    super::actmotion::emote_set(a, n as u32);
                 }
             }
             // FUN_100b5db0 -> FUN_1009f200: emote val@5 through table 0x103504a8.
@@ -2000,6 +2116,14 @@ impl Host for LiveHost<'_> {
         if let Busy::Op { op: 0xb4, sub: Some(0x15), .. } = b {
             return self.w.map_open.is_some() || self.w.map.is_some();
         }
+        // Op 0xb2 1: the Delivery Box send UI cannot open yet.
+        if let Busy::Op { op: 0xb2, sub: Some(1), .. } = b {
+            return !super::post::can_open(self.w);
+        }
+        // Op 0x71 0x53: the credits roll is still running.
+        if let Busy::Op { op: 0x71, sub: Some(0x53), .. } = b {
+            return self.w.credits.as_ref().is_some_and(|c| !c.done);
+        }
         match b {
             Busy::Scheduler { file, tag, actor, target } => self
                 .w
@@ -2096,7 +2220,7 @@ impl Host for LiveHost<'_> {
             Busy::Op { op: 0xb6, sub: Some(0x10), .. } => {
                 self.w.actors.get(&self.w.my_id).is_none_or(|a| a.character.is_none())
             }
-            Busy::Op { op: 0x99, actor, .. } | Busy::Op { op: 0x59, sub: Some(6), actor } => {
+            Busy::Op { op: 0x99 | 0x63 | 0x9b, actor, .. } | Busy::Op { op: 0x59, sub: Some(6), actor } => {
                 let id = self.wid(*actor);
                 self.w.actors.get(&id).is_some_and(super::actmotion::emoting)
             }
@@ -2184,6 +2308,10 @@ impl Host for LiveHost<'_> {
         self.w.concierge_ui.is_none().then_some(self.w.concierge_pick)
     }
 
+    fn camera_points(&self) -> ([f32; 3], [f32; 3]) {
+        self.w.last_camera.map_or(([0.0; 3], [0.0; 3]), |c| (c.eye.to_array(), c.target.to_array()))
+    }
+
     fn music_state(&self) -> i32 {
         self.w.music_state
     }
@@ -2252,12 +2380,20 @@ impl Host for LiveHost<'_> {
     fn ground(&self, actor: u32, p: [f32; 3]) -> Option<f32> {
         // The VM names us PLAYER; the flags live under our world id.
         let actor = self.wid(actor);
-        let no_snap = if actor == self.w.my_id {
-            self.w.my_plate.no_snap
+        let (no_snap, status) = if actor == self.w.my_id {
+            (self.w.my_plate.no_snap, self.w.my_motion.status)
         } else {
-            self.w.entities.get(&actor).is_some_and(|e| e.no_snap)
+            self.w.entities.get(&actor).map_or((false, 0), |e| (e.no_snap, e.motion.status))
         };
-        if no_snap {
+        // FUN_1008cd90 holds bit 21 for a carrier status and for an unbound rider (client/carrier.rs).
+        let bound = self.st.bound.contains(&actor);
+        // +0x174 is one field: an event status (op 0xac sub 1) or a door op's state, whichever came last.
+        let status = if bound {
+            self.st.event_status.get(&actor).or_else(|| self.w.doors.event.get(&actor)).copied().unwrap_or(0)
+        } else {
+            self.w.doors.state.get(&actor).copied().unwrap_or(status)
+        };
+        if no_snap || super::carrier::no_ground(status, bound) {
             return None;
         }
         self.w.ground.as_ref().and_then(|g| g.snap(p[0], p[2], p[1]))
@@ -2359,6 +2495,11 @@ pub fn queue(w: &mut World, s: EventStart) {
     );
     // FUN_100ad2c0 clears the post-event re-request (+0x1f8 / +0x1fa) of every actor.
     w.self_lock = None;
+    // The zone-in set-up locks control when the 0x00A carries an event (FUN_10094190 0x1009533e, FUN_10096640
+    // 0x1009679a, both under EventNum != 0), after the zone-in cleared it. No other event start writes the lock.
+    if s.login {
+        w.control_lock = Some((Instant::now(), s.target));
+    }
     w.event_pending = Some(Box::new(Waiting {
         start: s,
         blocks: None,
@@ -2541,7 +2682,7 @@ fn actors_idle(w: &mut World, wt: &mut Waiting) -> bool {
         .into_iter()
         .filter_map(|id| {
             let (status, hidden) = match w.entities.get(&id) {
-                _ if id == w.my_id => (w.my_motion.status, w.self_flags & 1 != 0),
+                _ if id == w.my_id => (w.my_motion.status, self_hidden(w)),
                 Some(e) => (e.motion.status, e.flags & 2 != 0),
                 None => return None,
             };
@@ -2582,7 +2723,7 @@ fn begin(w: &mut World, mut wt: Box<Waiting>, index: &DatIndex) {
     for b in blocks.iter().filter(|b| bound_block(b, st.start.event)) {
         if let Some((id, _)) = resolve((w.my_id, w.my_index), b.actor) {
             st.bound.insert(id);
-            if w.entities.get(&id).is_some_and(|e| e.flags & 2 != 0) {
+            if w.entities.get(&id).is_some_and(|e| e.flags & 2 != 0) || (id == w.my_id && self_hidden(w)) {
                 st.hidden.insert(id);
             }
             if st.start.mode & 0x200 == 0
@@ -2613,8 +2754,9 @@ fn begin(w: &mut World, mut wt: Box<Waiting>, index: &DatIndex) {
     // FUN_100ad000 (load finished): DAT_104760f8 = 1, DAT_10473068 = DAT_10475cb0.
     st.loaded = true;
     st.cancellable = st.cb0;
-    // FUN_10094190 / FUN_100aed00: control locked, DAT_10488100 = 1 (released at the end).
-    (w.control_lock, w.lock_carry) = (Some((Instant::now(), st.start.target)), false);
+    // FUN_100aed00: DAT_10488100 = 1 (the end may release the lock). It sets no lock itself: a talk's event runs under
+    // the talk request's, a zone-in event under the one `queue` set, and one the server starts on its own under none.
+    w.lock_carry = false;
     w.event = Some(Box::new(Live { rt, st }));
     if cancel && let Some(l) = &mut w.event {
         // The 0x052 mode 2 that came while it waited cancels it once loaded (0x10096a99).
@@ -2773,6 +2915,9 @@ fn sync(live: &mut Live, w: &mut World, ticks: f32, dt: f32) {
     let mut steps = Vec::new();
     for (a, b) in live.rt.actors() {
         let id = if a == PLAYER { me } else { a };
+        if live.st.detached.contains(&id) {
+            continue;
+        }
         let p = Vec3::from(b.pos);
         let snap = live.st.snap.remove(&id);
         let pose = live.st.poses.entry(id).or_insert(Pose::new(p, b.dir, b.tilt));
@@ -2861,8 +3006,17 @@ fn keep_pose(w: &mut World, p: Pose) {
 
 /// FUN_100ac9c0 / FUN_100bb750 / FUN_1008d710: the bound actors go back to their transforms and status
 /// bits, event motions and looks end, deferred despawns happen.
+/// FUN_100ae3f0 (0x100ae435): the +0x174 a reserved entity keeps at the event's end. Op 0xac 1 and the door ops
+/// (0x4c / 0x4d / 0x4f / 0x8e / 0x8f) share that field; ours keeps the last write in one of the two maps (each write
+/// takes the id out of the other).
+fn reserved_status(event: &HashMap<u32, u8>, doors: &HashMap<u32, u8>, id: u32) -> Option<u8> {
+    doors.get(&id).or_else(|| event.get(&id)).copied()
+}
+
 fn finish(w: &mut World, live: Box<Live>) {
     w.screen.release_black();
+    // FUN_100ae960: the credits roll closes with the event.
+    w.credits = None;
     // FUN_100ae3f0 -> FUN_100ae3a0: the event message queues are cancelled (FUN_10127ea0).
     cancel_queues(w);
     // FUN_100ae3f0 -> FUN_100ba080: op 0x97's gusts back as they were.
@@ -2881,6 +3035,13 @@ fn finish(w: &mut World, live: Box<Live>) {
     // FUN_10182860 (down to 50 below, else up), an NPC's by FUN_101828d0 unless a no-snap bit holds it (+0x128 bit
     // 14, +0x120 bits 20 / 21) or it is a door or lift (+0xee 3 / 4). It comes before & 1's return to +0x24, so
     // with both flags we stay at this place too. Ours does the bound actors: the others' models are where they are.
+    // An entity op 0xac 2 reserved takes its event status as its server one (+0x16c = +0x170 = +0x174), and is
+    // reseated only when op 0xac 4 set its +0x13c bit 0.
+    for (id, e) in w.entities.iter_mut().filter(|(_, e)| e.ev_reserved) {
+        if let Some(s) = reserved_status(&live.st.event_status, &w.doors.event, *id) {
+            e.motion.status = s;
+        }
+    }
     let reseat = live.st.flags() & mode::GROUND_SNAP_ON_END != 0;
     if reseat {
         for id in &live.st.bound {
@@ -2890,7 +3051,7 @@ fn finish(w: &mut World, live: Box<Live>) {
             if *id == w.my_id {
                 p.pos.y = floor(p.pos).unwrap_or(p.pos.y);
                 keep_pose(w, p);
-            } else if let Some(e) = w.entities.get(id) {
+            } else if let Some(e) = w.entities.get(id).filter(|e| !e.ev_reserved || e.keep_event_pos) {
                 if id >> 24 == 0 || (id >> 24 == 1 && reseat_floor(e.no_snap, lifted, e.sub_kind)) {
                     p.pos.y = floor(p.pos).unwrap_or(p.pos.y);
                 }
@@ -3158,6 +3319,23 @@ fn drops_action_in(flags: u32, bound: bool, own: bool, category: u8) -> bool {
         || (own && flags & mode::ALLOW_OWN_ACTION == 0 && crate::net::action::category::by_file(category))
 }
 
+/// An update came for `id`: the despawn mark (entity +0x124 bit 12) is off, so the event's end leaves the actor.
+pub fn respawned(w: &mut World, id: u32) {
+    if let Some(l) = &mut w.event {
+        l.st.despawned.remove(&id);
+    }
+}
+
+/// FUN_1008ee30 from a slot reset: the actor leaves the event (+0x120 bits 7 / 8 off).
+pub fn unbind(w: &mut World, id: u32) {
+    if let Some(l) = &mut w.event {
+        l.st.bound.remove(&id);
+        l.st.despawned.remove(&id);
+        l.st.poses.remove(&id);
+        l.st.detached.insert(id);
+    }
+}
+
 /// An event holds this actor (bound, or taking part while it waits): a despawn waits for the end.
 pub fn holds(w: &mut World, id: u32) -> bool {
     if let Some(l) = &mut w.event
@@ -3204,12 +3382,61 @@ pub fn weather(w: &World) -> u16 {
     w.event.as_ref().and_then(|l| l.st.weather).unwrap_or(w.weather)
 }
 
+/// Scheduler ops 0x7c / 0x7d (fx::EnvOp) on the clock and weather op 0x77 holds.
+pub fn env_op(w: &mut World, op: crate::fx::EnvOp) {
+    match op {
+        // FUN_1018c210: hour, minute and second of `v`, the day kept. Outside an event ours runs on the server's.
+        crate::fx::EnvOp::Clock(v) => match w.event.as_mut() {
+            Some(l) => {
+                let held = l.st.clock;
+                let minute = (v % 0x4f_1a00) / 3600;
+                l.st.clock =
+                    Some(HeldClock { day: held.and_then(|c| c.day), minute, moon: held.is_some_and(|c| c.moon) });
+            }
+            None => log::debug!("scheduler op 0x7d (time {v}) outside an event: not applied"),
+        },
+        // FUN_101874f0 with keep 0: a new tag kills the old weather's effects at once; the env blends over `blend`
+        // clock units (1500 a second).
+        crate::fx::EnvOp::Weather { tag, blend } => {
+            let name = String::from_utf8_lossy(&tag.to_le_bytes()).trim_end_matches('\0').to_string();
+            let secs = blend.max(0) as f32 / 1500.0;
+            match crate::dat::weather::WEATHER_TAGS.iter().position(|t| *t == name) {
+                Some(n) => {
+                    let n = n as u16;
+                    match w.event.as_mut().filter(|l| l.st.weather.is_some()) {
+                        Some(l) => l.st.weather = Some(n),
+                        None if w.weather_chain.last().is_none_or(|c| c.0 != n) => {
+                            if secs <= 0.0 {
+                                w.weather_chain.clear();
+                            }
+                            w.weather_chain.push((n, Instant::now(), secs));
+                        }
+                        None => {}
+                    }
+                }
+                None => log::debug!("scheduler op 0x7c: weather {name:?} has no number"),
+            }
+            w.effects.set_weather(&name, 0.0);
+            w.static_env = None;
+        }
+        crate::fx::EnvOp::Static(e) => w.static_env = Some(e),
+    }
+}
+
 /// Bound actors whose name op 0x92 turned off while the event runs (FUN_10096000).
 pub fn nameless(w: &World) -> HashSet<u32> {
     w.event.as_ref().map_or_else(HashSet::new, |l| l.st.no_name.intersection(&l.st.bound).copied().collect())
 }
 
 /// Op 0x5f sub 1 holds this actor out of s2c 0x038 schedulers while the event runs.
+pub fn no_039(w: &World, id: u32) -> bool {
+    w.event.as_ref().is_some_and(|l| l.st.no_039.contains(&id))
+}
+
+pub fn no_03a(w: &World, id: u32) -> bool {
+    w.event.as_ref().is_some_and(|l| l.st.no_03a.contains(&id))
+}
+
 pub fn no_038(w: &World, id: u32) -> bool {
     w.event.as_ref().is_some_and(|l| l.st.no_038.contains(&id))
 }
@@ -3225,9 +3452,30 @@ pub fn bound(w: &World, id: u32) -> bool {
     w.event.as_ref().is_some_and(|l| l.st.bound.contains(&id))
 }
 
+/// FUN_100983f0: no c2s 0x015 is built while we are bound to the running event (+0x120 bit 7 with DAT_104819a5)
+/// unless (DAT_10481aac | Mode) & SEND_POSITION (0x1009842c). The control lock's test (0x10098530) is the other gate,
+/// `SelfState::locked`. So through a city opening (Mode 0x83) the server hears no position from us at all.
+pub fn no_position(w: &World) -> bool {
+    no_position_in(w.event.as_ref().map(|l| (l.st.bound.contains(&w.my_id), l.st.flags())))
+}
+
+/// `no_position` from the running event's (we are bound, flags).
+fn no_position_in(live: Option<(bool, u32)>) -> bool {
+    live.is_some_and(|(bound, flags)| bound && flags & mode::SEND_POSITION == 0)
+}
+
+/// The actors the running event has bound (+0x120 bit 7).
+pub fn bound_set(w: &World) -> HashSet<u32> {
+    w.event.as_ref().map(|l| l.st.bound.clone()).unwrap_or_default()
+}
+
 /// A bound actor's drawn transform while the event runs: on its way to its last VM step, over the tick after it.
 pub fn pose(w: &World, id: u32) -> Option<Pose> {
-    w.event.as_ref()?.st.poses.get(&id).map(|p| p.drawn(p.since))
+    let l = w.event.as_ref()?;
+    if l.st.detached.contains(&id) {
+        return None;
+    }
+    l.st.poses.get(&id).map(|p| p.drawn(p.since))
 }
 
 /// A bound actor's event status (+0x174, op 0xac sub 1); 0 when none was set.
@@ -3342,6 +3590,18 @@ pub fn hides(w: &World, id: u32) -> bool {
         || moogle_gone(w) == Some(id)
 }
 
+/// s2c 0x037 Flags0 bit 0 (HideFlag, u8 @0x28 bit 0; FUN_1009d0f0 at 0x1009d1d6): our own actor's +0x120 bit 14, the
+/// bit a 0x00E's status sets on an NPC. FUN_1008e4d0 hides us by it while no event has us bound, and the bind
+/// (FUN_100bb300) turns it into the script's hide flag (bit 0x20000), so an event the server starts with us hidden
+/// begins without us until its script shows us (ops 0x22 / 0x4e with 0). The city openings rely on it: Windurst's
+/// never hide the player themselves, they only show it once the flyover is over.
+pub fn self_hidden(w: &World) -> bool {
+    w.self_flags & HIDE_FLAG != 0
+}
+
+/// s2c 0x037 Flags0 bit 0, HideFlag (`World::self_flags`).
+const HIDE_FLAG: u32 = 1;
+
 /// FUN_100a17f0(1): the moogle gone over to the Mog House (own model hidden, +0x120 bit 15).
 fn moogle_gone(w: &World) -> Option<u32> {
     w.moogle_hidden.then(|| super::moogle::moogle_actor(w)).flatten()
@@ -3389,7 +3649,7 @@ impl<'a> HideRule<'a> {
         let me = w.my_id;
         let hide_me = match self.script {
             Some(h) if self.takes_part(me) => h.contains(&me),
-            _ => !self.takes_part(me) && unloads(true, self.flags, false, false, false),
+            _ => self_hidden(w) || (!self.takes_part(me) && unloads(true, self.flags, false, false, false)),
         };
         // FUN_101d4d90: laying out the Mog House or gardening in it the player is not drawn (+0xb2 bit 4).
         hide_me || w.layout.is_some() || super::garden::hides_player(w)
@@ -3859,6 +4119,8 @@ struct EventTexts {
     mon: std::sync::OnceLock<Option<crate::dat::names::DMsg>>,
     /// Files 55473 / 55474 (grammar 0x82 / 0x86).
     words: [std::sync::OnceLock<Option<crate::dat::names::DMsg>>; 2],
+    /// The quest and mission name files (grammar 0x81 / 0x83).
+    logs: std::sync::OnceLock<Arc<crate::dat::journal::Logs>>,
 }
 
 impl dialog::Texts for EventTexts {
@@ -3912,6 +4174,13 @@ impl dialog::Texts for EventTexts {
             _ => bt?.grammar_line(kind, id),
         }
     }
+
+    fn journal(&self, quest: bool, table: u8, entry: usize) -> Option<Vec<u8>> {
+        let index = self.index.as_ref()?;
+        let logs = self.logs.get_or_init(|| Arc::new(crate::dat::journal::Logs::load(index)));
+        let file = if quest { logs.quests.get(table as usize)? } else { logs.missions.get(table as usize)? };
+        Some(crate::dat::font::encode_sjis(&file.entries.get(entry)?.name))
+    }
 }
 
 /// What message codes take from the client (FUN_100c1650): the date strings, the roster, the other name tables.
@@ -3929,6 +4198,7 @@ pub fn text_ctx(w: &World) -> dialog::Ctx {
         ae: w.ae_tables.clone().map(Some).map(std::sync::OnceLock::from).unwrap_or_default(),
         mon: Default::default(),
         words: Default::default(),
+        logs: w.logs.clone().map(std::sync::OnceLock::from).unwrap_or_default(),
     };
     dialog::Ctx {
         dates,
@@ -4142,12 +4412,37 @@ pub fn source_line(w: &mut World, source: u16, id: u16, num: [u32; 5], mode: u8,
 mod tests {
     use super::*;
 
+    /// FUN_100983f0's bound-actor gate on c2s 0x015 (the lock is `SelfState::locked`).
+    #[test]
+    fn position_packets_stop_in_events() {
+        // A city opening (Mode 0x83) binds us: none.
+        assert!(no_position_in(Some((true, 0x83))));
+        // Mode bit 4 sends the event body's place; an event that does not bind us, or none, sends ours.
+        assert!(!no_position_in(Some((true, 0x87))));
+        assert!(!no_position_in(Some((false, 0))));
+        assert!(!no_position_in(None));
+    }
+
     /// 0x100952e7: only a zone-in event with Mode bit 0x80 starts in cinema mode, at (0, 0).
     #[test]
     fn login_mode_80_starts_cinema() {
         assert!(State::new(EventStart { mode: 0x80, login: true, ..Default::default() }).place_on);
         assert!(!State::new(EventStart { mode: 0x80, ..Default::default() }).place_on);
         assert!(!State::new(EventStart { mode: 0x03, login: true, ..Default::default() }).place_on);
+    }
+
+    /// FUN_100ae3f0 (0x100ae435): a reserved entity keeps the +0x174 its event left, a door op's included.
+    #[test]
+    fn reserved_status_takes_door_ops() {
+        let (mut event, mut doors) = (HashMap::new(), HashMap::new());
+        assert_eq!(reserved_status(&event, &doors, 7), None);
+        event.insert(7, 5);
+        assert_eq!(reserved_status(&event, &doors, 7), Some(5));
+        // Op 0x4c on the same entity: +0x174 = 8 (the door op moves the id out of the event map).
+        event.remove(&7);
+        doors.insert(7, 8);
+        assert_eq!(reserved_status(&event, &doors, 7), Some(8));
+        assert_eq!(reserved_status(&event, &doors, 9), None);
     }
 
     /// FUN_1008e4d0 / FUN_10095900: the event filter takes non-participants (PCs by 0x02, others by 0x10) except doors,
@@ -4221,6 +4516,36 @@ mod tests {
         assert!(coded_chat("hello").is_none());
     }
 
+    /// Beaucedine Glacier [S]'s Regal Pawprints menu (8608): row n is grammar 0x83 / 0x81, a mission or quest name.
+    #[test]
+    fn objective_menu_names() {
+        let cfg = crate::config::Config::load();
+        let Ok(index) = crate::dat::DatIndex::open(&cfg.ffxi_dir()) else { return };
+        let index = Arc::new(index);
+        let d = Dialog::parse(&index.read(crate::dat::dialog::file_id(136)).unwrap()).unwrap();
+        let raw = d.raw(8608).unwrap();
+        let texts = EventTexts {
+            bt: None,
+            index: Some(index),
+            files: [None; 6],
+            merits: Default::default(),
+            jp: Default::default(),
+            ae: Default::default(),
+            mon: Default::default(),
+            words: Default::default(),
+            logs: Default::default(),
+        };
+        let ctx = dialog::Ctx { num: [0, 22, 0, 0, 0, 0, 0, 0], texts: Some(Arc::new(texts)), ..Default::default() };
+        let e = dialog::expand(&raw, &ctx);
+        let text: Vec<String> = e.lines.iter().map(|l| decode_sjis(l)).collect();
+        let rows = &text[e.choice.unwrap()..];
+        // Row 2: mission log 8 (Wings of the Goddess) entry num[1]; rows 3..8: quest area 7 (Crystal War) entry 0.
+        assert_eq!(
+            (rows[0].as_str(), rows[2].as_str(), rows[3].as_str()),
+            ("None.", "Dungeons and Dancers.", "Lost in Translocation.")
+        );
+    }
+
     /// Source 10's 0x1bd with that line's num[] reads as retail printed it.
     #[test]
     fn coded_unity_text() {
@@ -4241,6 +4566,7 @@ mod tests {
             ae: Default::default(),
             mon: Default::default(),
             words: Default::default(),
+            logs: Default::default(),
         };
         let ctx = dialog::Ctx {
             num: [9, 0x2d, 0x123, 2, 2, 0, 0, 0],

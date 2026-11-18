@@ -20,6 +20,8 @@ fn signed_index(b: u8, base: i32) -> usize {
 /// ordered by sym as a signed char (0x80, 0x81, .. 0x7F).
 const RECORDS: usize = 256 * 9;
 const KNOWN_OFFSET: usize = 0x37EA8;
+/// FUN_100fa710 unpacks into 10000 bytes less the header; FUN_100df5d0 fails once the output reaches that.
+const OUT_ROOM: usize = 10000 - 0x1c;
 
 fn records_at(dll: &[u8], at: usize) -> bool {
     dll.len() >= at + RECORDS && (0..256).all(|i| dll[at + i * 9] == (i as u8).wrapping_sub(0x80))
@@ -114,12 +116,32 @@ impl Codec {
         (out, bits + 8)
     }
 
-    pub fn decompress(&self, data: &[u8], size_field: u32) -> Result<Vec<u8>> {
-        if data.first() != Some(&1) {
-            bail!("compressed data does not start with 0x01");
+    /// FUN_100df7c0, the body a datagram carries and its size field in bits. The codes go behind a leading 1 while
+    /// they stay under `room - 1` bytes; once a byte's code would reach that, the input goes as it is behind a leading
+    /// 0 (the field is then its bytes + 1, times 8) when that fits `room`, and nothing is made when it does not.
+    pub fn pack(&self, input: &[u8], room: usize) -> Option<(Vec<u8>, u32)> {
+        if (self.bits(input) as usize) < room.saturating_sub(1) * 8 {
+            return Some(self.compress(input));
         }
-        let payload = &data[1..];
-        let bits = (size_field.saturating_sub(8) as usize).min(payload.len() * 8);
+        (input.len() < room).then(|| {
+            let mut out = vec![0u8];
+            out.extend_from_slice(input);
+            let bits = out.len() as u32 * 8;
+            (out, bits)
+        })
+    }
+
+    /// FUN_100df5d0. `data` starts at the leading byte: 1 has the codes behind it, anything else the plain bytes
+    /// (the size field less 8, in whole bytes). A code cut short by the bit count is left out. Retail takes the field
+    /// less 8 unsigned and reads past the datagram when the count says so; ours refuses a field under 8 and reads no
+    /// further than `data`.
+    pub fn decompress(&self, data: &[u8], size_field: u32) -> Result<Vec<u8>> {
+        let Some((&form, payload)) = data.split_first() else { bail!("no compressed data") };
+        let Some(bits) = size_field.checked_sub(8) else { bail!("size field {size_field} is under 8 bits") };
+        let bits = (bits as usize).min(payload.len() * 8);
+        if form != 1 {
+            return Ok(payload[..bits / 8].to_vec());
+        }
         let mut out = Vec::with_capacity(bits / 4);
         let (mut pos, mut node) = (0usize, 0usize);
         while pos < bits {
@@ -129,6 +151,9 @@ impl Codec {
                 0 => bail!("invalid code in compressed data"),
                 n if n < 0 => {
                     out.push((-n - 1) as u8);
+                    if out.len() >= OUT_ROOM {
+                        bail!("compressed data unpacks to {OUT_ROOM} bytes or more");
+                    }
                     node = 0;
                 }
                 n => node = n as usize,
@@ -164,6 +189,52 @@ mod tests {
         let (packed, size) = c.compress(&input);
         assert_eq!(c.decompress(&packed, size).unwrap(), input);
         assert_eq!(size, c.bits(&input) + 8);
+    }
+
+    /// Plain 8-bit codes (each byte its code) but 0xFF, which takes 32 bits.
+    fn long_codec() -> Codec {
+        let mut table = vec![0u8; 2048];
+        for b in 0..=255u8 {
+            let i = (b as i8 as i32 + 0x80) as usize;
+            table[i * 4..i * 4 + 4].copy_from_slice(&(b as u32).to_le_bytes());
+            let len = if b == 0xFF { 32u32 } else { 8 };
+            table[(i + 0x100) * 4..(i + 0x100) * 4 + 4].copy_from_slice(&len.to_le_bytes());
+        }
+        Codec::from_table(&table).unwrap()
+    }
+
+    /// FUN_100df7c0: codes under room - 1 bytes go compressed, at or past it the input goes plain behind a 0 when
+    /// that fits the room; FUN_100df5d0 reads both forms.
+    #[test]
+    fn stored_form() {
+        let c = long_codec();
+        // 31 bytes of 8-bit codes in a 33-byte room: 248 bits, under 32 x 8.
+        let (body, bits) = c.pack(&[7; 31], 33).unwrap();
+        assert_eq!((body[0], body.len(), bits), (1, 32, 256));
+        // 32 bytes reach 256 bits: plain, behind a 0.
+        let (body, bits) = c.pack(&[7; 32], 33).unwrap();
+        assert_eq!((body[0], body.len(), bits), (0, 33, 264));
+        assert_eq!(c.decompress(&body, bits).unwrap(), [7; 32]);
+        // 33 bytes do not fit either way; 8 long codes do, plain.
+        assert!(c.pack(&[7; 33], 33).is_none());
+        let (body, bits) = c.pack(&[0xFF; 8], 33).unwrap();
+        assert_eq!((body[0], bits), (0, 72));
+        assert_eq!(c.decompress(&body, bits).unwrap(), [0xFF; 8]);
+        // Any leading byte but 1 is the plain form; the count is whole bytes of the field less 8.
+        assert_eq!(c.decompress(&[2, 9, 8, 7], 8 + 23).unwrap(), [9, 8]);
+        assert!(c.pack(&[], 33).is_some_and(|(body, bits)| body == [1] && bits == 8));
+    }
+
+    /// FUN_100df5d0's ends: a code cut short is left out, a field under 8 and an output at the limit fail.
+    #[test]
+    fn decompress_limits() {
+        let c = long_codec();
+        assert_eq!(c.decompress(&[1, 5, 6, 0xFF, 0], 8 + 16 + 12).unwrap(), [5, 6]);
+        assert!(c.decompress(&[1, 5], 7).is_err());
+        assert!(c.decompress(&[], 8).is_err());
+        let full = [vec![1u8], vec![3u8; OUT_ROOM]].concat();
+        assert_eq!(c.decompress(&full, 8 + (OUT_ROOM as u32 - 1) * 8).unwrap().len(), OUT_ROOM - 1);
+        assert!(c.decompress(&full, 8 + OUT_ROOM as u32 * 8).is_err());
     }
 
     /// Our trie must decode every code exactly as the decompress.dat tree used by LSB does.

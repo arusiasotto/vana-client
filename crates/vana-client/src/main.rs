@@ -100,6 +100,9 @@ enum Cmd {
         /// Leave executables and libraries as they are.
         #[arg(long)]
         data_only: bool,
+        /// Read every listed file, also the ones with no version newer than the one applied here.
+        #[arg(long)]
+        full: bool,
         /// Patch-server connections at once (1..6).
         #[arg(long, default_value_t = 4)]
         connections: usize,
@@ -1251,7 +1254,7 @@ fn main() -> Result<()> {
             };
             client::run(config::Config::load(), drive)
         }
-        Cmd::Update { dry_run, data_only, connections, file, to } => {
+        Cmd::Update { dry_run, data_only, full, connections, file, to } => {
             if let Some(f) = file {
                 let dir = to.unwrap_or_else(|| PathBuf::from("."));
                 let (out, stamp) = patch::fetch_one(&f, &dir)?;
@@ -1260,7 +1263,7 @@ fn main() -> Result<()> {
             }
             let root = config::Config::load().ffxi_dir();
             println!("checking {} against {}:{} ...", root.display(), patch::HOST, patch::PORT);
-            let plan = patch::plan(&root, !data_only)?;
+            let plan = patch::plan(&root, !data_only, full)?;
             let local = std::fs::read_to_string(root.join(patch::STAMP_FILE))
                 .ok()
                 .and_then(|t| patch::parse_manifest(&t).ok())
@@ -1597,9 +1600,12 @@ fn main() -> Result<()> {
             }
             let lighting = match hour {
                 Some(h) => {
-                    let w = dat::weather::ZoneWeather::parse(&file)?;
-                    let env =
-                        w.at(&weather, h * 60.0).ok_or_else(|| anyhow::anyhow!("zone {zone} has no weat keys"))?;
+                    // A scene with no weather data takes retail's default env (as the client).
+                    let w = dat::weather::ZoneWeather::parse(&file)
+                        .ok()
+                        .filter(|w| w.at(&weather, h * 60.0).is_some())
+                        .unwrap_or_else(dat::weather::ZoneWeather::retail_default);
+                    let env = w.at(&weather, h * 60.0).ok_or_else(|| anyhow::anyhow!("zone {zone} has no env"))?;
                     println!("weather {weather} at {h:.2} h: {env:?}");
                     Some(dat::weather::Lighting::from_env(&env, h * 60.0))
                 }
@@ -1744,7 +1750,20 @@ fn main() -> Result<()> {
                             fx.reg.libs[l].find_global(dat::generator::kind::GENERATOR, u32::from_le_bytes(name))
                         && let Some(g) = fx.reg.libs[l].generator(n)
                     {
-                        println!("generator attach {:#010x} mode {:#x} life {}", g.attach, g.attach_mode(), g.life);
+                        let path: Vec<String> = fx.reg.libs[l]
+                            .tree
+                            .path(n)
+                            .iter()
+                            .map(|x| String::from_utf8_lossy(x).into_owned())
+                            .collect();
+                        println!(
+                            "generator {} attach {:#010x} mode {:#x} life {} flags {:#x}",
+                            path.join("/"),
+                            g.attach,
+                            g.attach_mode(),
+                            g.life,
+                            g.flags
+                        );
                         for (k, st) in g.streams.iter().enumerate() {
                             for op in st {
                                 let words: Vec<String> =
@@ -3605,6 +3624,8 @@ struct ShotActors {
     ground: client::ground::Ground,
     /// The victim despawned (fx-shot --despawn).
     gone: std::cell::Cell<bool>,
+    /// CMoSkeletonElem model actors made so far (ready at once here).
+    fx_models: std::cell::RefCell<Vec<u32>>,
 }
 
 impl ShotActors {
@@ -3646,6 +3667,9 @@ impl fx::Actors for ShotActors {
     }
     fn model_files(&self, id: u32) -> Vec<u32> {
         if id == self.at[0].0 { vec![9672, 7072] } else { vec![1300] }
+    }
+    fn ready(&self, id: u32) -> Option<bool> {
+        (self.find(id).is_some() || self.fx_models.borrow().contains(&id)).then_some(true)
     }
     fn hidden(&self, _: u32) -> bool {
         false
@@ -3853,6 +3877,7 @@ fn fx_shot(
         fx_files: Default::default(),
         ground: g,
         gone: Default::default(),
+        fx_models: Default::default(),
     };
     let mut fx = fx::Effects::new();
     fx.set_keys(std::sync::Arc::new(keys));
@@ -3950,6 +3975,22 @@ fn fx_shot(
             }
             fx.tick(&f, &actors);
             sync_fx_files(&mut fx, &actors.fx_files);
+            // CMoSkeletonElem models (the client's actors; not drawn here): their spawns, places and ends.
+            for (id, file, a, b) in std::mem::take(&mut fx.model_spawns) {
+                println!("tick {}: model actor {id:#x} from file {file} bytes {a:#x}..{b:#x}", actors.ticks.get());
+                actors.fx_models.borrow_mut().push(id);
+            }
+            if let Some((id, p, r, s, c)) = fx.model_places.last().copied() {
+                println!(
+                    "tick {}: model {id:#x} at {p:.2} rot {r:.2} scale {s:.2} colour {c:#010x}, scheduler started {:?}",
+                    actors.ticks.get(),
+                    fx.model_states()
+                );
+            }
+            fx.model_places.clear();
+            for id in std::mem::take(&mut fx.model_drops) {
+                println!("tick {}: model {id:#x} gone", actors.ticks.get());
+            }
             actors.ticks.set(actors.ticks.get() + 1.0);
             let mut e = gpu.device.create_command_encoder(&Default::default());
             eg.update(gpu, &mut e, &mut fx, &f);

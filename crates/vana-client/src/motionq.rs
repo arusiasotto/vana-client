@@ -49,6 +49,8 @@ pub struct Entry<A> {
     pub count: i32,
     /// +0x38: the frame it ends at when above 0, else the chunk's frame count.
     pub end: f32,
+    /// Ours: ticks toward the next whole-frame step of a two-frame chunk (see `advance`).
+    pub flip: f32,
 }
 
 /// FUN_1001ad00's arguments after the resource.
@@ -148,8 +150,16 @@ impl<A> Entry<A> {
         let before = self.frame;
         let end = if self.end > 0.0 { self.end } else { self.frames };
         let step = self.speed * 0.5;
-        // A two-frame chunk at speed 1 steps a whole frame a tick call, whatever the tick's length.
-        self.frame = if end == 2.0 && step == 0.5 { self.frame + 1.0 } else { self.frame + dt * step * self.rate };
+        // A two-frame chunk at speed 1 steps a whole frame a tick call, whatever the tick's length: once a frame at
+        // retail's 30 fps. Ours steps it every 2 ticks, so a bee's wings beat as retail's at any frame rate.
+        self.frame = if end == 2.0 && step == 0.5 {
+            self.flip += dt;
+            let steps = (self.flip / 2.0).floor();
+            self.flip -= steps * 2.0;
+            self.frame + steps
+        } else {
+            self.frame + dt * step * self.rate
+        };
         let over = self.frame >= end;
         if !over && self.frame >= 0.0 {
             return false;
@@ -249,6 +259,7 @@ impl<A: Clone> Queues<A> {
             rate: e.rate,
             count: e.count as i32,
             end: e.end,
+            flip: 0.0,
         };
         if let Some(l) = list.last_mut() {
             n.frame = carry(l.frame, (l.frames, l.speed), (frames, speed), e.rate, blend);
@@ -623,6 +634,29 @@ mod tests {
         m.regions[0][1].weight = 1.0;
         m.layers(&mut l);
         assert_eq!(l.iter().map(|x| (x.region, x.anim, x.start)).collect::<Vec<_>>(), [(3, 9, true), (0, 2, true)]);
+    }
+
+    /// A two-frame chunk at speed 1 (a bee's wings) steps a whole frame every 2 ticks, whatever the frame rate.
+    #[test]
+    fn two_frame_chunk_steps_every_two_ticks() {
+        let e = Enq { share: 1.0, rate: 1.0, count: 0, blend: 1.0, out_len: 1.0, start: 0.0, end: 0.0, carry: false };
+        let frames = |dt: f32, calls: usize| {
+            let mut m = q();
+            m.enqueue(1, 1, 2.0, 1.0, &e);
+            (0..calls)
+                .map(|_| {
+                    m.tick(dt);
+                    m.regions[1][0].frame
+                })
+                .collect::<Vec<_>>()
+        };
+        // 30 fps (2 ticks a frame): a step every call, as retail.
+        assert_eq!(frames(2.0, 4), vec![1.0, 0.0, 1.0, 0.0]);
+        // 144 fps: a step every 4.8 calls, not every call.
+        let f = frames(60.0 / 144.0, 10);
+        assert_eq!(f.iter().filter(|&&x| x == 1.0).count(), 5, "{f:?}");
+        assert_eq!(f[3], 0.0);
+        assert_eq!(f[4], 1.0);
     }
 
     /// FUN_1001a8e0: loops wrap, an end frame cuts the cycle short, a reverse rate wraps upward.

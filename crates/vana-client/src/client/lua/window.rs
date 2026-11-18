@@ -382,6 +382,8 @@ pub enum Cmd {
 pub struct Meta {
     pub tip: String,
     pub page: Option<usize>,
+    /// The mod hid it (`hidden = true`).
+    pub hidden: bool,
 }
 
 impl Elem {
@@ -758,8 +760,8 @@ impl Window {
         }
     }
 
-    /// Which elements are hidden: on another page of their tabs, or under a folded section (one on their page, or
-    /// any for an element without a page).
+    /// Which elements are hidden: hidden by the mod, on another page of their tabs, or under a folded section (one on
+    /// their page, or any for an element without a page).
     pub fn hidden(&self) -> Vec<bool> {
         let (mut page, mut section): (Option<usize>, Option<(bool, Option<usize>)>) = (None, None);
         self.elems
@@ -767,7 +769,8 @@ impl Window {
             .enumerate()
             .map(|(i, e)| {
                 let mine = self.meta.get(i).and_then(|m| m.page);
-                let off_page = mine.is_some_and(|p| page.is_some_and(|at| at != p));
+                let off_page =
+                    mine.is_some_and(|p| page.is_some_and(|at| at != p)) || self.meta.get(i).is_some_and(|m| m.hidden);
                 match e {
                     Elem::Tabs { at, .. } => {
                         (page, section) = (Some(*at), None);
@@ -2222,6 +2225,27 @@ mod tests {
     }
 
     #[test]
+    fn hidden_elements_are_skipped() {
+        let input = |id: &str| Elem::Input {
+            id: id.into(),
+            label: String::new(),
+            text: String::new(),
+            max: 4,
+            filter: false,
+            key: false,
+        };
+        let mut w = Window::new("w");
+        w.elems = vec![input("a"), input("b"), input("c")];
+        w.meta = vec![Meta::default(), Meta { hidden: true, ..Default::default() }, Meta::default()];
+        (w.open, w.focus) = (true, true);
+        w.settle();
+        assert_eq!(w.hidden(), vec![false, true, false]);
+        assert_eq!(w.stops(), vec![0, 2]);
+        w.meta[1].hidden = false;
+        assert_eq!(w.stops(), vec![0, 1, 2]);
+    }
+
+    #[test]
     fn pages_sections_and_typing() {
         let mut w = Window::new("w");
         w.elems = vec![
@@ -2407,7 +2431,7 @@ mod tests {
         let row = |s: &str, tip: &str| Row { cells: vec![s.into()], tip: tip.into(), ..Default::default() };
         let rows = vec![row("Dia", "Lowers defense."), row("Cure", "")];
         w.elems = vec![Elem::List { id: "l".into(), rows, columns: Vec::new(), at: 0, top: 0, height: 5 }];
-        w.meta = vec![Meta { tip: "Pick one.".into(), page: None }];
+        w.meta = vec![Meta { tip: "Pick one.".into(), page: None, hidden: false }];
         (w.open, w.focus) = (true, true);
         w.settle();
         assert_eq!(w.help_now(), "Lowers defense.");

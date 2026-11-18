@@ -742,4 +742,32 @@ mod tests {
         assert_eq!(encode_sjis(&s), b);
         assert_eq!(glyphs(&b), vec![b'a' as i32 - 0x20, 723, b'b' as i32 - 0x20, 724]);
     }
+
+    /// `1e 09` on the installed files (FUN_10163710): the glyphs after it take the table's colour with the line's
+    /// alpha (the table's own alpha, 0x60, is not used), and `1e 01` gives the line's colour back. The table has a
+    /// colour for code 9 from build 30261102_0; before that the code leaves the line's colour.
+    #[test]
+    fn colour_code_9() {
+        let cfg = crate::config::Config::load();
+        let (Ok(index), Ok(dll)) =
+            (DatIndex::open(&cfg.ffxi_dir()), std::fs::read(crate::dat::ffximain(&cfg.ffxi_dir())))
+        else {
+            return;
+        };
+        let font = Font::load(&index, &dll, 1, Quality::Compressed).unwrap();
+        let base = [0x80, 0x70, 0x60, 0x50];
+        let nine = match font.codes[9] {
+            0 => base,
+            c => {
+                assert_eq!(c, 0x6040_4040);
+                [0x40, 0x40, 0x40, 0x50]
+            }
+        };
+        assert_eq!(font.code_colour(0, 9, base), nine);
+        let mut quads = Vec::new();
+        let end = font.layout_line(b"a\x1e\x09bc\x1e\x01d", 0, 0, base, [1.0, 1.0], &mut quads);
+        assert_eq!(quads.iter().map(|q| q.color).collect::<Vec<_>>(), [base, nine, nine, base]);
+        // the codes take no room
+        assert_eq!(end, font.layout_line(b"abcd", 0, 0, base, [1.0, 1.0], &mut Vec::new()));
+    }
 }

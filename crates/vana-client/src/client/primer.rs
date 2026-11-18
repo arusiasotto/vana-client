@@ -42,6 +42,8 @@ pub struct Primer {
     list: Option<List>,
     /// Title slot 2 holds group 9 0xdd "Help Desk": opened from the Help Desk or back from a page (LAB_101f7b40).
     desk_title: bool,
+    /// guide00 raised over a still open guide01 with the focus: /primer typed while the Primer is up.
+    over: bool,
 }
 
 /// FUN_10234010: the contiguous run of categories from 0xf620 with topics, at most 8.
@@ -66,13 +68,19 @@ fn load(w: &World) -> Vec<Category> {
 /// FUN_10233b80 (/guide, /primer, Help Desk row 1): guide00; its open hook (FUN_10233c50) closes the main menu or the
 /// social page beside it, to reopen them at close. Nothing while it is open.
 pub fn open(w: &mut World, from_desk: bool) {
-    if w.primer.is_some() {
+    // Already up: FUN_1015e350 on an open window runs its open hook again (FUN_10235260) and raises it with the
+    // focus. The hook finds the main menu and the social page already closed, so neither comes back when the Primer
+    // closes, and it zeroes the frame counter: the ten-frame wait and the row build happen again. guide01 stays
+    // open under it *(inferred: both are layer 2)*.
+    if let Some(p) = w.primer.as_mut() {
+        (p.frames, p.back) = (0.0, None);
+        p.over = p.list.as_ref().is_some_and(|l| !l.page);
         return;
     }
     let cats = load(w);
     log::info!("primer: {} categories", cats.len());
     let back = w.menu.take().map(|m| (m, w.menu_page));
-    w.primer = Some(Primer { cats, frames: 0.0, cursor: 0, back, list: None, desk_title: from_desk });
+    w.primer = Some(Primer { cats, frames: 0.0, cursor: 0, back, list: None, desk_title: from_desk, over: false });
 }
 
 /// FUN_10234080 / FUN_10233e90: guide00 and guide01 close, the menu closed at open comes back.
@@ -123,7 +131,7 @@ pub fn key(w: &mut World, key: egui::Key, page_mod: bool) {
     use egui::Key as K;
     let arrow_hover = w.list_arrow_hover;
     let Some(p) = w.primer.as_mut() else { return };
-    if let Some(l) = p.list.as_mut() {
+    if let Some(l) = p.list.as_mut().filter(|_| !p.over) {
         // The list ignores every message while an arrow hover disables it (list +0x5c bit 1).
         if l.page || arrow_hover {
             return;
@@ -192,6 +200,7 @@ pub fn key(w: &mut World, key: egui::Key, page_mod: bool) {
         K::Enter if n > 0 => {
             w.sounds.push(Ui::Select as u32);
             p.list = Some(List { cat: p.cursor, top: 0, cursor: 0, page: false });
+            p.over = false;
         }
         K::Escape => {
             w.sounds.push(Ui::Cancel as u32);
@@ -236,7 +245,8 @@ pub(super) fn look(w: &World) -> Option<Look> {
 
 /// The mouse's cursor moves: guide00's row (while guide01 is closed), guide01's row. True when it moved.
 pub(super) fn set_cat(w: &mut World, k: usize) -> bool {
-    let Some(p) = w.primer.as_mut().filter(|p| p.list.is_none() && p.cursor != k && k < p.cats.len()) else {
+    let Some(p) = w.primer.as_mut().filter(|p| (p.list.is_none() || p.over) && p.cursor != k && k < p.cats.len())
+    else {
         return false;
     };
     p.cursor = k;
@@ -279,10 +289,15 @@ pub fn pointer(w: &mut World, gu: &GameUi, pt: (f32, f32), moved: bool, clicked:
                 m.begin_close();
             }
         }
-        Some(l) => {
+        Some(l) if !p.over => {
             // FUN_10221cd0: over the page arrows the list is disabled (no hand, no list keys); the click is Left /
             // Right through the 0xa8 test, so with Ctrl / Alt held it pages the disabled list, i.e. does nothing.
             if let (Some(a), _) = child_under(w, PAGES, pt, 9..=10) {
+                // The click is Enter on child 9 / 10: the generic layer's SE 0002 first (guide01's open clears only
+                // the move sound, window +0x85), then FUN_10235980 re-sends it as Left / Right (SE 0001).
+                if clicked {
+                    w.sounds.push(Ui::Select as u32);
+                }
                 // The click's Left / Right switches the category before the hover disables the list.
                 if clicked && !page {
                     w.list_arrow_hover = false;
@@ -311,7 +326,7 @@ pub fn pointer(w: &mut World, gu: &GameUi, pt: (f32, f32), moved: bool, clicked:
                 keys,
             );
         }
-        None => {
+        _ => {
             generic(
                 w,
                 gu,
@@ -359,29 +374,50 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
     let Some(p) = &w.primer else { return rects };
     let free = w.confirm.is_none();
     let page = p.list.as_ref().is_some_and(|l| l.page);
-    if !page {
-        // Before the 10th frame the list has no rows *(inf: retail shows the row plates empty for that third of a second)*.
-        let n = if ready(p) { p.cats.len() } else { 0 };
-        let hide: Vec<u16> = (1..=ROWS as u16).filter(|&k| k as usize > n).collect();
-        let focused = free && p.list.is_none();
-        let sel = (n > 0 && p.list.is_none()).then_some(p.cursor as u16 + 1);
-        if let Some(win) = gu.lobby_window_off(LIST, sw, sh, (0.0, 0.0), sel, focused, &hide) {
-            super::winhits::record(w, LIST, &win);
-            for &(id, [cx, cy, ..]) in win.children.iter().filter(|(id, _)| (1..=ROWS as u16).contains(id)) {
-                let k = id as usize - 1;
-                let Some(c) = p.cats.get(k).filter(|_| k < n) else { continue };
-                gu.sprite("menu    framesus", 35, cx + 4.0, cy + 5.0, WHITE);
-                text(gu, &c.name, cx + 16.0, cy, if k == p.cursor { CURSOR } else { WHITE });
-            }
-            rects.push(win.frame);
-        }
+    // guide00 under guide01, or over it after a /primer typed with the Primer up.
+    if !page && !p.over {
+        draw_cats(gu, w, p, free, sw, sh, &mut rects);
     }
-    let Some(l) = &p.list else { return rects };
-    let Some(cat) = p.cats.get(l.cat) else { return rects };
+    if !page && p.over && p.list.is_some() {
+        draw_topics(gu, w, p, free, sw, sh, &mut rects);
+        draw_cats(gu, w, p, free, sw, sh, &mut rects);
+        return rects;
+    }
+    draw_topics(gu, w, p, free, sw, sh, &mut rects);
+    rects
+}
+
+/// guide00's window and rows.
+fn draw_cats(gu: &mut GameUi, w: &World, p: &Primer, free: bool, sw: f32, sh: f32, rects: &mut Vec<[f32; 4]>) {
+    // Before the 10th frame the list has no rows (FUN_10235300 only counts; the paged list is emptied on frame
+    // 0). The eight row bars are layout children and always draw: nothing hides them during the wait, and the
+    // row build FUN_10235500 puts the rows past the category count in state 0x10 (inert, still drawn).
+    let n = if ready(p) { p.cats.len() } else { 0 };
+    let on_list = p.list.is_none() || p.over;
+    let focused = free && on_list;
+    let sel = (n > 0 && on_list).then_some(p.cursor as u16 + 1);
+    if let Some(win) = gu.lobby_window_off(LIST, sw, sh, (0.0, 0.0), sel, focused, &[]) {
+        super::winhits::record(w, LIST, &win);
+        for &(id, [cx, cy, ..]) in win.children.iter().filter(|(id, _)| (1..=ROWS as u16).contains(id)) {
+            let k = id as usize - 1;
+            let Some(c) = p.cats.get(k).filter(|_| k < n) else { continue };
+            gu.sprite("menu    framesus", 35, cx + 4.0, cy + 5.0, WHITE);
+            text(gu, &c.name, cx + 16.0, cy, if k == p.cursor { CURSOR } else { WHITE });
+        }
+        rects.push(win.frame);
+    }
+}
+
+/// guide01's window, rows and bar.
+fn draw_topics(gu: &mut GameUi, w: &World, p: &Primer, free: bool, sw: f32, sh: f32, rects: &mut Vec<[f32; 4]>) {
+    let page = p.list.as_ref().is_some_and(|l| l.page);
+    let Some(l) = &p.list else { return };
+    let Some(cat) = p.cats.get(l.cat) else { return };
     let n = cat.topics.len();
     let hide: Vec<u16> = (1..=ROWS as u16).filter(|&k| l.top + k as usize > n).collect();
     let sel = (!page && n > 0).then(|| (l.cursor - l.top + 1) as u16);
-    let Some(win) = gu.lobby_window_off(PAGES, sw, sh, (0.0, 0.0), sel, free && !page, &hide) else { return rects };
+    let focused = free && !page && !p.over;
+    let Some(win) = gu.lobby_window_off(PAGES, sw, sh, (0.0, 0.0), sel, focused, &hide) else { return };
     super::winhits::record(w, PAGES, &win);
     let [fx, fy, fw, fh] = win.frame;
     if let Some((x, y)) = gu.window_xy(PAGES, sw, sh) {
@@ -400,5 +436,4 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
         }
     }
     rects.push(win.frame);
-    rects
 }

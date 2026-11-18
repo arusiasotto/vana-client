@@ -40,13 +40,15 @@ fn play(w: &mut World, id: u32, name: &str) -> bool {
     true
 }
 
-/// FUN_100d12d0 and the `waot` check (vt+0x2a0): the actor's model is in and no `waot` waits or runs on it.
+/// FUN_100d12d0 and the `waot` check (vt+0x2a0): the actor's model is in and no `waot` waits or runs on it. An
+/// engaged actor reaches state 7 through the sheathe (states 3 and 6: `bntg`, then `klbt` / "out N" / `hwat`), so
+/// its `res0` waits for that, and for a dual wield sheathe's `waot`.
 fn ready(w: &World, id: u32) -> bool {
-    let waot = u32::from_le_bytes(*b"waot");
-    w.actors
-        .get(&id)
-        .is_some_and(|a| a.character.is_some() && !a.play.as_ref().is_some_and(|p| p.name == "waot" && p.busy()))
-        && !w.effects.actor_scheduler_running(id, waot)
+    w.actors.get(&id).is_some_and(|a| {
+        a.character.is_some()
+            && !a.play.as_ref().is_some_and(|p| p.name == "waot" && p.busy())
+            && (a.battle.on.is_empty() || (a.battle.leaving && a.battle.frames > 2))
+    }) && !w.effects.actor_scheduler_running(id, super::actmotion::WAOT)
 }
 
 /// What the machine does next.

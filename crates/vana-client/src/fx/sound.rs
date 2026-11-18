@@ -71,6 +71,8 @@ pub struct Sound {
     pub res: (usize, usize),
     /// Scheduler op 0x8a: the slot (0..7, DAT_10469394) whose handle it holds, for op 0x8b's stop.
     pub slot: Option<u8>,
+    /// The stream ops 0x60 / 0x8a started last (DAT_1046391c), which op 0xa6 fades.
+    pub cur_stream: bool,
 }
 
 /// FUN_10038330: se ids of which one voice plays at a time (a shared flag, DAT_104638f4).
@@ -100,6 +102,7 @@ impl Sound {
             grace: 0.0,
             res: (usize::MAX, se as usize),
             slot: None,
+            cur_stream: false,
         }
     }
 

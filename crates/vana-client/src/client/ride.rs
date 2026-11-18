@@ -43,11 +43,11 @@ pub enum Phase {
     Mounting(f32),
     Riding,
     Stopping,
-    /// The animal's place, its op 0x6e run (ticks left, units a tick), and ticks since.
+    /// The animal's place, its op 0x6e run, and ticks since.
     Leaving {
         pos: Vec3,
         forward: Vec3,
-        run: Option<(f32, f32)>,
+        run: Option<SelfMove>,
         ticks: f32,
     },
 }
@@ -352,12 +352,14 @@ fn leave(w: &mut World, id: u32) {
 /// State 0x10: the animal runs (op 0x6e); the ride ends with the rider's `coff` (or after 600 ticks).
 fn step_leave(w: &mut World, id: u32, dt: f32) {
     let over = w.actors.get(&id).is_none_or(|a| a.play.as_ref().is_none_or(|p| p.name != "coff"));
-    let Some(Riding { phase: Phase::Leaving { pos, forward, run, ticks }, .. }) = w.rides.get_mut(&id) else { return };
+    let Some(Riding { phase: Phase::Leaving { pos, run, ticks, .. }, .. }) = w.rides.get_mut(&id) else { return };
     *ticks += dt * 60.0;
-    if let Some((left, speed)) = run {
-        let n = (dt * 60.0).min(*left);
-        *pos += *forward * *speed * n;
-        *left -= n;
+    if let Some(m) = run {
+        let (d, done) = self_step(m, dt * 60.0);
+        *pos += d;
+        if done {
+            *run = None;
+        }
     }
     if over || *ticks > 600.0 {
         finish(w, id);
@@ -395,12 +397,77 @@ pub fn dismounting(w: &World) -> bool {
     w.rides.get(&w.my_id).is_some_and(|r| matches!(r.phase, Phase::Stopping | Phase::Leaving { .. }))
 }
 
-/// Op 0x6e on a leaving animal: it runs along its facing.
+/// A running op 0x6e (actor +0x101): the step a tick (+0x120), the ticks left to move (+0x118), our ticks toward the
+/// next retail frame, the way retail's last frames moved that our frames have not drawn yet and the ticks left to draw
+/// it over; `goal`, another actor's slide goal when the op started (None while a slide was still under way).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelfMove {
+    vel: Vec3,
+    left: i32,
+    part: f32,
+    owed: Vec3,
+    owed_ticks: f32,
+    goal: Option<Vec3>,
+}
+
+impl SelfMove {
+    fn new(vel: Vec3, ticks: f32, goal: Option<Vec3>) -> Self {
+        SelfMove { vel, left: ticks as i32, part: 0.0, owed: Vec3::ZERO, owed_ticks: 0.0, goal }
+    }
+}
+
+/// Retail's frame: 2 ticks (30 fps, FUN_10014d60).
+const RETAIL_FRAME: i32 = 2;
+
+/// FUN_100aadf0 on retail's 2-tick frame: +0x118 -= 2; while it stays above 0 the position gains the step twice, and
+/// the frame that brings it to 0 or below gains it once per tick of the overshoot only and clears +0x101 (a run of n
+/// ticks moves n - 2 for an even n, n for an odd one). The count runs on retail frames whatever our rate; each retail
+/// frame's way is drawn spread over our frames during the next 2 ticks. Returns this frame's way and whether the
+/// move is over (counted out and drawn).
+pub fn self_step(m: &mut SelfMove, ticks: f32) -> (Vec3, bool) {
+    m.part += ticks;
+    while m.left > 0 && m.part >= RETAIL_FRAME as f32 {
+        m.part -= RETAIL_FRAME as f32;
+        m.left -= RETAIL_FRAME;
+        let n = if m.left > 0 { RETAIL_FRAME } else { -m.left };
+        m.owed += m.vel * n as f32;
+        m.owed_ticks += RETAIL_FRAME as f32;
+    }
+    let d = if m.owed_ticks > 0.0 { m.owed * (ticks / m.owed_ticks).min(1.0) } else { Vec3::ZERO };
+    m.owed -= d;
+    m.owed_ticks = (m.owed_ticks - ticks).max(0.0);
+    if m.owed_ticks <= 0.0 {
+        m.owed = Vec3::ZERO;
+    }
+    (d, m.left <= 0 && m.owed_ticks <= 0.0)
+}
+
+/// *(inf: what retail does with the goal (+0x24 / +0x44) when +0x101 clears is not traced.)* At the end of a self-move
+/// the actor stays where it was moved unless a slide was under way when it started or the server sent a new position
+/// meanwhile; the slide then goes on toward that goal. Without this the slide would jump back to the old goal at once,
+/// where retail at most walks back (FUN_100c63d0's chase, skipped only while +0x101 is set).
+pub fn self_settle(m: &SelfMove, pos: Vec3, target: &mut Vec3, remain: &mut f32) {
+    if m.goal == Some(*target) {
+        *target = pos;
+        *remain = 0.0;
+    }
+}
+
+/// Op 0x6e (FUN_100aad40): actor1 moves along the facing it has now, `speed` a tick for `ticks` ticks. A leaving
+/// animal runs from where it was left; any other actor through `World::self_moves` (no retail data reaches that:
+/// only the animals' `coff` / `cdam` hold the op).
 pub fn self_move(w: &mut World, id: u32, ticks: f32, speed: f32) {
-    if id & ANIMAL != 0
-        && let Some(Riding { phase: Phase::Leaving { run, .. }, .. }) = w.rides.get_mut(&(id & !ANIMAL))
-    {
-        *run = Some((ticks, speed));
+    if id & ANIMAL != 0 {
+        if let Some(Riding { phase: Phase::Leaving { run, forward, .. }, .. }) = w.rides.get_mut(&(id & !ANIMAL)) {
+            *run = Some(SelfMove::new(*forward * speed, ticks, None));
+        }
+        return;
+    }
+    let my_dir = w.net.me.lock().map(|m| m.dir).unwrap_or(0);
+    if let Some(p) = super::base_place(w, id, my_dir) {
+        // A slide still under way when the op starts goes on to its goal afterwards.
+        let goal = w.entities.get(&id).filter(|e| e.remain <= 0.0).map(|e| e.target);
+        w.self_moves.insert(id, SelfMove::new(p.forward * speed, ticks, goal));
     }
 }
 
@@ -606,6 +673,56 @@ pub fn dig_update(w: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::drop_for;
+
+    fn run(n: f32, frame: f32) -> (f32, usize) {
+        let mut m = super::SelfMove::new(glam::Vec3::X, n, None);
+        let (mut x, mut frames) = (0.0, 0);
+        loop {
+            let (d, done) = super::self_step(&mut m, frame);
+            x += d.x;
+            frames += 1;
+            if done {
+                return (x, frames);
+            }
+        }
+    }
+
+    /// FUN_100aadf0 on retail's 2-tick frame: an even run of n ticks moves n - 2 (the animals' 72 -> 70), an odd one n
+    /// (71: 35 x 2 + 1), whatever our frame; the way is drawn over our frames, not in whole-tick jumps.
+    #[test]
+    fn self_step_counts_retail_frames() {
+        for frame in [2.0, 1.0, 0.5, 0.2, 7.0] {
+            let (x, _) = run(72.0, frame);
+            assert!((x - 70.0).abs() < 1e-3, "{frame}: {x}");
+            let (x, _) = run(71.0, frame);
+            assert!((x - 71.0).abs() < 1e-3, "{frame}: {x}");
+        }
+        // At 300 fps (0.2 ticks a frame) every frame after the first retail frame moves, by the same amount.
+        let mut m = super::SelfMove::new(glam::Vec3::X, 72.0, None);
+        let steps: Vec<f32> = (0..40).map(|_| super::self_step(&mut m, 0.2).0.x).collect();
+        let first = steps.iter().position(|&d| d > 0.0).unwrap();
+        assert!((9..=10).contains(&first), "{steps:?}");
+        assert!(steps[first..].iter().all(|&d| (d - 0.2).abs() < 1e-4), "{steps:?}");
+    }
+
+    /// An idle actor keeps the spot it was moved to; one the server moved meanwhile, or one mid-slide when the op
+    /// started, slides on to that position.
+    #[test]
+    fn self_move_settles_goal() {
+        use glam::Vec3;
+        let m = super::SelfMove::new(Vec3::X, 0.0, Some(Vec3::ZERO));
+        let (mut target, mut remain) = (Vec3::ZERO, 0.0);
+        super::self_settle(&m, Vec3::new(10.0, 0.0, 0.0), &mut target, &mut remain);
+        assert_eq!((target, remain), (Vec3::new(10.0, 0.0, 0.0), 0.0));
+        let sent = Vec3::new(3.0, 0.0, 4.0);
+        let (mut target, mut remain) = (sent, 12.0);
+        super::self_settle(&m, Vec3::new(10.0, 0.0, 0.0), &mut target, &mut remain);
+        assert_eq!((target, remain), (sent, 12.0));
+        let pending = super::SelfMove::new(Vec3::X, 0.0, None);
+        let (mut target, mut remain) = (sent, 5.0);
+        super::self_settle(&pending, Vec3::new(10.0, 0.0, 0.0), &mut target, &mut remain);
+        assert_eq!((target, remain), (sent, 5.0));
+    }
 
     #[test]
     fn bone0_drops() {

@@ -234,6 +234,10 @@ pub trait Host {
     fn concierge_pick(&mut self) -> Option<[u32; 3]> {
         Some([0; 3])
     }
+    /// Op 0xaf: the game camera's (DAT_104568fc +0x50) eye (+0x44..) and target (+0x50..), world units.
+    fn camera_points(&self) -> ([f32; 3], [f32; 3]) {
+        ([0.0; 3], [0.0; 3])
+    }
     /// Op 0xbf (FUN_100bbd80): a value of the race store (s2c 0x069); 0 until it is complete or out of range.
     /// Op 0xc2 (FUN_100bbf80): None, sub 1 (FUN_100e9850): bit i for each roster record but ours whose member is in
     /// their Mog House; Some(n), sub 2 (FUN_100e98b0): the id of the member at display slot n (1..19) if so, else 0.
@@ -328,6 +332,10 @@ pub trait Host {
     /// The client language (DAT_10456a28 + 8): 0 Japanese, 1 English, 2 / 3 the European ones.
     fn language(&self) -> u32 {
         1
+    }
+    /// DAT_10456a28 +0x18 bit 7: German and French play the English branches (current retail sets it).
+    fn eu_as_en(&self) -> bool {
+        true
     }
     /// An actor's ActIndex (FUN_100afb00's second result); None when it is not in the zone.
     fn index(&self, actor: u32) -> Option<u16> {
@@ -1811,9 +1819,21 @@ impl Runtime {
                     self.adv(v, len);
                 }
             }
+            // FUN_100b4c20 (0x2c) / 4f10 (0x2d) / 5000 (0x51): only when both actors resolve with a model object (+0x120
+            // bit 9; its files need not be in), as ops 0x45 / 0x55 test; no frame end.
             0x2c => {
                 let (a, t, name) = (self.actor_at(v, 1), self.actor_at(v, 5), four_cc(self.u32_at(v, 9)));
-                host.effect(Effect::Motion { op: opc, actor: a, target: t, file: 0, name });
+                if host.modelled(a) && host.modelled(t) {
+                    host.effect(Effect::Motion { op: opc, actor: a, target: t, file: 0, name });
+                }
+                self.adv(v, len);
+            }
+            0x2d | 0x51 => {
+                let (a, t) = (self.actor_at(v, 1), self.actor_at(v, 5));
+                if host.modelled(a) && host.modelled(t) {
+                    let args = self.args(v, op, sub);
+                    host.effect(Effect::Op { op: opc, sub, actor, args });
+                }
                 self.adv(v, len);
             }
             0x53 => {
@@ -1927,7 +1947,37 @@ impl Runtime {
                     self.end_thread(v);
                 }
             },
+            // Op 0xaf subs 0 / 1: set@2 / @6 / @4 = ftol of the camera's eye (0) or target (1) x / y / z; other subs stall.
+            0xaf => {
+                if let Some(s @ (0 | 1)) = sub {
+                    let (eye, target) = host.camera_points();
+                    let p = if s == 0 { eye } else { target };
+                    self.set_at(v, 2, 0, p[0] as i32 as u32);
+                    self.set_at(v, 6, 0, p[1] as i32 as u32);
+                    self.set_at(v, 4, 0, p[2] as i32 as u32);
+                    self.adv(v, len);
+                } else {
+                    self.yield_(v);
+                }
+            }
+            // Op 0x63: waits while the event actor still emotes (+0x1bc), then starts the next and goes on.
+            0x63 => {
+                if host.busy(&Busy::Op { op: opc, sub, actor }) {
+                    self.yield_(v);
+                } else {
+                    let a = self.args(v, op, sub);
+                    host.effect(Effect::Op { op: opc, sub, actor, args: a });
+                    self.adv(v, len);
+                }
+            }
             0xb2 => match sub {
+                // Sub 1: on once the Delivery Box send UI could open (FUN_1012f100(0)).
+                Some(1) => {
+                    if !host.busy(&Busy::Op { op: opc, sub, actor }) {
+                        self.adv(v, len);
+                    }
+                    self.yield_(v);
+                }
                 Some(0) => {
                     if self.thread(v).timer < 0.0 {
                         self.thread(v).timer = self.val(v, 1) as f32;
@@ -1982,9 +2032,15 @@ impl Runtime {
                 }
             }
             // FUN_100ba100: the language as 1 Japanese / 2 English (the European ones count as English).
+            // FUN_100ba100: L = DAT_10456a28 +8 (0 ja, 1 en, 2 de, 3 fr), de / fr as en when +0x18 bit 7 (the launcher's
+            // European switch) is set; then 1 -> 2, 2 -> 3, 3 -> 4, else 1.
             0x9c => {
-                let n = match host.language() {
-                    1..=3 => 2,
+                let mut l = host.language();
+                if host.eu_as_en() && matches!(l, 2 | 3) {
+                    l = 1;
+                }
+                let n = match l {
+                    1..=3 => l + 1,
                     _ => 1,
                 };
                 self.set_at(v, 1, 0, n);
@@ -2303,7 +2359,13 @@ impl Runtime {
                                 self.adv(v, len);
                             }
                         }
-                        0x20 | 0x21 | 0x50..=0x55 => {
+                        // 0x53 waits for the credits roll's end (or no roll).
+                        0x53 => {
+                            if !host.busy(&Busy::Op { op: opc, sub, actor }) {
+                                self.adv(v, len);
+                            }
+                        }
+                        0x20 | 0x21 | 0x50..=0x52 | 0x54 | 0x55 => {
                             let a = self.args(v, op, sub);
                             host.effect(Effect::Op { op: opc, sub, actor, args: a });
                             self.adv(v, len);
@@ -2622,7 +2684,8 @@ impl Runtime {
                     let at = e.choice.unwrap_or(e.lines.len());
                     question =
                         e.lines[..at.min(e.lines.len())].iter().map(|l| decode_sjis(l)).collect::<Vec<_>>().join("\n");
-                    let (default, mut mask) = (self.val(v, 3 + off) as u32, self.val(v, 5 + off) as u32);
+                    // FUN_100b0960 shifts the hide mask as a signed int: past row 32 its sign bit decides.
+                    let (default, mut mask) = (self.val(v, 3 + off) as u32, self.val(v, 5 + off) as i32);
                     for (i, l) in e.lines.iter().skip(at).enumerate() {
                         if mask & 1 == 0 {
                             if i as u32 == default {

@@ -374,6 +374,12 @@ fn read_toward(link: &mut Link, buf: &mut Vec<u8>, len: fn(&[u8]) -> Result<usiz
     Ok(buf.len() >= len(buf)?)
 }
 
+/// The lobby closed or reset the link (no reply, no refusal).
+fn hung_up(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<std::io::Error>()
+        .is_some_and(|io| matches!(io.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset))
+}
+
 /// A view packet's size, as far as its header is in.
 fn view_len(buf: &[u8]) -> Result<usize> {
     let Some(head) = buf.get(..4) else { return Ok(4) };
@@ -562,6 +568,13 @@ impl Lobby {
                 return Err(e.context(
                     "the lobby gave no answer. If it is TLS (LSB for xiloader 3.0), the login server, which took \
                      loader 2.x, is from another version",
+                ));
+            }
+            // PlayOnline's lobby hanging up on 0x26 (seen 2026-11-16; a sign-in with the Viewer cleared it).
+            Err(e) if !lsb && hung_up(&e) => {
+                return Err(e.context(
+                    "The PlayOnline lobby hung up without answering. If it keeps happening, sign in once with the \
+                     PlayOnline Viewer, then try again",
                 ));
             }
             r => r?,
@@ -1448,6 +1461,24 @@ mod create_tests {
         server.join().unwrap();
         let e = format!("{e:#}");
         assert!(e.contains("If it is TLS"), "{e}");
+    }
+
+    /// PlayOnline's lobby hanging up on 0x26: the error says what to try.
+    #[test]
+    fn playonline_hang_up_says_what_to_try() {
+        use std::net::TcpListener;
+        let view = TcpListener::bind("127.0.0.1:0").unwrap();
+        let vp = view.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let mut v = accept_by(&view).unwrap();
+            req(&mut v);
+        });
+        let session = Session::PlayOnline { auth_code: [0; 64], k16: [0; 16] };
+        let e =
+            Lobby::connect("127.0.0.1", vp, 0, session, b"dll", "30261102_0", 5, 0, Default::default()).err().unwrap();
+        server.join().unwrap();
+        let e = format!("{e:#}");
+        assert!(e.starts_with("The PlayOnline lobby hung up") && e.contains("PlayOnline Viewer"), "{e}");
     }
 
     /// A lobby whose replies stop at the header: each one is an error, not a panic.

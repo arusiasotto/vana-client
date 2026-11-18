@@ -189,6 +189,15 @@ fn plain_with(w: &World, line: &str, names: Option<&dyn crate::dat::names::NameS
     }
 }
 
+/// The line with its phrases between the auto-translate brackets (FUN_101b8850 with braces).
+pub(super) fn braced(w: &World, line: &str) -> String {
+    let names = w.names.clone();
+    match w.battle.as_ref().and_then(|b| b.phrases.as_ref()) {
+        Some(d) => d.expand(line, names.as_deref().map(|n| n as &dyn crate::dat::names::NameSource)),
+        None => line.chars().filter(|c| !is_phrase(*c)).collect(),
+    }
+}
+
 /// A key while the list is open; true when it was taken.
 pub(super) fn key(w: &mut World, key: egui::Key, shift: bool) -> bool {
     let Some(mut f) = w.fep.take() else { return false };

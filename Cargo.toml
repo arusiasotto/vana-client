@@ -38,5 +38,8 @@ debug = true
 # gpu-allocator 0.28.0 with one change (src/vulkan/mod.rs, "vana-client:"): wgpu's staging buffers in host memory
 # when writes into VRAM through ReBAR measure slow (an eGPU's narrow link). The fork's branch vana-client, pinned by
 # rev: a change to the patch is a new commit there and a new rev here.
+# cpal 0.18.2 with one change (src/host/pipewire/device.rs, "vana-client:"): no node.group on its PipeWire streams,
+# so a voice chat microphone no longer clocks the headset the game plays to. Same scheme as gpu-allocator.
 [patch.crates-io]
 gpu-allocator = { git = "https://github.com/lenonk/gpu-allocator", rev = "eb8f2afb10c87953852422626c68049aa6d2b1ad" }
+cpal = { git = "https://github.com/lenonk/cpal", rev = "813764ce5fceb151e13d236df92f5f09c6a74281" }

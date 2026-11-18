@@ -201,6 +201,56 @@ impl RotDrive {
     }
 }
 
+/// Scheduler op 0x62: actor1 turns toward actor2 by `rate` radians a retail frame (2 ticks) until it has turned
+/// `remaining` (drawobj +0x870 / +0x874, stepped in FUN_100c6290 while +0x86c counts a live timer task), the timer being
+/// dur x speed ticks (FUN_10060f80 / FUN_10060fd0).
+pub struct FaceDrive {
+    pub actor: u32,
+    rot: Vec3,
+    remaining: f32,
+    rate: f32,
+    left: f32,
+    acc: f32,
+}
+
+impl FaceDrive {
+    /// `from` / `to` the two actors' positions, `rot` actor1's drawn rotation, `deg` f32 @8 (degrees a frame).
+    pub fn new(actor: u32, from: Vec3, to: Vec3, rot: Vec3, deg: f32, ticks: f32) -> Self {
+        let (mut dx, mut dz) = (to.x - from.x, to.z - from.z);
+        // As coded: a signed test, not a distance.
+        if dx < 0.1 && dz < 0.1 {
+            (dx, dz) = (1.0, 0.0);
+        }
+        let mut d = -dz.atan2(dx) - rot.y;
+        if d > PI {
+            d -= 2.0 * PI;
+        }
+        if d < -PI {
+            d += 2.0 * PI;
+        }
+        let rate = deg * (PI / 180.0);
+        Self { actor, rot, remaining: d.abs(), rate: if d < 0.0 { -rate } else { rate }, left: ticks, acc: 0.0 }
+    }
+
+    /// One frame of `dt` ticks: the pose, and whether the timer still runs.
+    pub fn step(&mut self, dt: f32) -> (ActorPose, bool) {
+        self.left -= dt;
+        self.acc += dt;
+        while self.acc >= 2.0 && self.remaining > 0.0 {
+            self.acc -= 2.0;
+            self.rot.y = wrap_pi(self.rot.y + self.rate);
+            let rest = self.remaining - self.rate.abs();
+            if rest < 0.0 {
+                self.rot.y = wrap_pi(self.rot.y + if self.rate > 0.0 { rest } else { -rest });
+                self.remaining = 0.0;
+            } else {
+                self.remaining = rest;
+            }
+        }
+        (ActorPose { target: Some(self.rot), ..Default::default() }, self.left >= 0.0)
+    }
+}
+
 /// The Vtx segments of a path, None below two points.
 pub fn path(vtx: &[u8]) -> Option<Vec<Seg>> {
     spline::build(&spline::points(vtx))
@@ -209,6 +259,23 @@ pub fn path(vtx: &[u8]) -> Option<Vec<Seg>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Op 0x62: 10 degrees a 2-tick frame toward a target a quarter turn away; it stops on the heading, and the
+    /// timer ends it.
+    #[test]
+    fn face_drive_turns_to_the_target() {
+        let mut d = FaceDrive::new(1, Vec3::ZERO, Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, 10.0, 40.0);
+        let (p, more) = d.step(2.0);
+        assert!(more && (p.target.unwrap().y + 10f32.to_radians()).abs() < 1e-5, "{:?}", p.target);
+        let mut last = None;
+        for _ in 0..19 {
+            last = Some(d.step(2.0));
+        }
+        let (p, more) = last.unwrap();
+        assert!((p.target.unwrap().y + FRAC_PI_2).abs() < 1e-4, "{:?}", p.target);
+        // At 0 ticks left the timer still runs (FUN_10060fd0 ends below 0).
+        assert!(more && !d.step(2.0).1);
+    }
 
     /// The curves at f(0.25) for modes 0..4 (MODLOG "Ship actors"); the ends.
     #[test]

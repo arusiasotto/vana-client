@@ -674,7 +674,9 @@ impl Ground {
     /// Where a character placed at height `y` lands: the first floor below (zone-in points sit mid-air at the
     /// zone line's centre), allowing a small sink; failing that the nearest surface.
     pub fn settle(&self, x: f32, z: f32, y: f32) -> Option<f32> {
-        self.floor(x, z, y, 0.5)
+        // FUN_1017a400's segments (from 2 above the feet), not a step's 0.5: a floor a little over the server's height
+        // is the one we stand on, not the next one down.
+        self.snap(x, z, y)
             .or_else(|| self.hits(x, z).map(|(h, _)| h).min_by(|a, b| (a - y).abs().total_cmp(&(b - y).abs())))
     }
 
@@ -1498,6 +1500,17 @@ mod tests {
         println!("river facings (k x 22.5 deg from +z): {river:?}");
         assert!(!river.is_empty());
         assert_eq!(at(27.69, 53.10, -52.28), Vec::<i32>::new());
+    }
+
+    /// Ru'Aun Gardens' zone-in from Ve'Lugannon Palace (145.6, -25.66, 404.5): the road is at -24.0. From a height a
+    /// little under it the settle keeps the road (FUN_1017a400 starts 2 above), not the island's underside far below.
+    #[test]
+    fn ruaun_zone_in_settles_on_the_road() {
+        let Some(g) = zone(130) else { return };
+        for y in [-25.66, -24.5, -23.0] {
+            let got = g.settle(145.574, 404.53, y).unwrap();
+            assert!((got + 24.0).abs() < 0.1, "from {y}: {got}");
+        }
     }
 
     #[test]

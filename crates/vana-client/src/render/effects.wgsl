@@ -146,7 +146,8 @@ fn set_cb(b: u32, k: u32, v: u32) {
     el[b + E_COLOR] = (el[b + E_COLOR] & ~(0xffu << sh)) | ((v & 0xffu) << sh);
 }
 // ftol of key * 255 into a byte (retail truncates and keeps the low byte).
-fn to_byte(v: f32) -> u32 { return u32(i32(v * 255.0)) & 0xffu; }
+// Update ops 0x18..0x1b (0x1004bc69..: an explicit test) and 0x3c..0x3e (FUN_1004e220): below 0 stores 0.
+fn to_byte(v: f32) -> u32 { return pos_byte(v); }
 // FUN_1004e220: negative values store 0, larger ones wrap.
 fn pos_byte(v: f32) -> u32 { let x = v * 255.0; if (x < 0.0) { return 0u; } return u32(x) & 0xffu; }
 fn set_sb(b: u32, k: u32, v: u32) {
@@ -266,6 +267,27 @@ fn slot_v3(s: u32, k: u32) -> vec3<f32> {
 fn slot_f(s: u32, k: u32) -> f32 { return bitcast<f32>(slots[s * SLOT_WORDS + k]); }
 
 // FUN_10043e00: parent x (pos x scale A).
+// Ops 0x2e / 0x48's distance (vtable +0x44): |view position| (FUN_10044f10's, camera-relative elements in view space);
+// meshes and ground projections add |(r, 0, 0) x L| (FUN_10041a40: r their bounding radius, L the local matrix, so r x
+// scale x), the other classes (FUN_10045d00) give 0 behind the eye.
+fn fade_dist(b: u32, parent: u32) -> f32 {
+    let fl = el[b + E_FLAGS];
+    var v: vec3<f32>;
+    if ((fl & 4u) != 0u) {
+        if ((fl & 8u) != 0u) { v = ev3(b, E_POS); } else { v = (p.view_rot * vec4<f32>(ev3(b, E_POS), 0.0)).xyz; }
+    } else {
+        v = (p.view * vec4<f32>(world_of(b, parent), 1.0)).xyz;
+    }
+    let kind = el[b + E_KIND];
+    if (kind == DK_MESH || kind == DK_GROUND_PROJ) {
+        var kx = 1.0;
+        if (parent != NONE && slots[parent * SLOT_WORDS + S_SIZE_SCALED] != 0u) { kx = slot_v3(parent, S_SCALE_B).x; }
+        return length(v) + abs(ef(b, E_RADIUS) * ef(b, E_SCALE) * kx);
+    }
+    if (v.z > 0.0) { return 0.0; }
+    return length(v);
+}
+
 fn world_of(b: u32, parent: u32) -> vec3<f32> {
     if (parent == NONE) { return ev3(b, E_POS); }
     let wp = ev3(b, E_POS) * slot_v3(parent, S_SCALE_A);
@@ -323,6 +345,9 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
     var kill = 0u;
     // Op 0x60's additions to the screen flash (B, G, R bytes, saturating as FUN_10014f90 does).
     var flash = vec3<u32>(0u);
+    // Op 0x44's key(t), written into op 0x2c's factor (word 1) for the 0x2c after it.
+    var drag = 0.0;
+    var drag_set = false;
     var ip = el[b + E_STREAM];
     var guard = 0u;
     loop {
@@ -442,6 +467,11 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if (opf(r) != 0.0) { set_ef(b, E_ROT, wrap_pi(tt * opf(r))); }
                 if (opf(r + 1u) != 0.0) { set_ef(b, E_ROT + 1u, wrap_pi(tt * opf(r + 1u))); }
                 if (opf(r + 2u) != 0.0) { set_ef(b, E_ROT + 2u, wrap_pi(tt * opf(r + 2u))); }
+                // 0x1004b249: this frame's position and step become the next frame's reference.
+                set_slv3(b, s, ev3(b, E_POS));
+                set_slf(b, s + 3u, dv.x);
+                set_slf(b, s + 4u, dv.y);
+                set_slf(b, s + 5u, dv.z);
             }
             // The moon (FUN_10184dc0): frame = phase, rotation z = pi/2.
             case 0x45u: {
@@ -548,7 +578,7 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
             }
             case 0x2eu: {
-                let d = distance(p.eye.xyz, world_of(b, parent));
+                let d = fade_dist(b, parent);
                 let near = opf(r);
                 let far = opf(r + 1u);
                 if (d == 0.0) {
@@ -564,7 +594,7 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             // Same case, 'H': 0 below rec1, in to rec2, kept to rec3, out to rec4, else 0 (expire on rec5 bit 0).
             case 0x48u: {
-                let d = distance(p.eye.xyz, world_of(b, parent));
+                let d = fade_dist(b, parent);
                 if (d == 0.0) {
                     set_ef(b, E_FADE, 0.0);
                 } else if (d >= opf(r) && d < opf(r + 1u)) {
@@ -577,8 +607,12 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
             }
             // Drag on the slot vector: S *= rec[1]^dt (__CIpow; MODLOG "Effect generators").
-            case 0x2cu: { set_slv3(b, s, slv3(b, s) * pow(opf(r), dt)); }
-            case 0x2fu: { set_slv3(b, s, euler(ev3(b, E_ROT)) * slv3(b, s)); }
+            case 0x2cu: { set_slv3(b, s, slv3(b, s) * pow(select(opf(r), drag, drag_set), dt)); }
+            // 0x1004bfdf: with a keyframe in S[s] and emission 0x69's op-0x2c record in S[s+2], the record's factor =
+            // key(t). Every generator using it runs it just before its 0x2c.
+            case 0x44u: { if (sl(b, s) != NONE && sl(b, s + 2u) != 0u) { drag = key_n(b, s, t); drag_set = true; } }
+            // 0x1004c48f: the slot keeps its speed, pointed along the element's rotated +X.
+            case 0x2fu: { set_slv3(b, s, euler(ev3(b, E_ROT)) * vec3<f32>(length(slv3(b, s)), 0.0, 0.0)); }
             // Point-light fields: 0x5b / 0x5c life keys (first value S[s+2]), 0x5d / 0x5e plain, 0x49 the day.
             case 0x5bu: { if (el[b + E_KIND] == DK_LIGHT) { set_ef(b, E_L_INT, key_t(b, s, t)); } }
             case 0x5cu: { if (el[b + E_KIND] == DK_LIGHT) { set_ef(b, E_L_RANGE, key_t(b, s, t)); } }
@@ -613,6 +647,17 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
             case 0x56u, 0x57u, 0x58u: { set_ef(b, E_ROT + code - 0x56u, wrap_pi(ef(b, E_ROT + code - 0x56u) + half_turns(key_n(b, s, t)) * dt)); }
             case 0x61u, 0x62u, 0x63u: { set_ef(b, E_ROT + code - 0x61u, wrap_pi(ef(b, E_ROT + code - 0x61u) + half_turns(key_g(b, s)) * dt)); }
             case 0x66u, 0x67u, 0x68u: { set_ef(b, E_ROT + code - 0x66u, half_turns(key_g(b, s))); }
+            // 0x1004af85: roll by last frame's sort key, rot.z = fmod(key w1 + w2, 2 pi) - pi.
+            case 0x59u: { set_ef(b, E_ROT + 2u, (ef(b, E_KEY_PREV) * opf(r) + opf(r + 1u)) % 6.283184 - PI); }
+            // 0x1004af16: scale = w1..3, plus (key - w4) w5 once last frame's sort key is past w4.
+            case 0x5au: {
+                let k = ef(b, E_KEY_PREV) - opf(r + 3u);
+                let w = vec3<f32>(opf(r), opf(r + 1u), opf(r + 2u));
+                let sc = select(w, w + vec3<f32>(k * opf(r + 4u)), k > 0.0);
+                set_ef(b, E_SCALE, sc.x);
+                set_ef(b, E_SCALE + 1u, sc.y);
+                set_ef(b, E_SCALE + 2u, sc.z);
+            }
             case 0x6bu, 0x6cu, 0x6du: { set_ef(b, E_POS + code - 0x6bu, slf(b, s + 2u) + key_0(b, s, p.time.z)); }
             default: {}
         }
@@ -642,17 +687,50 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
         l3 = mat3x3<f32>(ev3(b, E_GROUND), ev3(b, E_GROUND + 3u), ev3(b, E_GROUND + 6u)) * l3;
     }
     let pos = ev3(b, E_POS);
-    // FUN_10044350: orientation modes 1 / 2 face the motion, 3 faces the camera *(the bit-0 basis variant is not
-    // built)*.
+    // FUN_10045190: orientation modes 1 / 2 face the motion, 3 faces the camera.
     let omode = (flags >> 6u) & 7u;
+    var degenerate = false;
     if (omode >= 1u && omode <= 3u) {
         var dv = pos - old_pos;
+        let am = (el[b + E_GEN_BITS] >> 16u) & 0x1fu;
+        // Attach modes 3 / 6: the step through the parent frame, back through its row-normalised rotation Pn.
+        let pn = mat4x4<f32>(vec4<f32>(normalize(pm[0].xyz), 0.0), vec4<f32>(normalize(pm[1].xyz), 0.0), vec4<f32>(normalize(pm[2].xyz), 0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0));
+        if (omode != 3u && (am == 3u || am == 6u) && has_p) {
+            dv = (inverse4(pn) * vec4<f32>(mat3x3<f32>(pm[0].xyz, pm[1].xyz, pm[2].xyz) * (dv * a), 0.0)).xyz;
+        }
         if (omode == 3u) {
             var eye_l = p.eye.xyz;
             if (has_p) { eye_l = (inverse4(pm) * vec4<f32>(eye_l, 1.0)).xyz / a; }
             dv = eye_l - pos;
         }
-        if (dot(dv, dv) > 1e-12) {
+        if (omode != 3u && (flags & 1u) != 0u) {
+            // Bit 0: rows X = |d|, Y = |d x v|, Z = (0, 0, 1) x X (as coded), v = (0, 0, -1) through the view
+            // back into the element's frame. No zero guard: a still element gets a NaN matrix (inferred: not drawn).
+            let v0 = vec4<f32>(0.0, 0.0, -1.0, 1.0);
+            var v: vec3<f32>;
+            if (am == 3u || am == 6u) {
+                var pn4 = IDENT;
+                if (has_p) { pn4 = pn; }
+                let q = inverse4(pn4 * p.view) * v0;
+                v = q.xyz / q.w;
+            } else if (am == 0u || am == 0xeu || am == 0xfu || am == 0x14u) {
+                let q = p.c10 * v0;
+                v = q.xyz / q.w;
+            } else {
+                var pr = IDENT;
+                if (has_p) { pr = mat4x4<f32>(pm[0], pm[1], pm[2], vec4<f32>(0.0, 0.0, 0.0, 1.0)); }
+                let q = inverse4(pr * p.view_rot) * v0;
+                v = q.xyz / q.w;
+            }
+            let c = cross(dv, v);
+            if (dot(dv, dv) > 0.0 && dot(c, c) > 0.0) {
+                let x = normalize(dv);
+                l3 = mat3x3<f32>(x, normalize(c), vec3<f32>(-x.y, x.x, 0.0)) * l3;
+            } else {
+                degenerate = true;
+            }
+        } else if (dot(dv, dv) > 0.0) {
+            // Retail takes any motion, however small: a Stoneskin spike's 1e-6 drift only gives it its outward heading.
             let yaw = -atan2(dv.z, dv.x);
             var o = rot_y(yaw);
             if (omode != 2u) { o = rot_y(yaw) * rot_z(atan2(dv.y, length(dv.xz))); }
@@ -731,7 +809,7 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
     let fade = ef(b, E_FADE);
-    let drawn = fade >= 0.01;
+    let drawn = fade >= 0.01 && !degenerate;
     let kind = el[b + E_KIND];
     // FUN_10055450 from the common draw: pos = +0x54 raw, range = +0x1a8 x +0x19c, I = max(0, +0x1a0) x +0x1a4 x
     // +0x138; FUN_10171640: colour rgb / 128 (black when I <= 0), attenuation 1 / (d^2 / I).
@@ -901,6 +979,23 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
     back[bb + 17u] = bitcast<u32>(vel.y);
     back[bb + 18u] = bitcast<u32>(vel.z);
     back[bb + 19u] = flash.x | (flash.y << 8u) | (flash.z << 16u);
+    back[bb + 20u] = el[b + E_UV];
+    back[bb + 21u] = el[b + E_UV + 1u];
+    back[bb + 22u] = el[b + E_BIAS];
+    let lit = el[b + E_KIND] == DK_LIGHT;
+    back[bb + 23u] = select(0u, el[b + E_L_INT], lit);
+    back[bb + 24u] = select(0u, el[b + E_L_RANGE], lit);
+    let gb = el[b + E_GEN_BITS];
+    var bst = 0u;
+    if ((gb & (1u << 23u)) != 0u) {
+        let k = (gb >> 24u) & 0x3fu;
+        let n = gb >> 30u;
+        back[bb + 25u] = sl(b, k + n);
+        back[bb + 26u] = sl(b, k + 3u);
+        bst = 4u | (n << 8u);
+    }
+    if (lit) { bst = bst | 16u; }
+    back[bb + 1u] = back[bb + 1u] | bst;
     set_ef(b, E_KEY_PREV, key);
 }
 
@@ -972,22 +1067,14 @@ fn out_mat(o: u32) -> mat4x4<f32> {
 }
 
 // View position to clip space with the projection depth bias (near and far pulled by f) and sky meshes past the
-// far plane kept at it.
+// far plane kept at it. ZBIAS 15 is the pipelines' depth bias (render/effects.rs ZBIAS).
 fn to_clip(vp: vec3<f32>, f: f32) -> vec4<f32> {
-    return to_clip_z(vp, f, true);
-}
-
-// The CMoDist / VuDist fan (variant 9) draws after pass 1 set ZBIAS 0 (RS 0x103530d0), which pass 2 keeps.
-fn to_clip_z(vp: vec3<f32>, f: f32, zbias: bool) -> vec4<f32> {
     var c = d.proj * vec4<f32>(vp, 1.0);
     if (f != 0.0) {
         let n = d.clip.x - f;
         let fr = d.clip.y - f;
         c.z = vp.z * fr / (n - fr) + n * fr / (n - fr);
     }
-    // D3DRS_ZBIAS 15 for the effect draw (FUN_10045950), as Wine's d3d8 maps it: -15 x 5e-6 in NDC depth
-    // (inferred; D3D8 left the scale to the driver).
-    if (zbias) { c.z = c.z - 7.5e-5 * c.w; }
     c.z = min(c.z, c.w * 0.999999);
     return c;
 }
@@ -995,7 +1082,7 @@ fn to_clip_z(vp: vec3<f32>, f: f32, zbias: bool) -> vec4<f32> {
 fn vout(e: u32, vp: vec3<f32>, color: vec4<f32>, uv: vec2<f32>, variant: u32) -> VOut {
     let o = e * OUT_WORDS;
     var out: VOut;
-    out.clip = to_clip_z(vp, douts[o + 24u], variant != 9u);
+    out.clip = to_clip(vp, douts[o + 24u]);
     out.color = color;
     out.uv = uv + vec2<f32>(douts[o + 20u], douts[o + 21u]);
     out.tf = vec4<f32>(douts[o + 16u], douts[o + 17u], douts[o + 18u], douts[o + 19u]);
@@ -1033,12 +1120,42 @@ fn vs_mesh(v: VIn, @builtin(instance_index) inst: u32) -> VOut {
     let e = inst / PER_ELEM;
     let o = e * OUT_WORDS;
     if (douts[o + 23u] < 0.5) { return hidden(); }
-    let mv = out_mat(o);
+    var mv = out_mat(o);
+    let gb = dels[e * E_WORDS + E_GEN_BITS];
+    if ((gb & (1u << 21u)) != 0u && mmb_culled(e, mv)) { return hidden(); }
+    // Zone 237's listed MMBs: the world matrix's last row + (0, -0.8, 0, 0), after the cull.
+    if ((gb & (1u << 22u)) != 0u) { mv[3].y = mv[3].y - 0.8; }
     let vp = (mv * vec4<f32>(v.pos, 1.0)).xyz;
     let variant = inst % PER_ELEM;
     var col = v.color;
     if (variant <= 3u) { col = fx_lit(e, mv, v.normal, v.color); }
     return vout(e, vp, col, v.uv, variant);
+}
+
+// FUN_10183760 / FUN_10182070: the MMB's 8 box corners through the element's model-view; culled when all share an
+// outcode of x / y outside |w| or a view depth under 0.2 (no far test).
+fn mmb_culled(e: u32, mv: mat4x4<f32>) -> bool {
+    let eb = e * E_WORDS;
+    let c = vec3<f32>(bitcast<f32>(dels[eb + E_MMB_BOX]), bitcast<f32>(dels[eb + E_MMB_BOX + 1u]), bitcast<f32>(dels[eb + E_MMB_BOX + 2u]));
+    let hx = bitcast<f32>(dels[eb + E_MMB_BOX + 3u]);
+    let hy = bitcast<f32>(dels[eb + E_MMB_BOX + 4u]);
+    let r = bitcast<f32>(dels[eb + E_RADIUS]);
+    let hz = sqrt(max(r * r - hx * hx - hy * hy, 0.0));
+    var all = 0x1fu;
+    for (var k = 0u; k < 8u; k = k + 1u) {
+        let s = vec3<f32>(select(-1.0, 1.0, (k & 1u) != 0u), select(-1.0, 1.0, (k & 2u) != 0u), select(-1.0, 1.0, (k & 4u) != 0u));
+        let vp = (mv * vec4<f32>(c + s * vec3<f32>(hx, hy, hz), 1.0)).xyz;
+        let q = d.proj * vec4<f32>(vp, 1.0);
+        let aw = abs(q.w);
+        var oc = 0u;
+        if (q.x > aw) { oc = oc | 1u; }
+        if (q.x < -aw) { oc = oc | 2u; }
+        if (q.y > aw) { oc = oc | 4u; }
+        if (q.y < -aw) { oc = oc | 8u; }
+        if (-vp.z < 0.2) { oc = oc | 16u; }
+        all = all & oc;
+    }
+    return all != 0u;
 }
 
 fn svert(i: u32) -> VIn {

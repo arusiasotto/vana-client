@@ -549,6 +549,9 @@ pub(super) fn install(
             if fields.contains_key("page")? {
                 w.meta[k].page = fields.get::<Option<i64>>("page")?.map(|p| (p.max(1) - 1) as usize);
             }
+            if let Some(h) = fields.get::<Option<bool>>("hidden")? {
+                w.meta[k].hidden = h;
+            }
             w.settle();
             Ok(())
         })?,
@@ -2444,6 +2447,7 @@ fn elem(t: &Table) -> mlua::Result<(super::window::Elem, super::window::Meta)> {
     let meta = super::window::Meta {
         tip: t.get::<Option<String>>("tip")?.unwrap_or_default(),
         page: t.get::<Option<i64>>("page")?.map(|p| (p.max(1) - 1) as usize),
+        hidden: t.get::<Option<bool>>("hidden")?.unwrap_or(false),
     };
     Ok((elem_only(t)?, meta))
 }

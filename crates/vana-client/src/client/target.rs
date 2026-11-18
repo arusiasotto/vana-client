@@ -1224,7 +1224,7 @@ pub struct LockCam {
 
 /// An attach point's height above the feet (y down, so negative), from the posed bones when they are posed, else
 /// the rest pose; 0.7 of the model height without points (inferred).
-fn point_height(w: &World, id: u32, k: usize) -> f32 {
+pub(super) fn point_height(w: &World, id: u32, k: usize) -> f32 {
     let Some(a) = w.actors.get(&id) else { return -1.5 };
     let point = a.character.as_ref().and_then(|c| c.skeleton.points.get(k).copied());
     let bones = if a.bones.is_empty() { &a.rest } else { &a.bones };

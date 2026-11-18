@@ -5,7 +5,7 @@
 
 use super::super::game_ui::GameUi;
 use super::super::merits::{self, PointList, PointRow};
-use super::super::{World, aepoints, jobpoints, unity};
+use super::super::{World, aepoints, celestite, jobpoints, unity};
 use super::craft::{button, caption, tint};
 use super::{MenuWin, Panels, Title, hud, social};
 use crate::inventory::TINT_WHITE;
@@ -239,6 +239,8 @@ pub fn draw(p: &mut Panels, w: &mut World) {
         job_points(p, w);
     } else if w.ae_ui.is_some() {
         alter_ego(p, w);
+    } else if w.fe_main.is_some() {
+        celestites(p, w);
     } else if w.unity.is_some() {
         unity_panel(p, w);
     }
@@ -582,4 +584,68 @@ fn alter_ego(p: &mut Panels, w: &mut World) {
     let enter = |w: &mut World| aepoints::key(w, egui::Key::Enter, false);
     act(w, cats, aepoints::set_cat, enter);
     act(w, attrs, aepoints::set_row, enter);
+}
+
+/// fe_main as a column; beside it a set's slots (fe_equip) and the celestites owned (fe_inven), the cursor's
+/// description under them. The pointer anywhere over the list without the keys sends Num+ every frame, moving or
+/// not, as retail's does (celestite::pointer).
+fn celestites(p: &mut Panels, w: &mut World) {
+    const SLOTS_W: f32 = 320.0;
+    let Some(gu) = p.gu else { return };
+    let Some(mut v) = celestite::look(w) else { return };
+    let m = p.m;
+    let free = w.confirm.is_none();
+    let width = COL_W + if v.lists.is_some() { SLOTS_W + SIDE_W + 32.0 } else { 0.0 } + 44.0;
+    let (mut menu, mut slot, mut row, mut over) = (None, None, None, false);
+    let title = gu.title_msg(201).unwrap_or_default();
+    if let Some(l) = v.lists.as_mut() {
+        for (k, r) in l.slots.rows.iter_mut().enumerate() {
+            r.name = m.caption(gu, "menu    keytops3", l.labels[k]).unwrap_or_default();
+        }
+    }
+    p.panel("window", Some(Title { icon: Some("icons/status"), text: &title, note: None, name: false }), width, |ui| {
+        ui.horizontal_top(|ui| {
+            let win = MenuWin {
+                name: celestite::MAIN,
+                sel: v.menu.0,
+                off: v.menu.1.clone(),
+                labels: Vec::new(),
+                marked: Vec::new(),
+                values: Vec::new(),
+            };
+            menu = social::column(ui, m, gu, &win, free && v.lists.is_none());
+            let Some(l) = &v.lists else { return };
+            ui.add_space(16.0);
+            ui.vertical(|ui| {
+                ui.horizontal_top(|ui| {
+                    let slots = ui.vertical(|ui| {
+                        ui.set_width(SLOTS_W);
+                        let set = m.caption(gu, "menu    framesus", 211 + l.set);
+                        heading(ui, m, &set.unwrap_or_default());
+                        slot = rows(ui, m, gu, "celestite slots", &l.slots, SLOTS_W, false);
+                    });
+                    ui.add_space(16.0);
+                    let owned = ui.vertical(|ui| {
+                        ui.set_width(SIDE_W);
+                        heading(ui, m, &title);
+                        row = rows(ui, m, gu, "celestites owned", &l.owned, SIDE_W, false);
+                    });
+                    let other = if l.slots.focused { owned.response.rect } else { slots.response.rect };
+                    over = l.free && ui.input(|i| i.pointer.hover_pos().is_some_and(|at| other.contains(at)));
+                });
+                help(ui, m, &l.owned.help);
+            });
+        });
+    });
+    if !free {
+        return;
+    }
+    if over && !super::super::textcmd::busy(w) {
+        celestite::key(w, egui::Key::Plus, false, false);
+        return;
+    }
+    social::act(w, gu, menu, celestite::set_menu, |w, gu| celestite::main_key(w, gu, egui::Key::Enter));
+    let enter = |w: &mut World| celestite::key(w, egui::Key::Enter, false, false);
+    act(w, slot, celestite::set_slot, enter);
+    act(w, row, celestite::set_row, enter);
 }

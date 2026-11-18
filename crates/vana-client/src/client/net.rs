@@ -29,6 +29,9 @@ pub struct EntityUpdate {
     /// HP bit 0x04 also carries the status byte @0x1F; speed @0x1C comes with the position bit.
     pub hpp: Option<u8>,
     pub name: Option<String>,
+    /// 0x00E without a name of its own, index below 0x700 (asm 0x1009b78f): the zone list's name for the id, else
+    /// "NPC", written on every update.
+    pub listed: bool,
     pub despawn: bool,
     /// Model ids (GrapIDTbl) when the update carries them.
     pub look: Option<[u16; 9]>,
@@ -178,6 +181,39 @@ pub struct SelfPlate {
     pub hitbox: f32,
     /// GroundFlag (flags0 bit 2) or HackMove (flags1 bit 12): no event ground snap, no ground tilt (batch 6 item 14).
     pub no_snap: bool,
+}
+
+/// Our own flags at zone-in. s2c 0x00A carries them in 0x00D's layout (Flags0 u32 @0x18, Flags1 @0x20, Flags2 @0x24,
+/// Flags3 @0x28); its handler FUN_100faf90 packs them into the character data (+0x40e5c..+0x40e62, +0x40e90..+0x40e94)
+/// and the zone-in FUN_10094190 puts them on our new entity before any 0x037 arrives: GM level (@0x23 & 7), seeking
+/// (Flags1 bit 11), anonymous (12), the call for help (13), away (14), PlayOnline (16), linkshell (17), link dead (18),
+/// HackMove (27), invisible (29), bazaar (31), GroundFlag (Flags0 bit 15), the linkshell colour (@0x24..0x26),
+/// GmIconFlag (Flags2 bit 28), auto-party (31) and the party-seek master (Flags3 bit 1). The entity is new, so every
+/// flag the zone-in does not write (frozen, charmed, sneak, New Adventurer, mentor, allegiance) starts clear.
+fn zone_in_plate(p: &SubPacket) -> SelfPlate {
+    let (f0, f1, f2, f3) = (p.u32(0x18), p.u32(0x20), p.u32(0x24), p.u32(0x28));
+    let bit = |w: u32, b: u32| w >> b & 1 != 0;
+    SelfPlate {
+        marks: Marks {
+            gm: p.u8(0x23) & 7,
+            lfg: bit(f1, 11),
+            anon: bit(f1, 12),
+            yell: bit(f1, 13),
+            away: bit(f1, 14),
+            pol: bit(f1, 16),
+            ls: bit(f1, 17),
+            link_dead: bit(f1, 18),
+            bazaar: bit(f1, 31),
+            ls_colour: [p.u8(0x24), p.u8(0x25), p.u8(0x26)],
+            gm_icon_off: bit(f2, 28),
+            auto: bit(f2, 31),
+            lfg_master: bit(f3, 1),
+            ..Marks::default()
+        },
+        invisible: bit(f1, 29),
+        no_snap: bit(f0, 15) || bit(f1, 27),
+        ..SelfPlate::default()
+    }
 }
 
 fn self_plate(p: &SubPacket) -> SelfPlate {
@@ -426,6 +462,10 @@ pub enum NetEvent {
         send_count: u16,
         ship: Option<ShipData>,
         monstrosity: bool,
+        /// LoginState 3..5: the login that follows an exit to PlayOnline (`pol_return`).
+        pol_return: bool,
+        /// Our own flags as the zone-in applies them (`zone_in_plate`).
+        plate: SelfPlate,
     },
     /// s2c 0x053 (GP_SERV_COMMAND_SYSTEMMES): para @4, para2 @8, Number @0xc (file 7031).
     SystemMessage {
@@ -714,6 +754,8 @@ pub enum NetEvent {
         icons: [u16; 32],
         team: u8,
         fellow: u16,
+        /// u16 @0x46 (our entity +0x2a2): the actor we are made to follow (forced.rs), 0 none.
+        follow: u16,
         plate: SelfPlate,
         ride: (u8, u8),
         indi: u8,
@@ -751,6 +793,8 @@ pub enum NetEvent {
     JobPointList(Vec<(u16, u8, u16)>),
     /// s2c 0x08E: u16 points @4, u8 upgrades[32] @8, u16 costs[32] @0x28.
     AlterEgo(super::aepoints::AeData),
+    /// s2c 0x08F: the celestites owned and the six sets (client/celestite.rs).
+    Celestites(super::celestite::CelData),
     /// 0x063 types 3 / 4: the blocks from @8 (212 / 172 bytes).
     Monstrosity {
         kind: u16,
@@ -1025,6 +1069,13 @@ pub fn scene_of(p: &SubPacket) -> (u16, Option<MyRoom>) {
     (if map >= 0x100 { map + 0x1bc } else { map }, None)
 }
 
+/// The s2c 0x00A handler FUN_100fae40's LoginState switch (jump table 0x100fb790): 3 POLEXIT, 4 JOBEXIT and 5
+/// POLEXIT_MYROOM set zone flag 0x200 / 0x2000, which hands the game over to the PlayOnline viewer (FUN_100daf30);
+/// 1 MYROOM and everything else (2 GAME, 0, 6 and up) are a plain zone-in.
+pub fn pol_return(login_state: u32) -> bool {
+    matches!(login_state, 3..=5)
+}
+
 /// FUN_100f7de0: GAME (2), 0 and 6 print the area; MYROOM (1) the area for maps 0x118 / 0x11d, else the Mog
 /// House floor when FUN_100f6740 says there is one; 3..5 (exits) nothing.
 pub fn area_line(p: &SubPacket) -> Option<AreaLine> {
@@ -1166,6 +1217,14 @@ pub struct SelfState {
     pub move_time: u16,
     /// The current target's ActIndex (0 none): c2s 0x015 @0x16 facetarget, the server's cursor target.
     pub target: u16,
+    /// c2s 0x015 @0x15 bit 2, GroundMode (FUN_100983f0): HackMove, GroundFlag or entity +0x120 bit 21.
+    pub ground_mode: bool,
+    /// FUN_100983f0 builds no 0x015 (the datagram still goes): our status in force is 0x1c / 0x1f, or we are bound to
+    /// the running event without Mode bit 4 (`event::no_position`).
+    pub silent: bool,
+    /// The control lock (World::control_lock, DAT_10482f18 in 30261006_0): FUN_100983f0 builds no c2s 0x015 while
+    /// it is set (0x10098530). Ours sets it for a talk request, a zone-in event and op 0x20.
+    pub locked: bool,
 }
 
 pub struct NetHandle {
@@ -1267,7 +1326,13 @@ pub fn charreq_body(index: u16) -> [u8; 4] {
     [lo, hi, 0, 0]
 }
 
-/// c2s 0x01A body (FUN_10077120, size 0x1c): UniqueNo, ActIndex, ActionID, ActionBuf[4] zeroed.
+/// FUN_100983f0 builds c2s 0x015 neither while our status in force is a rider's nor under the control lock (the test at
+/// 0x10098530 in 30261006_0). The retail server answers an event's 0x05C with the place it has stored for us, so a
+/// 0x015 riding with the 0x05C would give it the pre-event place back (Port Jeuno's airship doors).
+fn sends_position(s: &SelfState) -> bool {
+    !s.silent && !s.locked
+}
+
 /// The tick's 0x015 into the datagram: last, as retail. Ours, not retail: the server starts a cast, a ranged attack or
 /// an item where it last heard we were, and stops it on any move after that or when the last two positions were apart
 /// (LSB HasMoved, m_lastMoveDistance). Standing still, the position goes before such an action, twice, so it starts
@@ -1455,6 +1520,7 @@ fn stopped_by_moving(p: &[u8]) -> bool {
     (id == 0x01A && matches!(category, 0x03 | 0x10)) || id == 0x037
 }
 
+/// c2s 0x01A body (FUN_10077120, size 0x1c): UniqueNo, ActIndex, ActionID, ActionBuf[4] zeroed.
 pub fn action_body(target: u32, index: u16, action: u16) -> Vec<u8> {
     let mut body = vec![0u8; 24];
     body[0..4].copy_from_slice(&target.to_le_bytes());
@@ -1553,9 +1619,46 @@ fn look_at(p: &SubPacket, at: usize) -> [u16; 9] {
     std::array::from_fn(|i| p.u16(at + i * 2))
 }
 
+/// FUN_100dde40(dst, 0x10, src, lim, size): how many characters of a name a 0x00D / 0x00E gives: the sub-packet's
+/// size less `lim` (0x00E: 4 past the name's start, 0x00D: 2 past it), 15 at most. The compare is unsigned, so a
+/// packet shorter than `lim` gives 15 too.
+fn name_len(size: usize, lim: usize) -> usize {
+    let n = (size as u32).wrapping_sub(lim as u32);
+    if n >= 0x10 { 15 } else { n as usize }
+}
+
+/// 0x00E's name (FUN_1009b550, asm 0x1009b666..0x1009b7b5), read before the despawn and first-update tests:
+/// 1. SubKind 0 / 1 / 5 / 6 / 7 with 0x08 at an index from 0x700: @0x34 (doors, lifts and ships keep their id words
+///    there, and never name themselves);
+/// 2. SubKind 1 with 0x40: @0x44 at an index from 0x700, and below 0x400 when its first byte is above a space;
+/// 3. below 0x400 with 0x08 (not a SubKind 1 with 0x40 named by rule 2), a byte 1 @0x34 and a byte above a space
+///    @0x35: the text from @0x35, which FUN_10093430 copies itself (24 bytes, no size test);
+/// 4. else below 0x700 the zone's list or "NPC" (`Some(None)`), and from 0x700 no change (`None`).
+fn npc_name(p: &SubPacket) -> Option<Option<String>> {
+    let (index, mask, sub) = (p.u16(8), p.u8(10), p.u8(0x30) & 7);
+    let size = (p.u16(0) >> 9) as usize * 4;
+    let sized = |at: usize| Some(Some(text(p, at, name_len(size, at + 4))));
+    if matches!(sub, 0 | 1 | 5 | 6 | 7) && mask & 0x08 != 0 && index >= 0x700 {
+        return sized(0x34);
+    }
+    let long = sub == 1 && mask & 0x40 != 0;
+    if long && index >= 0x700 {
+        return sized(0x44);
+    }
+    if long && index < 0x400 && p.u8(0x44) > 0x20 {
+        return sized(0x44);
+    }
+    if index < 0x400 && mask & 0x08 != 0 && p.u8(0x34) == 1 && p.u8(0x35) > 0x20 {
+        return Some(Some(text(p, 0x35, 24)));
+    }
+    (index < 0x700).then_some(None)
+}
+
 fn entity(p: &SubPacket, kind: EntityKind) -> EntityUpdate {
     let flags = p.u8(10);
     let name_at = if kind == EntityKind::Npc { 0x34 } else { 0x5A };
+    let size = (p.u16(0) >> 9) as usize * 4;
+    let npc_name = (kind == EntityKind::Npc).then(|| npc_name(p)).flatten();
     // 0x00E mask 0x04: u32 @0x28 bit 26, the server's sub-animation flag (entity +0x130 bit 2, asm 0x1009c5a2).
     let sub_flag =
         (kind == EntityKind::Npc && flags & 0x04 != 0 && p.data.len() >= 0x2C).then(|| p.u32(0x28) & (1 << 26) != 0);
@@ -1566,19 +1669,14 @@ fn entity(p: &SubPacket, kind: EntityKind) -> EntityUpdate {
         pos: (flags & 1 != 0).then(|| [p.f32(12), p.f32(16), p.f32(20)]),
         dir: p.u8(11),
         hpp: (flags & 0x04 != 0).then(|| p.u8(0x1E)),
-        // 0x00E (asm 0x1009b666..): index >= 0x700 takes @0x34; below 0x400 only text marked 0x01 at @0x34 (from @0x35);
-        // other NPCs are named from the zone list (the client side). Doors carry their door id there: not a name.
-        name: (flags & 0x08 != 0 && p.data.len() > name_at)
-            .then(|| match kind {
-                EntityKind::Npc if p.u16(8) >= 0x700 => Some(text(p, name_at, 16)),
-                EntityKind::Npc if p.u16(8) < 0x400 && p.u8(name_at) == 0x01 && p.u8(name_at + 1) > 0x20 => {
-                    Some(text(p, name_at + 1, 15))
-                }
-                EntityKind::Npc => None,
-                _ => Some(text(p, name_at, 16)),
-            })
-            .flatten()
-            .filter(|n| !n.is_empty() && n.chars().all(|c| !c.is_control() && c != '\u{fffd}')),
+        name: match kind {
+            EntityKind::Npc => npc_name.clone().flatten(),
+            // 0x00D (0x10099e36): the name @0x5A with 0x08, never on a despawn.
+            _ => (flags & 0x28 == 0x08 && p.data.len() > name_at)
+                .then(|| text(p, name_at, name_len(size, 0x5c)))
+                .filter(|n| !n.is_empty() && n.chars().all(|c| !c.is_control() && c != '\u{fffd}')),
+        },
+        listed: npc_name == Some(None),
         despawn: flags & 0x20 != 0,
         look: (kind == EntityKind::Player && flags & 0x10 != 0 && p.data.len() >= 0x48 + 18).then(|| look_at(p, 0x48)),
         motion: motion_state(p),
@@ -1706,6 +1804,71 @@ fn entity(p: &SubPacket, kind: EntityKind) -> EntityUpdate {
 }
 
 impl EntityUpdate {
+    /// What FUN_1009b550 still takes for a reserved actor (entity +0x138 bit 31, event op 0xac sub 2): the name, and
+    /// with 0x01 the position, heading, speeds and counter, unless +0x13c bit 0 holds the position too (`hold`, op
+    /// 0xac sub 4). No despawn (0x1009b7f0), face target or @0x20 status bits (0x1009bc29), claim (0x1009bcf3),
+    /// general fields or look (0x1009bda9, and 0x1009c8f5's test without 0x04).
+    pub fn reserved(self, hold: bool) -> Self {
+        Self {
+            pos: self.pos.filter(|_| !hold),
+            despawn: false,
+            mask: 0,
+            king: false,
+            costume: None,
+            hpp: None,
+            look: None,
+            npc: None,
+            claim: None,
+            mob: None,
+            marks: None,
+            plate: None,
+            male: None,
+            name_flags: None,
+            no_snap: None,
+            door: None,
+            lift: None,
+            ship: None,
+            hp_bits: None,
+            untargetable: None,
+            target_off: None,
+            listed_only: None,
+            radar: None,
+            mon_prefix: None,
+            mon_form: None,
+            sub_anim: None,
+            sub_flag: None,
+            mon_stat: None,
+            half_fade: None,
+            face: None,
+            spawn_fx: None,
+            shadowless: None,
+            ride: None,
+            hitbox: None,
+            indi: None,
+            gate: None,
+            ..self
+        }
+    }
+
+    /// The name this update gives (FUN_10093430's argument): its own, or for a `listed` one the zone list's by
+    /// UniqueNo (FUN_1008a930), else "NPC" (0x1035cb44); None leaves the name.
+    pub fn name_for<'a>(&'a self, list: &'a std::collections::HashMap<u32, String>) -> Option<&'a str> {
+        match &self.name {
+            Some(n) => Some(n.as_str()),
+            None if self.listed => Some(list.get(&self.id).map_or("NPC", |n| n.as_str())),
+            None => None,
+        }
+    }
+
+    /// FUN_1009ceb0 (0x00E: below 0x400, or 0x700..0x8ff) / FUN_1009aad0 (0x00D: 0x400..0x6ff): the handler drops an
+    /// update for any other index.
+    pub fn in_range(&self) -> bool {
+        match self.kind {
+            EntityKind::Player => (0x400..0x700).contains(&self.index),
+            _ => self.index < 0x400 || (0x700..0x900).contains(&self.index),
+        }
+    }
+
     /// A full update (actor +0x141): 0x00E needs mask 0x07, 0x17 for kinds 1 / 7 (0x1009a097); 0x00D 0x1f
     /// (0x100982f6).
     pub fn complete(&self) -> bool {
@@ -1938,7 +2101,12 @@ impl Session<'_> {
                 self.map.zoned_in(&p);
                 let pos = [p.f32(12), p.f32(16), p.f32(20)];
                 let (scene, myroom) = scene_of(&p);
-                *self.me.lock().unwrap() = SelfState { pos, dir: p.u8(11), moving: false, move_time: 0, target: 0 };
+                // EventNum @0x62, EventPara @0x64, EventMode @0x66, EventNo @0x40: the client starts
+                // the login event itself, on the player (FUN_10094ea0).
+                let (event_num, event_para) = (p.u16(0x62), p.u16(0x64));
+                // FUN_10094190 locks control here when the 0x00A carries an event: no 0x015 before the first frame.
+                let locked = event_num != 0;
+                *self.me.lock().unwrap() = SelfState { pos, dir: p.u8(11), locked, ..Default::default() };
                 self.zoned = true;
                 self.my_index = p.u16(8);
                 self.queue.push(build(0x00C, &[0u8; 8]));
@@ -1948,9 +2116,6 @@ impl Session<'_> {
                 if self.login.lsb.is_some() && self.stats.gm_window.load(Relaxed) {
                     self.queue.push(build(0x1F0, &super::gm::CATALOG_REQUEST));
                 }
-                // EventNum @0x62, EventPara @0x64, EventMode @0x66, EventNo @0x40: the client starts
-                // the login event itself, on the player (FUN_10094ea0).
-                let (event_num, event_para) = (p.u16(0x62), p.u16(0x64));
                 let event = (event_num != 0).then(|| EventStart {
                     target: p.u32(4),
                     index: p.u16(8),
@@ -1985,6 +2150,8 @@ impl Session<'_> {
                     send_count: p.u16(0xac),
                     ship: ship_data(&p),
                     monstrosity: p.u16(0x7E) != 0,
+                    pol_return: pol_return(p.u32(0x80)),
+                    plate: zone_in_plate(&p),
                 })?;
             }
             // FUN_100fb730: 4 cancels a logout (nothing sent); otherwise 0x00D goes out with the old key, and 2
@@ -2028,6 +2195,7 @@ impl Session<'_> {
                     icons,
                     team: (p.u32(0x34) >> 21) as u8,
                     fellow: p.u16(0x48),
+                    follow: p.u16(0x46),
                     plate: self_plate(&p),
                     ride: ((p.u32(0x28) >> 13 & 7) as u8, if p.data.len() > 0x5b { p.u8(0x5b) } else { 0 }),
                     indi: if p.data.len() > 0x58 { p.u8(0x58) & 0x7f } else { 0x10 },
@@ -2078,6 +2246,11 @@ impl Session<'_> {
                 upgrades: std::array::from_fn(|i| p.u8(8 + i)),
                 costs: std::array::from_fn(|i| p.u16(0x28 + 2 * i)),
             }))?,
+            0x08F => {
+                if let Some(d) = super::celestite::CelData::parse(&p.data) {
+                    self.tx.send(NetEvent::Celestites(d))?
+                }
+            }
             0x08D => {
                 let n = (p.data.len().saturating_sub(4) / 4).min(64);
                 let recs = (0..n)
@@ -2336,11 +2509,12 @@ impl Session<'_> {
                     self.npc_logged += 1;
                     let look = p.data.get(0x30..p.data.len().min(0x44)).unwrap_or_default();
                     log::info!(
-                        "0x00E index {:#05x} id {:08x} mask {:02x} ({:#x} bytes): look {}",
+                        "0x00E index {:#05x} id {:08x} mask {:02x} ({:#x} bytes): pos {:?} look {}",
                         p.u16(8),
                         p.u32(4),
                         p.u8(10),
                         p.data.len(),
+                        [p.f32(12), p.f32(16), p.f32(20)],
                         hex::encode(look)
                     );
                 }
@@ -2786,7 +2960,10 @@ impl Session<'_> {
         // once, as s2c 0x005 does.
         let wanted = wanted_interval(self.stats, self.login.lsb.is_some(), self.server_base);
         if wanted != self.wanted {
-            (self.wanted, self.base, self.interval) = (wanted, wanted, wanted);
+            // Before the zone-in the login's retry keeps the connect pace: a fast Send Rate here resent 0x00A every
+            // 50 ms, and LSB's session stalled on a retry that beat its first answer.
+            let interval = if self.zoned { wanted } else { connect_interval(wanted) };
+            (self.wanted, self.base, self.interval) = (wanted, wanted, interval);
         }
         if self.zoned && self.last_send.elapsed() >= Duration::from_millis(self.interval as u64) {
             let stepped = step_interval(self.interval, self.base, self.map.lag());
@@ -2806,9 +2983,12 @@ impl Session<'_> {
             }
             body[14..16].copy_from_slice(&s.move_time.to_le_bytes());
             body[16] = s.dir;
+            body[17] = (s.ground_mode as u8) << 2;
             // FUN_10096c00: @0x16 the current target's ActIndex (FUN_10152f20).
             body[18..20].copy_from_slice(&s.target.to_le_bytes());
-            add_position(&mut self.queue, build(0x015, &body), s.moving);
+            if sends_position(&s) {
+                add_position(&mut self.queue, build(0x015, &body), s.moving);
+            }
             // A batch holding an id a mod hooks goes to the main thread and comes back as SendBatch.
             let hooked = self.hooks.load(Ordering::Relaxed) & HOOK_OUT != 0
                 && self.queue.iter().any(|p| self.stats.hooked(true, sub_id(p)));
@@ -2836,6 +3016,13 @@ impl Session<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LoginState by the 0x00A handler's jump table (0x100fb790): only 3, 4 and 5 are returns from PlayOnline.
+    #[test]
+    fn pol_return_states() {
+        let got: Vec<u32> = (0..=7).filter(|&s| pol_return(s)).collect();
+        assert_eq!(got, [3, 4, 5]);
+    }
 
     /// The hooked ids each way: only those (a sub-packet's first 9 bits) send a batch through the mods.
     #[test]
@@ -3117,6 +3304,113 @@ mod tests {
         SubPacket { id, sync: 0, data }
     }
 
+    /// FUN_100faf90 / FUN_10094190: the zone-in's own flags are 0x00D's words in the 0x00A, and only the ones the
+    /// zone-in writes.
+    #[test]
+    fn zone_in_flags() {
+        // Flags1: anonymous (12), linkshell (17), HackMove (27), invisible (29); GM level 3 in @0x23; Flags0
+        // GroundFlag (15); the linkshell colour; Flags3 bit 23 (New Adventurer) is not a zone-in flag.
+        let f1 = (1u32 << 12 | 1 << 17 | 1 << 29 | 3 << 24).to_le_bytes();
+        let p = sub(0x00A, 0x104, &[(0x20, &f1), (0x24, &[1, 2, 3, 0]), (0x28, &(1u32 << 23).to_le_bytes())]);
+        let z = zone_in_plate(&p);
+        assert!(z.marks.anon && z.marks.ls && z.invisible && !z.no_snap);
+        assert_eq!((z.marks.gm, z.marks.ls_colour), (3, [1, 2, 3]));
+        assert!(!z.marks.new_char && !z.marks.lfg && !z.marks.bazaar && !z.frozen && !z.charmed);
+        let ground = sub(0x00A, 0x104, &[(0x18, &(1u32 << 15).to_le_bytes())]);
+        let hack = sub(0x00A, 0x104, &[(0x20, &(1u32 << 27).to_le_bytes())]);
+        assert!(zone_in_plate(&ground).no_snap && zone_in_plate(&hack).no_snap);
+        // LSB's 0x00A (size and gender in Flags1 bits 8..15, 0x100 in Flags3) sets none of them.
+        let lsb = sub(0x00A, 0x104, &[(0x20, &0x8100u32.to_le_bytes()), (0x28, &0x100u32.to_le_bytes())]);
+        assert_eq!(zone_in_plate(&lsb), SelfPlate::default());
+    }
+
+    /// 0x00E's name rules (asm 0x1009b666..0x1009b7b5) and FUN_100dde40's length.
+    #[test]
+    fn npc_name_rules() {
+        let up = |index: u16, mask: u8, sub_kind: u8, len: usize, fill: &[(usize, &[u8])]| {
+            let mut f = vec![(8, index.to_le_bytes().to_vec()), (10, vec![mask]), (0x30, vec![sub_kind])];
+            f.extend(fill.iter().map(|(at, b)| (*at, b.to_vec())));
+            let f: Vec<(usize, &[u8])> = f.iter().map(|(at, b)| (*at, b.as_slice())).collect();
+            let e = entity(&sub(0x00E, len, &f), EntityKind::Npc);
+            (e.name, e.listed)
+        };
+        let long: &[(usize, &[u8])] = &[(0x34, b"Abcdefghijklmnopqrst")];
+        // Rule 1: 0x08 at a dynamic index, 15 characters, fewer in a short packet (size - 0x38).
+        assert_eq!(up(0x700, 0x0f, 0, 0x48, long), (Some("Abcdefghijklmno".into()), false));
+        assert_eq!(up(0x700, 0x0f, 5, 0x40, &[(0x34, b"Abcdefghijkl")]), (Some("Abcdefgh".into()), false));
+        assert_eq!(up(0x700, 0x08, 6, 0x48, &[]), (Some(String::new()), false));
+        // Doors, lifts and ships there keep their name; without 0x08 nothing changes either.
+        assert_eq!(up(0x700, 0x0f, 2, 0x48, long), (None, false));
+        assert_eq!(up(0x8ff, 0x07, 0, 0x48, long), (None, false));
+        // Below 0x700 the same bytes are not a name: the zone list or "NPC".
+        assert_eq!(up(0x3ff, 0x0f, 0, 0x48, long), (None, true));
+        assert_eq!(up(0x80, 0x0f, 2, 0x48, long), (None, true));
+        // Rule 2: SubKind 1 with 0x40 reads @0x44; a static index only with a first byte above a space.
+        let far: &[(usize, &[u8])] = &[(0x34, b"Near"), (0x44, b"Farther away name")];
+        assert_eq!(up(0x700, 0x57, 1, 0x58, far), (Some("Farther away na".into()), false));
+        assert_eq!(up(0x700, 0x4f, 1, 0x58, far), (Some("Near".into()), false));
+        assert_eq!(up(0x10, 0x57, 1, 0x58, far), (Some("Farther away na".into()), false));
+        assert_eq!(up(0x10, 0x57, 1, 0x58, &[(0x44, b" x")]), (None, true));
+        assert_eq!(up(0x10, 0x57, 0, 0x58, far), (None, true));
+        // Rule 3: a static index's own name, marked 1 @0x34, read from @0x35 with no size test (24 bytes).
+        let own: &[(usize, &[u8])] = &[(0x34, b"\x01A name of twenty-four chars!")];
+        assert_eq!(up(0x10, 0x0f, 0, 0x54, own), (Some("A name of twenty-four ch".into()), false));
+        assert_eq!(up(0x10, 0x07, 0, 0x54, own), (None, true));
+        assert_eq!(up(0x10, 0x0f, 0, 0x54, &[(0x34, b"\x01 x")]), (None, true));
+        assert_eq!(up(0x700, 0x0f, 2, 0x54, own), (None, false));
+        // The length: unsigned, so a packet that ends before the limit still asks for 15.
+        let lens = [0x48, 0x3c, 0x38, 0x34].map(|size| name_len(size, 0x38));
+        assert_eq!(lens, [15, 4, 0, 15]);
+        // 0x00D: @0x5A, size - 0x5c, and never on a despawn.
+        let pc = |mask: u8, len: usize, name: &[u8]| {
+            let p = sub(0x00D, len, &[(8, &0x400u16.to_le_bytes()), (10, &[mask]), (0x5a, name)]);
+            entity(&p, EntityKind::Player).name
+        };
+        assert_eq!(pc(0x1f, 0x6c, b"Abcdefghijklmnop"), Some("Abcdefghijklmno".into()));
+        assert_eq!(pc(0x1f, 0x60, b"Abcdef"), Some("Abcd".into()));
+        assert_eq!(pc(0x28, 0x6c, b"Abcdef"), None);
+        // The list's name by id, "NPC" without one.
+        let list = std::collections::HashMap::from([(0x0100_1001u32, "Listed".to_string())]);
+        let mut e = entity(&sub(0x00E, 0x48, &[(8, &0x10u16.to_le_bytes()), (10, &[0x07])]), EntityKind::Npc);
+        assert_eq!(e.name_for(&list), Some("NPC"));
+        e.id = 0x0100_1001;
+        assert_eq!(e.name_for(&list), Some("Listed"));
+        e.name = Some("Own".into());
+        assert_eq!(e.name_for(&list), Some("Own"));
+        (e.name, e.listed) = (None, false);
+        assert_eq!(e.name_for(&list), None);
+    }
+
+    /// The handlers' index ranges (FUN_1009ceb0 / FUN_1009aad0), and what a reserved actor's 0x00E keeps.
+    #[test]
+    fn index_ranges_and_reserved_view() {
+        let at = |id: u16, index: u16, kind| entity(&sub(id, 0x48, &[(8, &index.to_le_bytes())]), kind).in_range();
+        let npc = |i| at(0x00E, i, EntityKind::Npc);
+        let pc = |i| at(0x00D, i, EntityKind::Player);
+        assert!(npc(0) && npc(0x3ff) && !npc(0x400) && !npc(0x6ff) && npc(0x700) && npc(0x8ff) && !npc(0x900));
+        assert!(!pc(0x3ff) && pc(0x400) && pc(0x6ff) && !pc(0x700));
+        let p = sub(
+            0x00E,
+            0x48,
+            &[
+                (8, &0x10u16.to_le_bytes()),
+                (10, &[0x2f]),
+                (12, &1.5f32.to_le_bytes()),
+                (0x18, &(0x1234u32 | 0x20 << 17 | 1 << 16).to_le_bytes()),
+                (0x1e, &[50]),
+                (0x2c, &7u32.to_le_bytes()),
+                (0x32, &0x52u16.to_le_bytes()),
+            ],
+        );
+        let full = entity(&p, EntityKind::Npc);
+        assert!(full.despawn && full.king && full.claim == Some(7) && full.hpp == Some(50) && full.face == Some(0x20));
+        let r = full.clone().reserved(false);
+        assert_eq!((r.pos, r.counter, r.listed), (Some([1.5, 0.0, 0.0]), 0x1234, true));
+        assert!(!r.despawn && !r.king && r.mask == 0);
+        assert!(r.claim.is_none() && r.hpp.is_none() && r.face.is_none() && r.npc.is_none() && r.mob.is_none());
+        assert!(full.reserved(true).pos.is_none());
+    }
+
     /// A 0x00E trimmed after its name (0x3c bytes) still gives its model; a trimmed lift (kind 3) its lift data.
     #[test]
     fn trimmed_npc_update() {
@@ -3205,6 +3499,14 @@ mod tests {
         );
         let s = event_start(&p);
         assert_eq!((s.event, s.strings[0].as_str(), s.params[0]), (5, "Bastok", 3));
+    }
+
+    /// c2s 0x015 goes out unless we ride or the control lock is on (FUN_100983f0).
+    #[test]
+    fn position_gate() {
+        assert!(sends_position(&SelfState::default()));
+        assert!(!sends_position(&SelfState { locked: true, ..Default::default() }));
+        assert!(!sends_position(&SelfState { silent: true, ..Default::default() }));
     }
 
     /// GP_CLI_COMMAND_EVENTEND: UniqueNo, EndPara, ActIndex, Mode, EventNum, EventPara.

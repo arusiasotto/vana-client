@@ -1350,6 +1350,21 @@ mod tests {
         }
     }
 
+    /// The effect sizes (FUN_100d08e0 / 09b0 / 0a80) are box 0's extents over 1.7 / 1.9 / 1.9: about 1 for a Hume.
+    #[test]
+    fn effect_sizes_near_one_for_a_hume() {
+        let Ok(index) = crate::dat::DatIndex::open(&crate::config::Config::load().ffxi_dir()) else { return };
+        for file in [7072u32, 16600, 19776, 26352] {
+            let Ok(d) = index.read(file) else { return };
+            let skel = super::load_file(&d).unwrap().skeleton.unwrap();
+            let [b0, b1, b2, b3, b4, b5] = skel.boxes[0];
+            println!("file {file}: {:.2} {:.2} {:.2}", (b2 - b3) / 1.7, (b1 - b0) / 1.9, (b4 - b5) / 1.9);
+        }
+        let skel = super::load_file(&index.read(7072).unwrap()).unwrap().skeleton.unwrap();
+        let [b0, b1, b2, b3, ..] = skel.boxes[0];
+        assert!(((b2 - b3) / 1.7 - 1.0).abs() < 0.3 && ((b1 - b0) / 1.9 - 1.0).abs() < 0.3, "{:?}", skel.boxes[0]);
+    }
+
     /// First person's eye (FUN_10020ba0): attach point 12 sits at head height in every PC's rest pose.
     #[test]
     fn eye_points() {

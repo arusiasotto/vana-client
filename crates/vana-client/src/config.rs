@@ -19,6 +19,11 @@ pub fn data_dir() -> PathBuf {
     app_dir(dirs::data_dir())
 }
 
+/// The PlayOnline Viewer's files, kept as its update leaves them (never run): its patch.ver gates a PlayOnline log-in.
+pub fn viewer_dir() -> PathBuf {
+    data_dir().join("PlayOnlineViewer")
+}
+
 /// A server-sent character name as a file name: letters and digits as they are, anything else (and a Windows device
 /// name) as '_' and the name's bytes in hex, so the file stays in its folder and two names never share one.
 fn name_file(name: &str) -> String {
@@ -453,6 +458,22 @@ impl ModRef {
         Some(self.on.get(&k).copied().unwrap_or(self.enabled))
     }
 
+    /// A scope row changed: the key this character and job switch now (with no scope left, `enabled`) takes the state
+    /// they had, so changing the scope alone never turns the mod on or off for them. Unknown (the scope's job not
+    /// known yet): only the scope changes.
+    pub fn set_scope(&mut self, character: Option<&str>, job: Option<&str>, per_character: bool, per_job: bool) {
+        let before = self.active(character, job);
+        (self.per_character, self.per_job) = (per_character, per_job);
+        let Some(on) = before else { return };
+        match self.key(character, job) {
+            Some(k) => {
+                self.on.insert(k, on);
+            }
+            None if !per_character && !per_job => self.enabled = on,
+            None => {}
+        }
+    }
+
     /// Switched on or off for this character and job: its switch with a scope; without one, or in the lobby (no
     /// character yet), `enabled`, which every one never switched follows. In game before a Per Job mod's job is known
     /// there is nothing to switch: false.
@@ -810,6 +831,24 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-11-16: Per Character turned off on Nine's RDM (on there, off everywhere else) left the mod off, the new
+    /// "RDM" key never switched. Now the new key takes the state it had; other characters and jobs keep theirs.
+    #[test]
+    fn scope_change_keeps_the_state() {
+        let mut m = ModRef { per_character: true, per_job: true, ..ModRef::new("hotbar", false) };
+        m.switch(Some("Nameless-Nine"), Some("RDM"), true);
+        m.set_scope(Some("Nameless-Nine"), Some("RDM"), false, true);
+        assert_eq!(m.active(Some("Nameless-Nine"), Some("RDM")), Some(true));
+        assert_eq!(m.active(Some("Asura-Tsetse"), Some("RDM")), Some(true));
+        assert_eq!(m.active(Some("Nameless-Nine"), Some("WHM")), Some(false));
+        // Both scopes off: the switch everybody follows takes it.
+        m.set_scope(Some("Nameless-Nine"), Some("WHM"), false, false);
+        assert!(!m.enabled && m.active(None, None) == Some(false));
+        // A job not known yet: only the scope changes.
+        m.set_scope(Some("Nameless-Nine"), None, false, true);
+        assert!(m.per_job && !m.enabled);
+    }
 
     /// A mod kept per job switches each job's; one never switched follows `enabled`; per character and job keys
     /// both; the job not known yet decides nothing.

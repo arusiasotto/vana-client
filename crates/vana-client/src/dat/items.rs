@@ -713,6 +713,27 @@ mod tests {
         assert_eq!(string_table(&b), vec![Field::Text("Ab".into()), Field::Num(1), Field::Text("c".into())]);
     }
 
+    /// The records behind list cell kind 0x4d (30261102_0, fe_inven's rows FUN_10117e60: item 0x72f0 + n, the icon by
+    /// FUN_1015d340 and the name by cell kind 0x19): 31 celestites from 0x72f1, each with a name, an icon and the
+    /// level FUN_101181a0 compares with the main job's as the first byte of its +0x14 block.
+    #[test]
+    fn celestite_records() {
+        let Ok(index) = DatIndex::open(&crate::config::Config::load().ffxi_dir()) else { return };
+        let Ok(items) = Items::load(&index, Lang::En) else { return };
+        // Game files older than 30261102 hold empty records here.
+        if items.item(0x72f1).is_none_or(|i| i.name == ".") {
+            return;
+        }
+        let named = |id: u32| items.item(id).is_some_and(|i| i.name.starts_with("Celestite ("));
+        assert_eq!((0x72f0..0x73f0).filter(|&id| named(id)).collect::<Vec<_>>(), (0x72f1..0x7310).collect::<Vec<_>>());
+        for id in 0x72f1..0x7310 {
+            let i = items.item(id).unwrap();
+            assert_eq!((i.kind, i.icon_rgba().map(|p| (p.0, p.1))), (Some(Kind::K7000), Some((32, 32))), "{id:#x}");
+        }
+        let first = items.item(0x72f1).unwrap();
+        assert_eq!((first.name.as_str(), first.maze.map(|m| m[0])), ("Celestite (Acc.)", Some(99)));
+    }
+
     #[test]
     fn real_items() {
         let Ok(index) = DatIndex::open(&crate::config::Config::load().ffxi_dir()) else { return };

@@ -3295,9 +3295,9 @@ Summary of what the client does, and where it departs from them:
 - **Inferred / left out**: our random sequence is not retail's MT19937 (only the value mappings are); sun / moon
   (modes 0xe / 0xf) lack the rotation of DAT_105ec978; shading is done in gamma space (textures uploaded as plain
   UNORM) and, since 2026-10-23, blended in gamma space as D3D8 did (the world scene below); batched sprites use
-  normalised UVs (retail draws raw UVs there; differs only for D3a with byte 7 = 0); no ZBIAS 15, no MMB
-  draw-distance cull, no zone-0xed MMB offset; weather density (config 0x3b) is taken as 1.0; the covered (roof)
-  flag is not computed; orientation modes with bit 0 (camera basis) use the plain angles; ops not handled yet are
+  normalised UVs (retail draws raw UVs there; differs only for D3a with byte 7 = 0); the MMB cull, the zone-0xed MMB
+  offset and the orientation bit-0 basis: "Effect audit fixes 7"; weather density (config 0x3b) is taken as 1.0; the
+  covered (roof) flag is not computed; ops not handled yet are
   logged once at debug level (point lists, paths, ground snap, sounds, point lights, distortion, rings, lens flares,
   class-specific ops). Scheduler-started effects (battle, spells) come next ("Effect schedulers").
 - Checks: `zone-shot 232 --effects N --weather fine` (sea layers, entrance shadows, cloud domes, sun, tower and
@@ -3395,9 +3395,8 @@ From the research notes:
 - MMB elements (FUN_1003fde0 -> FUN_1017c840): FUN_1017c520 returns the scene's mesh node by the MMB's 16-byte name,
   so +0x104 holds the node, not a handle; MMB type 2 builds no VB. Per submesh: untextured rgb = sat(2·D·F), a =
   sat(4·Da·Fa); textured rgb = sat(sat(T·F)·D·4), a = sat(sat(2·Ta·Fa)·Da·4); with the alpha flag (mode 0x64 or flag
-  0x10000000) rgb = sat(sat(T·D)·F·4), a = sat(4·Da·Fa). The MMB's blending bits are not read. Culled against the
-  scenery draw distance (FUN_1017b170; the planes inferred). Zone 0xed: MMBs named in the list at 0x1036ac18 ("awan"
-  "brac" "col1" "sh_u" "sim" ...) get a node offset y -0.8, added to the draw matrix's row 4 (view space).
+  0x10000000) rgb = sat(sat(T·D)·F·4), a = sat(4·Da·Fa). The MMB's blending bits are not read. The cull and the zone
+  0xed offset: "Effect audit fixes 7" (a side and near cull, no far plane; the names are awan brac col1 sh-u suim).
 - D3m (FUN_1003f3e0): no texture groups rgb = sat(2·D·F), a = sat(4·Da·Fa) (mode 0x44: sat(2·Da·Fa), Fa = 0xff above
   0x7e); groups rgb = sat(sat(2·D·T)·2·F), a = sat(sat(2·Da·Ta)·4·Fa) (flag 0x10000000: sat(Da·4·Fa)); mode 0x49:
   F's rgb white, DESTCOLOR / SRCALPHA (dst x (1 + a)); the untextured tail as no groups. Layout (FUN_1003f0a0, data
@@ -12004,15 +12003,9 @@ From the research notes:
   its 8 corners (and runs an occlusion query when one is free); not visible: no emission this frame and the stream
   stops, as op 0x0a's distance gate. Used by weapon skill 3400, fireworks 4959 / 4960 `hana/*`, and zone generators
   (torch flames, e.g. 290 `effe/hi/lp14`).
-- Ours (fx/emit.rs generator_stream): off screen = every corner outside one plane of the scene frustum (fovy
-  2 atan(192 / focal), Registry::aspect from the client each frame) *(inf: the exact test of FUN_1004a870's
-  vtable +0x8c call; no occlusion query, no path offset)*. Zone 230 from a fixed camera: 12 fewer live elements
-  (off-screen emitters); 3400's own elements unchanged frame by frame.
-
-From the research notes:
-- The tested shape is the +-1 cube under diag(op[3], op[4], op[5]), then gen +0xa4, then the view DAT_1047bfa8 +0xb50;
-  op[6] >> 1 & 1 picks the corner source (FUN_10047b80). FUN_1004a870 also runs an occlusion query when one is free (not
-  reproduced).
+- Ours (fx/emit.rs generator_stream): retail's corner test since 2026-11-15 ("Effect audit fixes 7", which corrects
+  this section: word 6 bit 1 is a depth test, the path offset is a dead keyframe handle, and the occlusion query
+  never runs for these generators).
 
 ## Emission ops 0x4e (batched) and 0x94 (2026-10-25)
 
@@ -12546,8 +12539,8 @@ From the research notes:
 - Not done: the ground tilt of info[0] 1 / 2 models (FUN_100d54c0), op 0x6e for other actors, the riding `cdam`
   (started from outside FFXiMain, inf), the local player's wait for its stand motion before `coff` (FUN_100d65b0),
   (op 0xab 3 / 4 done since, below).
-- Op 0xab (FUN_100bac90) subs 3 / 4: 3 sets the event actor's +0x120 bit 2, which keeps ops 0x7e and 0xac 1 from
-  writing its event status; 4 stays on the op (the frame ends) while that status is 0 and the riding transition
+- Op 0xab (FUN_100bac90) subs 3 / 4: 3 sets the event actor's +0x120 bit 2, which keeps op 0x7e and the door ops (not
+  0xac 1: corrected 2026-11-15) from writing its event status; 4 stays on the op (the frame ends) while that status is 0 and the riding transition
   (+0x1bc) still runs, then clears the bit. Ours: EventState::status_lock; the wait while a bound actor still has a
   ride (riding or leaving).
 
@@ -12793,9 +12786,19 @@ From the research notes:
 - The normal: ours the player's walk normal (Ground::player_normal), else the face under the position each frame (the
   rider's for its animal) *(retail probes a far moving actor only every 121 frames)*. Quadrupeds with info[0] ==
   info[2] == 2 (behemoth, adamantoise, morbol, treant, wyrms ...) then take FUN_100a4d10's pitch-only normal: the
-  front feet points 10 / 11 and rear 8 / 9 (ours from the rest pose through last frame's matrix *(inf)*), their
-  midpoints snapped, N = normalize(d x (d x up)) facing up (tilt::feet_normal: d = (-2, 0.5, 0) gives
-  (-0.2425, -0.9701, 0)).
+  front feet points 10 / 11 and rear 8 / 9 (last drawn frame's CPU pose), their midpoints snapped,
+  N = normalize(d x (d x up)) facing up (tilt::feet_normal: d = (-2, 0.5, 0) gives (-0.2425, -0.9701, 0)).
+  These models follow FUN_100a4ed0's probe gate (tilt::feet_gate): each frame while moving (more than 1e-7) and
+  either at view depth <= 10.0 or bound to the event (+0x120 bit 7; bits 7 / 8 are tested only inside the moving
+  branch), on the first update (+0x5ec), else when the counter +0x5f0 (from rand() % 120, ours dealt by id) passes
+  120, i.e. every 121st frame, moving or not; their normal holds between probes. The probe reads last frame's drawn
+  pose, so the model poses on the CPU on any frame before one that can probe: within view depth 12.0
+  (`tilt::FEET_POSE`, a margin past 10.0 so a model coming into range was posed the frame before), bound, or the
+  frame before a counter probe; the counter's seed is a random 0..0x7fff, as rand(). A riding animal is left
+  out and takes its rider's normal *(inf: vt+0x360 only clears the moving branch; whether the animal class answers
+  vt+0x3fc for the counter branch is not traced)*.
+  *(Not modelled: the probe also runs on attach sync (+0x5e1, FUN_100ca730's copy), on +0x120 bit 8 (took part),
+  and while not grounded (+0x5e0 == 0, the last snap missed) even standing still.)*
   The tilted frame goes to the pose, attach_point and the effects (actor_frame).
 - Op 0xd8 (the plain path, FUN_100843b0): D3DX Scale . RotZ(z) . RotY(yaw) . RotX(x), i.e. glam T Rx(x) Ry(yaw) Rz(z):
   z about the model's Z, x about the world X after the yaw, both positive. Ours had z then x in the model frame with
@@ -13551,11 +13554,11 @@ From the research notes:
 - The warp FUN_10075700 tests +0x144 (the amplitude, asm 0x10075713); the CMoElem ctor FUN_10044890 zeroes +0x140 /
   +0x144 and nothing else stores to +0x140..+0x148.
 - CMoDist pass 1 (RS 0x103530d0) sets ZBIAS 0; pass 2 (RS 0x10353178) does not restore it.
-- DistRing (not done): retail squeezes the viewport into the 256x256 copy (FUN_10042d00) and reads it back, so the
+- DistRing (done 2026-11-10, the squeeze pass render/squeeze.wgsl): retail squeezes the viewport into the 256x256 copy (FUN_10042d00) and reads it back, so the
   band shows the scene blurred over about W / 256 px and shifted about (-0.5 - W / 512, -0.5 + H / 512) px (content
   right and up; at 1920x1080 (-4.25, +1.61)). Copy texel (i, j) samples u = (i W / 256 - 0.5) / W, v = (H - 0.5) / H -
   j / 256 (linear, MIRROR); a ring pixel u = (px + 0.5) / W, v = (H - 0.5 - py) / H (inferred from the D3D8
-  rasterization rules). Our full-size copy shows nothing there.
+  rasterization rules).
 
 ## Self-starting schedulers: end loops, the load-time start, op 0x52 time windows, op 0xa2, update op 0x64 (2026-10-25)
 
@@ -17388,7 +17391,7 @@ From the research notes:
 - Busy strip bit 0x10: set while msglist's list job, a read (FUN_100f75f0) or a msgline send runs; cleared at the
   job's end (result 1, the engine closed, only clears it). Every setter in MODLOG "The busy strip's 0x10".
 - Our status at login: s2c 0x00A (LAB_100facf0, LoginState @0x80 in {1, 2, 0, 6}) sets Away back to Online with a
-  0x0DC clear *(inf: only the first 0x00A)*; FUN_100daf30 state 4: FUN_100f7960 re-reads and re-sends our status with
+  0x0DC clear *(every zone-in: item 140)*; FUN_100daf30 state 4: FUN_100f7960 re-reads and re-sends our status with
   FUN_100e46a0(1, status == Away). At character select (FUN_100ee160) retail sends ChangeMyStatus(handle, character
   index, 0, -2 keep, -1, 1).
 - FUN_101ffa20(rec, flag) (/befriend flag 1, Befriend 0): key = id & 0xffff | world << 16 | (id & 0xf0000) << 8,
@@ -17737,7 +17740,7 @@ From the research notes:
   - 0x87 / 0x88 / 0x8a: language slots 0x1c (race names) by num[n], 0x22 (trust lines) and 0x1b (augments) by work[n]
     (expander +0x788 / +0x858 / +0x8c0, FUN_100bd820).
   - 0x89: group 12 0x1a2 + num[n] (0 past 0xb; a Unity leader) as "{%s} ", nothing for 0.
-  - 0x81 / 0x83 (FUN_1022f330 / FUN_1022ec10 names) are in no dialogue file; not kept.
+  - 0x81 / 0x83: quest / mission names (see "Grammar 0x81 / 0x83 and the choice mask's sign", 2026-11-17).
 - Op 0xc3 (FUN_100bc000, len 7): slot val@1 (0..7) of DAT_10488210 (0x14 each) = the 16 bytes of str@3 and the word
   val@5. A slot outside 0..7 never advances in retail; ours waits there a frame at a time. The table outlives events
   (event_vm Memory.names).
@@ -19213,8 +19216,9 @@ From the research notes:
   requests only while the zone's scene showed (update_sub_area returned while an event area was up), so the
   request was never taken and the wait never ended.
 - Now an event area brings its SubArea (its RID regions, collision, light and area keys) and the zone's is kept
-  in AreaSwitch.home_sub until op 0x35 brings the zone back; while an area shows only the event's requests load
-  (no trigger under the player *(inf)*) and an unload sends no 0x0F2 (FUN_10178900 from an event sends none).
+  in AreaSwitch.home_sub until op 0x35 brings the zone back; an unload an event asks for sends no 0x0F2
+  (FUN_10178900 from an event sends none). The trigger under the player runs in an area too (corrected: MODLOG
+  "Ro'Maeve's spring in an event area: the sub-area trigger").
 
 ## A status motion the model lacks: what plays goes on (2026-10-30)
 - User report: in the Altar Room (152) Verena (event 0x2710, model 79) and Hooknox (event 0x2e, model 85) glided
@@ -24096,3 +24100,602 @@ All of it is the mod's Lua over the general API; the client gained nothing.
   zone 46 at t 0.56: the coast gone from yaw 105..140, back at 145 at 86% across). Retail's distances never reach it.
 - FAR is 20000 now. Depth precision is set by NEAR (dz about z^2 x eps / NEAR once FAR >> NEAR), so the change costs
   none: Southern San d'Oria and West Ronfaure render pixel-identical to before; the coast draws at every angle.
+
+## Effect audit fixes 1: bursts, static gates, weather density, actor sizes, 0x2f, 0x33, 0x50..0x52, 0xba (2026-11-15)
+
+From a full pass over retail's generator (FUN_100496f0, FUN_1004e8d0, FUN_1004e720), element update (FUN_1004a980)
+and scheduler (FUN_10057fb0) switches against ours:
+- Repeated bursts: ours set `stopping` on the template instance after each burst and never cleared it, so while a
+  burst's elements lived every later emission-op-0x3c / end-op-1 burst of that generator emitted nothing (20,419 /
+  6,758 generators). End op 1 restarts the resource first (FUN_10053370 clears the stop), and a resource running only
+  for bursts has no task, so retail never soft-stops it: `burst` now clears the stop before emitting.
+- Static generators (flag 0x400 or op 1 life 0) make their one element on the first update whatever the 0x0a / 0x15
+  gate says (0x1004a605..0x1004a628); ours waited for the gate (16,965 + 2,164 zone generators popped in late).
+- Weather generators (+0xde bit 0) emit ftol(n x density x 0.3) + 1 elements per emission, n = flags & 0x1ff,
+  density = FUN_10002d80 (0x1004a750; 0x1032b15c = 0.3); ours n + 1.
+- Actor sizes (vtable +0x98 / +0x9c / +0xa0: FUN_100d08e0 / 09b0 / 0a80) are the model scale x skeleton box 0's
+  width (b2 - b3) / 1.7, height (b1 - b0) / 1.9, depth (b4 - b5) / 1.9 (0x10331394 = 1 / 1.7, 0x10331398 = 1 / 1.9);
+  1.0 for models without a skeleton (FUN_10081ec0). Hume 0.82 / 1.00, Tarutaru 0.47 / 0.55, Galka 1.18 / 1.32.
+  Scale A / B (2019 FUN_10052eb0) take the larger of width / height for a uniform source, width for x / z, height for
+  y; ours used the bare model scale. Emission op 0x72 (0x10051d23): bias x ((target depth - 1) x f + 1).
+- Element op 0x2f (0x1004c48f): S = (|S|, 0, 0) x euler(rot); ours rotated S again each frame (compounding).
+- Element op 0x33 (0x1004b604): the clone's matrix is euler(rot) x the element's parent frame rotation, then its
+  world position; scale A = the owner's scale A x the element's scale. Ours dropped the parent rotation and scale.
+- Emission ops 0x50..0x52 (0x1004e986): S[s] is the keyframe linked from the 4cc @2; word 1 is 0 in every file.
+- Scheduler op 0xba (FUN_100d5430, 657 ops: dsh0, tob0, gek0 ...): actor1's drawobj +0x840 bit 23 = u32 @8 != 0;
+  FUN_100c83c0 returns at once while it is set, so the status motion (idle / walk / run) is not switched under a
+  scheduler's own motion. Ours: Actor::motion_lock, held in actmotion's status switch.
+
+## Effect audit fixes 2: scheduler ops 0x62, 0x6b var 0x3e, 0x96, 0x5c, 0x9b / 0xa7 / 0xa8, 0xbe, 0xbc, 0xb6, 0xc0 / 0xc3 (2026-11-15)
+
+- 0x62 (210 ops in monster files, `jh02` / `js02`): a timer task (FUN_10060f80, dur x speed ticks, FUN_10060fd0
+  counting down by the frame ticks) holds actor1's +0x86c; +0x870 = |heading - drawn yaw| (heading = -atan2(dz, dx)
+  to actor2, (1, 0) when dx < 0.1 and dz < 0.1 as signed tests; wrapped to -pi..pi), +0x874 = f32 @8 degrees
+  (x 0.017453, 0x1032a9f4), negated for a negative turn. FUN_100c6290 steps it once a frame (0x100c66bc..): yaw +=
+  rate, remaining -= |rate|, an overshoot backed off, while +0x86c and the remaining turn last. Ours: drive::FaceDrive,
+  a frame being 2 ticks.
+- 0x6b variable 0x3e (FUN_10062900, 70 reads): actor1's entity +0x12c bit 22 (0x00E @0x28 bit 0, the trust mark).
+  0x3d (2 reads) is not done (it also wants FUN_10098340 / FUN_1008e130).
+- 0x96 (29 NPC `init` schedulers): vt+0xfc FUN_100848c0 = slot 8, the ranged weapon (dat/npc.rs).
+- 0x5c (every monster's `cnt0`): moving and not in status 2 / 7, the counter swing follows the move quarter +0x598
+  (FUN_1005e5e0): 2 `cnr0`, 3 `cnb0`, 4 `cnl0`, else `cnf0`; standing `cni0`. Ours knows the quarter for us only.
+- 0xa7 / 0xa8 / 0x9b (vt+0x324 FUN_100a4a70): the drawn override +0x83e + slot (u32 @8, above 1 -> 0), on / off;
+  0x9b holds it on for dur x speed (FUN_10061e00; emotes em00 / em05). FUN_10029320 (0x1002a177): with either byte
+  set, slot 0 decides the main hand (point 127) and slot 1 the off hand (point 126), whatever +0x83c says.
+- 0xbe (79 `init`s, all 0): entity +0x13c bit 18; FUN_10083220 in op 0x05 skips the scheduler's scope for `ded?` /
+  `cor?` unless it is set, so death and corpse motions come from the actor's files.
+- 0xbc (FUN_10061c70 / FUN_100d53f0): actor1's footstep counter +0x8ab held up for dur x speed, which opens the step
+  gate (client/footsteps.rs).
+- 0xb6 (FUN_1005e7e0): drawobj +0x840 bit 22 = u32 @8 bit 0; FUN_100c83c0 then shows wep0 / wep1 on a new status
+  motion (client/wepfx.rs status_start).
+- 0xc0 / 0xc3 (`@ini` of the scene files 83923.. / 83926..): the zone's +0x1c8 = u32 @8 (FUN_1018bc40, wrapped to
+  360 days) and +0x1cc = i16 @8. FUN_10182c40: while online (DAT_10443fe4 +9) and +0x1c8 >= 0, the lighting's time
+  is +0x1c8, not the clock. FUN_10180700: with +0x1cc != 0 both the moon (+0xc4) and the sun (+0xa4) vectors turn
+  about x by that many degrees (FUN_10026d50, FUN_100273d0). Both reset with the zone (fx switch_zone).
+- The rest of the scheduler audit: 0xb9 in "Effect audit fixes 5"; 0xb8, 0xa6, 0x7e, 0xaf, 0x3d, 0xbd, 0xa1, 0xc1 in
+  "Effect audit fixes 9" and "Event VM audit fixes 2"; fast-forward of 0x03 / 0x73 children and 0x85 in "Effect audit
+  fixes 4".
+
+## Effect audit fixes 3: generator op 0x04, sub-clones, 0x39, 0x4e / 0x4f, 0x8f, colour keys, 0x2e / 0x48, 0x64 (2026-11-15)
+
+- Generator op 0x04 (0x10049a10, 1,021 generators): it is linked only by the clone ctor (FUN_100536c0), which also
+  writes word 4 = float(resource d8 & 0x1ff) as the keyframe's first value (FUN_100544d0 / FUN_100546f0). A resource
+  running as itself (zone, sub-area, weather, a burst's template) sets its countdown to 32767 once x > 0 and stops;
+  a clone (task, actor model, footstep, element sub-clone) samples with that first value.
+- Element sub-clones (emission 0x44 / 0x53 / 0x6a, 0x1004ee4a): attach `&= 0xfffefff0` (mode 0), and +0x64 (the
+  damage number) only from a parent that is a clone itself.
+- Emission 0x39 (0x10050bc6): the distortion classes' base S[s+2] = their offset +0x194.
+- Emission 0x4e / 0x4f (0x1004eb5d): with op byte 0x0c bit 0 and a frame (FUN_100473f0), the point goes through
+  M, then (b90 x M)^-1 (D3DX +0x48 / +0x24 / +0x18): the view rotation's inverse.
+- Emission 0x8f (0x1004f41a): no source actor (FUN_1003b6d0), no tint; ours used the zone's light (13,369 generators,
+  most zone ones without an actor).
+- Update ops 0x18..0x1b (explicit test) and 0x3c..0x3e (FUN_1004e220) store 0 for a key below 0; ours wrapped.
+- Update ops 0x2e / 0x48 measure |view position| (vtable +0x44; camera-relative elements in view space), 0 behind the
+  eye for classes other than meshes and ground projections (FUN_10045d00). The mesh classes' bounding radius term:
+  "Effect audit fixes 5".
+- Update op 0x64 (0x1004b249) writes this frame's position and step back into S[s..s+2] / S[s+3..s+5], so it turns by
+  the change of heading; ours compared against the spawn point and direction.
+- The rest of the element / generator audits: kind 1 and the mesh radius in "Effect audit fixes 5"; update 0x44 /
+  0x5a / 0x59 / 0x43 in 6; orientation bit 0, the MMB cull and offset, op 0x15, D3a + 0x200000 in 7; emission 0x86 /
+  0x98..0x9a / 0x7e / 0x7f / 0x89 / 0x94 / 0x69 / 0x93, update 0x6a / 0x51 in 8; 0x46 in "Event VM audit fixes 2";
+  emission 0x9b and end op 1 in 4; DistRing's copy was done 2026-11-10 (render/squeeze.wgsl).
+
+## Effect audit fixes 4: emission 0x9b, end op 1's one emission, fast-forward children (2026-11-15)
+
+- Emission 0x9b (0x1004fff0, 361 generators): the generator takes the parent's actors, and the element starts at the
+  parent's world position through this generator's inverse frame, x over scale A's x; ours added the parent's local
+  position *(ours does not rebuild the attachment for the new actors until the next frame)*. 0x86 keeps the local add
+  (its frame copy is not done).
+- End op 1 (0x1004e81d..0x1004e861): +0xd6 = ftol(dt + 1) for the burst's update, then restored, so it emits once
+  whatever the frame time.
+- Fast-forward (FUN_100575a0): 0x03 / 0x73 children start caught up (0x100579c4 -> 0x10057aa4 -> FUN_10056b20, as
+  0x09 / 0x57), and 0x85's kill runs (FUN_10056ef0).
+
+## Effect audit fixes 5: model elements (kind 1), the camera rig (scheduler op 0xb9), the mesh radius (2026-11-15)
+
+- Element kind 1, CMoSkeletonElem (FUN_1004e8d0 kind 1): its resource is a folder holding a skeleton (0x29), meshes
+  (0x2a) and motions (0x2b); it owns a CXiSkeletonActor made from them (ours: an actor id from 0xfe000000 up, loaded
+  from the folder's byte range by dat::npc::load_folder_model). FUN_10047830: once the model is in, the scheduler
+  named like the element's generator plays on it (FUN_100724c0(7, name) -> FUN_10056c70), and while that runs (actor
+  +0x84) the element's life is held at frame + 1. FUN_10047590, each frame: the model takes the element's world
+  position, rotation (the draw matrix +0x5f8 is the element's whole matrix, the frame's yaw on top) and scale, its
+  colour (vt+0x30) and alpha +0x59c = A / 128. It goes with the element. Seen live: Titan's crystals (mob ability 549,
+  file 50196; bti_ / tit_ iw00).
+- Scheduler op 0xb9 (vt+0x150 FUN_100d6f50): actor 1's +0x8ac bit 1 = u32 @8 != 0. While set, FUN_100cce60 (at the end
+  of the actor's pose, FUN_100cbde0) drives the camera: eye = point 0x17, target = point 0x18, both through the
+  actor's posed bones; point 0x1c's world matrix gives the roll, _13 x 60 degrees (camera +0xa4 -> +0x5c, FUN_10021900,
+  turned in by FUN_10020de0), and the focal length, _22 x 200 (FUN_10015290). The status-motion switch and the heading
+  ease stay off for the rig (FUN_100c83c0 is skipped). Its users: the 'cmon' / 'cmof' motions of the rig files 69769..
+  (event motion values 3430..3443) in zones 126, 273 and 291. Seen live: zone 273 event 8, the tiger's rig shots
+  between 'cmon' and 'cmof', then the event cameras.
+- Ops 0x2e / 0x48 on a D3m or ground projection (FUN_10041a40) add |(r, 0, 0) x L| to |view position|: r x |scale x|
+  (element word 63; the parent's scale B when it is size-scaled). r is the D3m header's u16 >> 4 (FUN_1003fcd0), or
+  an MMB's half box diagonal (its scene node +0xd4, FUN_1016fcd0).
+- Event op 0x5b / 0x66 (FUN_100b5210) starts the 4cc through vt+0x298 unless it is 0 or 'xxxx' (the whole u32). The
+  thread scripts of zone 273's event 8 pass 0xfefefe00 to only load files: vt+0x298 (FUN_10084c30 / FUN_100cee40) finds
+  no scheduler of that name and returns 0, as ours does.
+
+## Effect audit fixes 6: update ops 0x59, 0x5a, 0x44, 0x43 (2026-11-15)
+
+- Update op 0x5a (0x1004af16; 1,775 generators across the game files, mostly zone glows and fog: Inner Horutoto's
+  lamp glows `x0..`, fog0): k = last frame's sort key +0x12c - w4; k <= 0 (or unordered): scale = (w1, w2, w3); else
+  scale_i = w_i + k x w5, so the sprite grows with depth. Seen: the zone 192 lamp glows keep their size on screen.
+- Update op 0x59 (0x1004af85; 380 generators): rot.z = fmod(sort key x w1 + w2, 2 pi) - pi (constants 0x1032b168
+  double 2 pi, 0x1032a3b8 pi).
+- Update op 0x44 (0x1004bfdf; 14 generators: bst_ reki / pika, DAT 0's gn30..gn33, kon1 / kon2 / smk1 / smk2):
+  when S[s] holds a keyframe and S[s+2] the update stream's op 0x2c record (emission op 0x69, 0x10050b27,
+  FUN_10049330(0x2c)), the record's word 1 (op 0x2c's drag factor) = key(t), no first-value override. The record is
+  shared by the generator's elements, but every generator using it runs 0x44 just before its 0x2c, so each element
+  drags by its own key(t): ours keeps the value for the 0x2c that follows.
+- Update op 0x43 (0x1004d67b): the sound volume samples the plain day fraction (FUN_1004e310 returns DAT_1065cb14) x
+  127 (FUN_1004e5c0), with no 0x3f-style repeat count.
+- The GPU / CPU update check (render/effects.rs gpu_update_matches_cpu, now on DAT 332 and 105) also mirrors ops
+  0x2e / 0x48's view-space distance (audit 3) and 0x59 / 0x5a; the CPU takes the GPU's last-frame sort key.
+
+## Effect audit fixes 7: orientation bit 0, the MMB cull and zone 237 offset, the 0x15 gate (2026-11-15)
+
+- Orientation modes 1 / 2 with op-1 flag bit 0 (FUN_10045190, asm 0x10045307..0x100457b1; 2,151 generators: D3m and
+  D3a mostly). d = pos - last position; for attach modes 3 / 6 with a parent frame P, d = ((pos - old) x A) through P's
+  rotation, then back through Pn^-1 (P's rows normalised, vt+0xa4; the non-bit-0 yaw / pitch use this d too). v =
+  (0, 0, -1, 1) through, by attach mode: 3 / 6, (b50 x Pn)^-1; 0, 0xe, 0xf, 0x14, c10 (no inverse, translation
+  kept); else (b90 x Prot)^-1 (TransformCoord, divided by w). The rows of O: X = |d|, Y = |d x v|, Z = (0, 0, 1) x X as
+  coded (neither normalised nor orthogonal to Y), and L = L x O. Normalize (vt+0x9c, FUN_1006d630) has no zero guard:
+  a still element gets a NaN matrix *(inferred: not drawn; ours hides it)*. The attach mode rides in GEN_BITS bits
+  16..20. Seen: zone 46's `sk01` steam (`moku`) by the pipe.
+- MMBs in effects (FUN_10040ba0 -> FUN_10040c20 -> FUN_10183760): the 8 corners of the MMB header box through the
+  element's model-view and the projection (FUN_10182490, near 0.2) are outcoded by FUN_10182070 (x / y outside |w|,
+  view depth under 0.2; no far bit); the draw is skipped when all corners share a bit. Then in zone 237 (the scene
+  zone at the chunk's load, DAT_10631f24 +0x3c = 0xed) the chunks FUN_10176ed0 lists at 0x10376c78 (awan, brac, col1,
+  sh-u, suim) carry node +0xe0 = (0, -0.8, 0, 0), added to the world matrix's last row: 0.8 down the view. Ours: the box
+  centre and half extents in element words 49..53 (z from the radius), GEN_BITS bits 21 / 22, the test and the offset
+  in vs_mesh; the zone is checked at emission *(retail decides at the chunk's load)*. Seen: Metalworks' water wheel,
+  the channel's water sheet (suim) 0.8 lower and the blade dipping into it.
+- Generator op 0x15 (0x100498bc, FUN_1004a870, FUN_1006ed10): the unit cube (word 1 is 0 in all 22,366 users) as
+  diag(w3, w4, w5) at the op-1 position through the generator matrix, the view and the projection. Shown when a corner
+  is strictly inside the viewport by x / |w|, y / |w| (|w| = 1 at w = 0), so a box larger than the view with every
+  corner off it is hidden and there is no near test; word 6 bit 1 (86 generators) also needs every corner with w != 0
+  at a depth in near..far (z / w in 0..1). Word 6 bits 0 and 9 are not read. The occlusion query (FUN_1006c280) runs
+  only for an element's clone; no 0x15 generator has one (all bit-1 users are zone auto-starts). The "spline offset"
+  +0xa0 is op 0x54's keyframe handle; no 0x15 generator keys it. MODLOG "Generator op 0x15" called bit 1 the corner
+  choice: it is the depth test.
+- D3a with op-1 flag 0x200000 (CMoD3aLightmapElem, ctor FUN_10052c30, draw FUN_1003ee70: the sprite into a 256 x 256
+  target from above, then laid on the ground cells like the D3m ground projection): no D3a generator in the install
+  sets the flag (0 of 335,702 op-1 records; the flag is on 1,452 D3m, the ground projection, and two D3b, whose factory
+  ignores it), so there is nothing to draw.
+
+## Effect audit fixes 8: the parent record, attach copies, emission 0x86 / 0x98..0x9a / 0x7e / 0x7f / 0x89 / 0x94 (2026-11-15)
+
+Census from every generator in the install (335,703). A generator a scheduler or task runs is updated with no parent
+element (FUN_10054220 calls FUN_100496f0(gen, 0)); only element clones, 0x3c bursts and end-op-1 bursts have one.
+
+- The parent record a child reads (fx Effects::take_back) kept the parent's UV and bias at 0 after its first read
+  back, so emission ops 0x4a (972 generators: the parent's UV) and 0x9d (69: its bias) read 0. They are read back
+  now (back words 20..22).
+- FUN_1003c740 (ops 0x45 and 0x86) copies attach bits 0..16 and 24..27 (ours missed the size-scale nibble 24..27), and
+  the size-scaled test follows the copy.
+- The +0x108 snapshot takes the generator's scales A / B at op 1 (0x100511c6..); op 0x45 then writes the parent's
+  scales only into the generator (+0x78 / +0x84), so they show on later elements, not this one. Ours put them on this
+  element's snapshot.
+- Emission 0x86 (0x1004fac3..0x1004fc80): the attach copy without the actors; under op-1 flag 0x800000 with a parent
+  frame the snapshot is identity with the parent frame's translation and the parent's scales A / B (FUN_10047450 /
+  90); else an element without a frame borrows the parent's (FUN_10044c20); then pos += the parent's local position.
+  Its 6 generators (ROM/318/59 co01..co05, hk01) are only run by schedulers tgt1 / tgt2, so it never runs in the data.
+- Emission 0x98 / 0x99 / 0x9a (0x1004f126 / f1ae / f238): with a parent whose life +0x110 is not 0 (ours tested max
+  life): its life and max life; then with k the slot of op 0x3e / 0x3f / 0x40 in the parent generator's emission
+  stream (FUN_100492f0), S[s + n] = P[k + n] and S[s + 3] = P[k + 3]. The parent exports its first such op in GEN_BITS
+  23..31 and the two values in back words 25 / 26. Users: only 0x98 (6 generators); ppp3 (ROM4/0/21) and tb04
+  (ROM9/8/8) copy slots their update streams never read.
+- Emission 0x7e / 0x7f (0x1004ff54 / ff8c): a point light (IsType 0xb) takes its parent's +0x1a0 intensity / +0x19c
+  range. Only ROM2/0/16 p_e4 has a parent (p_e2, by end op 1): it now continues p_e2's keyed light (0x5b 'e2lp')
+  instead of restarting at 0x58's 80.
+- Emission 0x89 (0x1004ea4d): S[s] = word 1; a non-zero word 1 is a handle whose +0x14 goes into the next 0x4e / 0x4f's
+  word 1. Word 1 is 0 or a stale file value, and none of its 7 generators can start (their only references are op 0x65
+  records, which nothing runs).
+- Emission 0x94 (0x1004fed3): only an op 0x4e on both sides (the parent's 0x4e list for this 0x4e); a 0x4f keeps its
+  own list. Its 11 generators' parents have neither, so nothing changes in the data.
+- Update 0x6a / emission 0x93 write op 0x65's word 3 (+0xc); the only references to an op-0x65 record are the link
+  step (0x10048fbf), the update table's no-op, 0x93 (the only `PUSH 0x65` of the 39 op-finder calls) and 0x6a: nothing
+  reads word 3, so both stay no-ops. Update 0x51 (continue in another generator's stream): 0 of 335,703 generators.
+
+## Scheduler ops 0x7c / 0x7d: weather and clock (2026-11-15)
+
+- FUN_10057fb0 case 0x7c (with a weather manager, DAT_1065cb04): FUN_101874f0(manager, 4cc @8, clock value of i16 @6,
+  0) (asm 0x1005801e..0x10058067). With the last argument 0 a new tag kills the old weather's effects at once, then
+  FUN_1018a7a0 starts the tag's set; i16 @6 is the env's blend in clock units (1500 a second, as op 0xae).
+- Case 0x7d: FUN_1018c210(u32 @8): hour (FUN_1018bd00), minute, second and sub-second of the value are written into
+  the clock DAT_1065cb1c (FUN_1018bf50 / bf00 / beb0 / be80), its day kept. Units: 60 a second, 3600 a minute,
+  216000 an hour. Op 0x77 writes the same clock.
+- Ours (fx::EnvOp, client/event.rs env_op): 0x7d sets the event's held clock (minute = value % 5184000 / 3600);
+  outside an event it is not applied (ours runs on the server's time). 0x7c sets op 0x77's weather while the event
+  holds one, else goes on the weather chain like op 0xae; the effects switch at once.
+- Used by the Zilart ending's `sha0` (area 519): 0x7d 0 and 0x7c `fine` (blend 0) at the start, 0x7d 43200
+  (00:12) before the camera `sha1`, so the woods go from 619's 0000 env to between its 0010 and 0020 keys (the
+  explosion's lit horizon). Also `kon0` (516).
+
+## Effect audit fixes 9: scheduler ops 0x3d, 0x3f, 0xa1, 0xbd, 0xa6, 0x7e, variable 0x3d, the title loop (2026-11-15)
+
+- Op 0x3d (FUN_1006afb0): the picked op runs in the 0x3d's place and its result is the block's. Ours dropped it, so a
+  0x3b call-and-wait inside a random block (318 in the game files) did not hold its parent. A wait now suspends the
+  task after the 0x3e, and the countdown takes the 0x3e's wait instead of the 0x3d's.
+- Op 0x3f: with no A clone on the pair, C is always deleted (FUN_100543a0 at 0x1005a026; a static B runs its one
+  emission first, deleted with C). Ours kept a non-static B's clone emitting.
+- Op 0xa1 (0x1005b34c): op 0xa0's colour drive (FUN_1005f6c0, landing on its target) on actor 2. One user: file
+  61548 `clor`.
+- Op 0xbd (vt+0xc8, FUN_100a4b20 on skeleton actors): +0x8a9 = byte @8 (reset 0x80). FUN_1001ee60 at 0x1001f325, for
+  the player: when it is not 0x80 the look height is that point's offset from the position (vt+0x1c8), with no 0.6
+  factor and no 2.5 cap, ahead of the riding branch. Users: models 2917 / 2957 (files 53212, 53252), point 0x1f.
+- Variable 0x3d (FUN_10062900): 1 when actor 1 has an entity whose model (+0xfc) is not 0x92c and that is a pet or
+  trust (index above 0x6ff, FUN_1008e130) or a charmed monster (id high byte set, +0x12c bit 13 = 0x00E u8 @0x27 bit
+  3). Its reader is file 0's `nrm0` (started by `nerm` from every race's `cate`): 0 plays `nm00`, the casting ground
+  circle; 1 plays `nm10`, empty. Ours read 0, so pets, trusts and charmed monsters cast with the circle.
+- Op 0xa6 (0x1005ba2b, FUN_10035e30): with a current stream (DAT_1046391c, set by ops 0x60 / 0x8a, forgotten by a
+  failed lookup and the zone reset FUN_100361d0), a kind-8 fade task (FUN_10035a00) from 1.0 toward f32 @8 over int
+  @0xc ticks (not x speed); a new one lands the running one first. Each tick (FUN_10035940) level = 1 + (to - 1)(1 -
+  left / total); FUN_100360f0 sets the stream voice's volume (level x 127 and the config factors) or stops it at <= 0;
+  the end applies the target and forgets the stream. One user: event file 30777 `s12k` (to 0 over 30 ticks).
+- Op 0x7e (0x10058469): FUN_10072290 type 0x2f by 4cc @8 in scope, then FUN_1018b010 makes it the env. Each frame
+  FUN_101874a0 points the env back at a weather object's own data where one exists, so it holds only where the zone
+  has no env for the weather *(inferred from FUN_101874a0)*; ours uses it there, and drops it on a 0x7c or zone-in.
+  Users: title file 23 `mov1` and event file 30769 `sg01`.
+- The title (file 23): `main` spawns `loop` looping; each pass runs one 0x3d block (mov1..mov8), then each 0xaf block
+  (ex1a..c, ex2a..e, ex3a..e) whose bit @8 is set in both DAT_10456a28 +0x14 (the account's content) and +0x10 (the
+  installed ROMs), one entry at random each (FUN_1006bf60). Ours played one clock-picked mov and never the ex movies;
+  it now plays the pass in turn (before login against the installed mask alone, inferred). The movies' op 0x0e
+  feedback blur and op 0x7b's per-zone fog (FUN_1018b3a0, the Clipping factor as in the world) apply too.
+- Op 0xb8 (vt+0x114, FUN_100849c0): actor +0x88 bit 7 = @8, read only by FUN_100cd920 (0x100cd9ab): set, every motion
+  is sought in the slot-9 whole-model resource (+0x864) first. Its 41 users (models 3005..3117, 3645, 3650 `init`) all
+  set 1; ours draws those SubKind 5 / 6 models from the whole model alone (MODLOG "0x00E SubKind 5 / 6"), which is the
+  set behaviour, so there is nothing to change until the race base exists.
+
+## Event VM audit fixes: 0xac, the door ops, 0xb5 (2026-11-15)
+
+From a full pass over retail's dispatcher (FUN_100bc280) against event_vm.rs / client/event.rs:
+- Op 0xac (FUN_100bb180) sub 1 writes the event actor's +0x174 = val@2 whatever 0xab 3's lock says (asm
+  0x100bb1ee..0x100bb215; 2019 FUN_100b92f0 alike). The scripts lock with 0xab 3, set 1 with 0xac 1, then 0 and
+  unlock (about 450 of its 655 sites), so those scene poses never showed. Subs 2 / 3 act on actor@2 (FUN_100afac0(2)),
+  not the event actor: 1,377 / 53 sites name other NPCs (e.g. zone 280 at 0x0679).
+- The door ops 0x4c / 0x4d / 0x4f / 0x8e / 0x8f (FUN_100b6950 ..) skip their +0x174 write while the event actor's
+  +0x120 bit 2 (0xab 3) is set. +0x174 is one field: a door state and an event status replace each other (ours
+  keeps them in w.doors.event and event_status, each write now removing the other).
+- Op 0xb5 sub 0 (FUN_100b10f0 -> FUN_10093430) renames only when +0x210 (the Monstrosity word) is 0.
+- Ops 0x2c / 0x2d / 0x51, 0x59 7 / 8, 0x71 0x50..0x55 (the credits roll, not a picture window), 0xac 0 / 4, 0x9c and
+  the ops with no site in the event files: "Event VM audit fixes 2".
+- Op 0xb3 is the Fishing Ranking, all subs done (2026-11-02); 0x9e writes a flag nothing reads.
+
+## Event VM audit fixes 2: the credits roll, ops 0x59 7 / 8, 0xac 0 / 4, 0x9c, 0x60, 0x74, 0x63, 0x9b, 0xaf, 0xb2 1, 0x2c / 0x2d / 0x51 (2026-11-15)
+
+- Op 0x71 subs 0x50..0x55 are the ending credits roll (DAT_10621944, a 0x14-byte object made at UI init; ctor
+  FUN_10163090), not a picture window. One user: zone 291, npc 0x01123304 event 9.
+  - 0x50 val (FUN_10163130): the scroller (FUN_1019e800, the install-credits class) with the text of file 0x18892 +
+    val (ROM/342/14, 1,754 CRLF lines) after 20 empty lines, and file 0x18891 (a `cred` folder with the font
+    texture); drawn in the game font (+0x57 = 1, FUN_1011c080 style 0x44) scaled (W / 640, H / 480). `+` becomes the
+    player's name (entity +0x7c, at most 31). FUN_1019e150 keeps letters, digits, `/ & . , - '` and space, `{` / `@` as
+    spaces, maps 0xa9 to the (c) glyph and `] [ ^ } ~ | \ #` to the font's accented codes (`[` is e acute: Clement,
+    Sebastien; `~` u umlaut: Kruger), and drops the rest without advancing (the file's one `!`).
+  - 0x51 (FUN_101632a0) closes it; so do the event end (FUN_100ae960) and the zone teardown.
+  - 0x52 val (FUN_1019ec00(val, 1)): starts once; ticks per virtual pixel = val x 60 / (lines x 14), so val is the
+    roll's length in seconds (420 in the data).
+  - 0x53 waits for the end (+0x54) or no roll. 0x54 v2..v8: the panel as screen percentages (x0 = W v2 % or 0 for v2
+    <= 0, y0 = H v4 % or 0, x1 = W v6 % or W, y1 = H v8 % but H when v4 <= 0: retail tests v4 there); default x
+    294..746, y 0..H. 0x55: the panel's ARGB (default 0xff000000).
+  - FUN_1019ead0 each frame: the tick count rises by the frame's ticks (at least one), off = ticks / speed, each 14
+    pixels the top line goes; past the last line it is done. Ours counts real 60 Hz ticks (the one-tick floor would run
+    5x fast at a 300 fps limit).
+  - FUN_101630e0, first in the UI pass: the panel (no blending, opaque), then up to 37 lines at x 310, y 14 i - off,
+    colour 0x80808080, leading spaces centring. Ours: client/credits.rs, drawn after the name plates and under every
+    window in both UIs (the modern UI's font at the vertical scale), and not dimmed by op 0x51's 2D level (UiBatch
+    set_unleveled): the event fades the windows out with it before the roll *(inf: its own quads and colours
+    ignore that level, or retail's roll would not show)*. Cinema mode (FUN_101177d0), which the event is in, trims
+    only the window loop, so the roll is drawn there too. The modern UI's TrueType face takes the font's Latin row as
+    Unicode (0x85 xx is Latin-1 xx + 0x21: 0x85C8 e acute, 0x85D5 o umlaut; 0x87C8 the (c)), seen in the roll's names.
+- Op 0x59 subs 7 / 8 (FUN_1008a790 -> vt+0x22c FUN_10082370): model +0xa8 = val (the event actor's val@2, or actor@2's
+  val@6). The getter vt+0x230 has two callers, the actor update (0x100a5cf8 -> FUN_1018b9a0) and the draw (0x100cb8cb
+  -> FUN_1018b9e0 / FUN_1018ba20), both passing mode (+0xa8 == 0): set, the actor takes the scenery's light, colour and
+  ambient instead of the actors'. Scheduler op 0xc1 writes the same field (actor 1 through its dolls, FUN_10062770).
+  Users: sub 8 seven times in zone 72 event 0x7d, all resetting to 0; 0xc1 none. Ours: Actor.bg_lit, pose header bit
+  0x10000, lit_actor's select *(inf: a rebuilt model keeps the flag; retail's new object starts at 0)*.
+- Op 0xac sub 0: the event actor's server status +0x16c = val@2. Sub 4: actor@2's +0x13c |= val@6 & 3 (cleared only by
+  the entity reset): bit 0 makes 0x00E skip its position (mask bit 0, 0x1009b9f3); at the event end (FUN_100ae3f0) an
+  entity with +0x138 bit 31 (op 0xac 2) takes +0x16c = +0x170 = +0x174 (its event status) and is reseated only with
+  bit 0. Bit 1 has no reader. The 4 sites (zone 280) write 0.
+- Op 0x9c (FUN_100ba100): L = DAT_10456a28 +8 (0 ja, 1 en, 2 de, 3 fr); with +0x18 bit 7 (set by current retail's
+  launcher) de / fr count as en; then 1 -> 2, 2 -> 3, 3 -> 4, else 1. 85 sites in 20 zones.
+- Ops 0x60 0 / 1 (+0x124 bit 30) and 0x74 (bit 31): s2c 0x039 (FUN_1009dd20, 0x1009de81) and 0x03A (FUN_1009d9d0,
+  0x1009daf7) drop a scheduler naming either actor with the bit; the event end clears both (0x100ae5ad).
+- Op 0x63: waits while the event actor's +0x1bc is not 0, then +0x1c0 = val@1 and +0x1bc = 9; FUN_1008b460 then sets
+  the emote motion set (FUN_100d1c30: model +0x8a0 = val below 0x40, kinds 0..2 / 6 / 7), loads the race's upper file
+  + set and the skirt's (FUN_100d1c80, tables 0x1035d7fc / 0x1035d80e) and plays `emot`. Op 0x9b waits while +0x1bc is
+  not 0.
+- Op 0xaf subs 0 / 1: set@2 / @6 / @4 = ftol of the game camera's (DAT_104568fc +0x50) eye +0x44 / +0x48 / +0x4c
+  (0) or target +0x50 / +0x54 / +0x58 (1), plain world units; other subs stall.
+- Op 0xb2 sub 1: on once the Delivery Box send UI (DAT_10578198) exists and FUN_1012f100(0) allows it (no blocking
+  window, not healing; post::can_open).
+- Ops 0x2c / 0x2d / 0x51 (FUN_100b4c20 / 4f10 / 5000): only when both actors resolve with +0x120 bit 9, which means the
+  model object exists, not that its files are in; ours tests it as ops 0x45 / 0x55 do. The MODLOG reason for leaving
+  them (background model loading) was wrong.
+- Op 0xab subs 0x14..0x18 set bits 4..5, 6, 7, 0 and 1 of DAT_1047d6a8[ActIndex] (also set by 0x00E @0x28 bits 19..20
+  and @0x20 bits 17, 18, 11, 12). FUN_100c1190 copies them into the message's fields; the English expander
+  FUN_100be760 (also German and French while +0x18 bit 7 is set) reads only bits 2 and 3 (our 0x00E name flags), and
+  the rest feed only the German (FUN_100bf3e0) and French (FUN_100c0500) grammar. No event uses the subs, so they
+  stay unread.
+- Update op 0x46 (0x1004b6e8): the clone's frame is euler x the camera object's +0x294 (FUN_10015240), which
+  FUN_10015120 sets to the rigid inverse (FUN_100283c0) of the LookAt view (FUN_10021c10 -> FUN_102d8019), with the
+  translation cleared: the inverse view rotation. Ours took c10. Math slot +0x20 is a thunk to +0x24, so 0x33 and 0x46
+  multiply the same way.
+- Scheduler ops never present in any shipped scheduler (the scheduler audit's census): 0x06, 0x11..0x14, 0x1a, 0x1b /
+  0x1c, 0x58, 0x82 / 0x83, 0x87, 0x9c / 0x9d, 0xae, 0xbb, 0xc2, and 0x81 in a root event scheduler. Nothing can run them.
+
+## Ro'Maeve's spring in an event area: the sub-area trigger (2026-11-15)
+
+- User report, with retail footage: Yve'noile's scene in the Shrine of Ru'Avitau (zone 178 event 53, params 917 1408
+  1550) shows Ro'Maeve (op 0x34 #122) with a hole in the floor where the spring is, and violet stars and a violet band
+  around Yve'noile when she appears.
+- Ro'Maeve's scene (DAT 222) places 61 `id_*` names whose MMBs are 64-byte stubs: a bounding box and 0 pieces.
+  `id_f_a01..d01` (mirrored) are the spring's ring and horns, `id_cath_min` / `id_cath_hnd` the cathedral's spire and
+  hands, plus `id_m_*`, `id_room_p1` / `p2` and others. A scan of all 72,377 MMBs in the install found no other copy
+  of any of them, and retail's MMB loader (FUN_1016fcd0: version > 1 takes the piece count) draws nothing for 0 pieces.
+  They stand in for sub-area geometry: RID records `m3e0` (param 518, two boxes over the centre), `m3e1` (522) and
+  `m3e2` (523). Sub-area 518 (file 618) holds the spring's ring and horns, the arch and the cathedral front.
+- The per-frame trigger (FUN_10014390's caller, current decompile): while the zone renderer is up, the player actor's
+  position (vtable +0x1bc) -> FUN_10181540 -> FUN_10178a20(1, id). There is no event-area check: it runs against the
+  scene shown, an event's area too. In this event our actor's position falls inside 518's trigger, so retail loads
+  518 with the area.
+- Ours took only an event's op 0x75 requests while an area showed (an inference, now dropped). The trigger now runs
+  there too (client/mod.rs update_sub_area), and only an unload an event asks for (FUN_10178900) sends no 0x0F2
+  (subarea::Step::Unload carries it).
+- Live (Lnxcsfix, the event above): 518 loads with the area; the spring's ring and horns, the arch, the cathedral spire
+  and the honeycomb gate in the near rim match the retail footage at the same camera.
+
+## Effects: a burst's parent belongs to one update; an event area keeps the event's effects (2026-11-15)
+
+- The violet stars: Ru'Avitau's zone sparkles `d_be/effe/z_wa/3i01` (argb a880b2, violet) run as a generator
+  resource that a zone element E bursts (emission op 0x3c). Ours kept E as the instance's parent for good
+  (Effects::emit_once). Once E died its slot went to an element on Yve'noile, and every later emission's op 0x45 copied
+  that element's frame and actors: the zone's sparkles spread around her and over the room. Retail passes the parent
+  as an argument of that one update (FUN_100496f0; the per-frame task passes 0, 0x1005425e). Now emit_once puts the
+  instance's parent back after the update, for scheduler op 0x3f's morph clone too (test
+  morph_static_world_in_place checks the emission and no kept parent).
+- Op 0x34 / 0x35: Effects::switch_zone killed every instance and task, as for a zone change. Retail's scene swap
+  (FUN_1017b1e0 -> FUN_100446a0) removes the clones of the old scene's generators. Ours (Effects::load_area,
+  switch_zone(l, true)) now kills the instances of the old zone's and sub-area's libraries and the Zone / SubArea /
+  Weather owners, the old scene's tasks, its weathers, wading and footstep folder; the event's tasks and effects go on.
+  *(inf: what a model free (FUN_10091150) does to the effects on that actor is not traced.)*
+- Live: Yve'noile's appearance shows green-white sparkles and a white glow, no violet, as in the footage.
+- The footage's yellow-green orb in the spring is not the cutscene's: triangulated from 20 frames against kn05's
+  camera it is one fixed point (-0.66, -30.54, 63.2), 5 cm residual, 1.2 m above where the player's thread
+  (event_ffff at 0a6b: op 0x92, `actor_fade self #0 #1`, `set_pos_dir` (-0.589, -29.324, 63.431)) puts the player,
+  faded out. The recording's character wields Excalibur 119 III; its model file (Mithra main 545: 65916) has `!in1`
+  starting `60mt/aura` fr00 (flame) and gp00 (sparkles, argb 808038): the orb, drawn on the invisible player.
+  Model effects ignore an actor's alpha (ours too); before the area swap above, ours killed the aura at op 0x34.
+  Not seen live: the test character cannot wield it (a weapon look set by GM command is undone at the zone-in that
+  `!in?` waits for).
+- The footage reads neutral grey in Ro'Maeve, ours blue-grey: the test and user configs have `grading` 3 (Settings'
+  Cool colour grading, ours: warmth -0.035 in the scaling pass), about -9 red / +9 blue. The lighting itself
+  (logged live: fog and clear 0.282 at 4:00 in rain, screen multiply, blur and flash neutral) matches the footage.
+- The area swap also clears op 0xc0's zone clock and op 0xc3's yaw (a scene's fields).
+- s2c 0x00E's log line now prints the entity position.
+
+## TODO later: stale effect handles and the inferred notes (2026-11-15)
+
+- User, after the Ru'Avitau cutscene showed bugs the opcode audit missed: mark these for later.
+- Stale handles in fx: elements and instances are referred to by slot index with no generation check
+  (`parent_elem`, `driven` and the like), so a reused slot hands a dead owner's role to another effect (the violet
+  stars, "Effects: a burst's parent belongs to one update"). Add a generation check to every such handle.
+- The `*(inf)*` notes in this file (683 of them): each is a guess that may steer code. Check each against the
+  decompile, subsystem by subsystem, and fix or confirm it (the event-area sub-area rule was one, and wrong: "Ro'Maeve's
+  spring in an event area: the sub-area trigger").
+
+## Bursts: a burst-only generator stops again after each burst (2026-11-16)
+
+- Found while chasing a user report (an effect on Nine kept flashing until a relog). Effect audit fixes 1 cleared a
+  burst resource's stop before each emission-op-0x3c / end-op-1 burst (retail never soft-stops a resource that runs
+  only for bursts). But ours also updates that instance every frame, and retail has no per-frame task for it: it emits
+  only when burst (MODLOG "Emission op 0x3c ... run the named generator resource ... once with the new element as
+  parent"; the per-frame generator task passes parent 0). Left un-stopped, ours emitted on its own interval between
+  bursts, and its elements kept it alive, so it ran until the zone changed.
+- Seen: Temper (file 2920) `stri/tog1` / `tog2` elements burst `gp03`; after 600 ticks the pre-audit build and the fix
+  have no `gp03` left, the audit build still emits it (81 against 5 elements over the run; 62 with the fix, as every
+  burst now emits).
+- Now `burst` stops the instance again after the burst's emission when it is the burst-only resource (owned by an
+  element), as well as after an end burst or the first one.
+
+## A changed look: the old parts' effects go, `!in?` runs again (2026-11-16)
+
+- User report: Excalibur's aura (main 545, Mithra file 65916: `!in1` -> `auon` -> the `lop0` loop of `gp00` / `fr00`)
+  stayed when the sword was taken off and did not come back when it was put on again, until a relog.
+- Retail rebuilds an actor whose look changes (FUN_10092900; MODLOG "A changed look without the blink"). The new
+  drawobj starts with +0x840 bit 7 clear, so FUN_100973f0's next FUN_100cf060 runs `!in?` again; only FUN_100cf060 sets
+  the bit and only FUN_100cf0b0 (`!kl?`) clears it. What the old model's files started on the actor goes with it.
+- Ours keeps the actor through a look change (no blink, the user's choice) and never did that part: the old
+  weapon's `!in1` loop ran on, and the equip state's `in_on` stayed set, so the new weapon got no `!in?`.
+- Now when an actor's model files change (Effects::model_generators), the tasks and instances that the old model's
+  files started on it go, and its equip state resets (reset_equip), so `!in?` and the weapon glows run for the new
+  model on the next frame. Effects from other files (spells on it) stay. Test fx::equip::tests::look_change_restarts_in.
+- Correction (same day): "the old model's files" was every file of the look, the race files too, and a cast's
+  schedulers run from those (`shbk` / `ssbk`, Mithra file 23176). A gear swap mid-cast (precast / midcast sets) then
+  killed the cast and the spell's `main` stopped before its effects: Fire I..IV showed nothing or only part. Now only
+  what the old look's equipment part files started, and what files that left the look started, goes; the race and
+  body files' tasks run on *(inferred: retail spells survive gear swaps)*. fx-shot's stand-in actors count as
+  ready again, so it can run spells (category 4).
+
+## Title flyover: the movie zone's effects and their sounds (2026-11-16)
+
+- User report: retail's title screen has sound effects (voices, it seemed); ours had none.
+- File 23's schedulers hold no sound op (only 0x00 / 0x01 / 0x04 / 0x0e / 0x0f / 0x10 / 0x3b / 0x3d / 0x3e / 0x73 /
+  0x7b..0x7e / 0xaf). Op 0x7b is FUN_1018b3a0(zone), the scene loader op 0x34 uses too (FUN_10178df0: file
+  zone + 100), so a title movie loads its zone's whole scene: the auto-start generators run, their sound elements
+  play (birds, wind, water, crowds). The world's ambient loop is not one of them: it plays only in the world
+  (world+0x20 is 0 elsewhere).
+- Ours: flyover.rs drew only the geometry. Now FlyoverData loads the zone's effect libraries
+  (select::FxLibs::load_zone) and the Flyover runs them as the select and creator scenes do (select::LobbyFx): ticked
+  on the movie clock (op 0x7d sets the minute), op 0x7c switching the weather's generators, drawn over the scene under
+  the fades and blur, their sounds sent to the sound thread with voice bases TITLE_VOICES / NATION_VOICES (the
+  creator's nation step flyovers, files 24..26, load the same way). Voices pause while their screen is not up and
+  stop when a movie ends or the world starts.
+- Checked: the title run's mov6 (Beaucedine Glacier, zone 111) starts 49 of its 163 generators and plays effect
+  voice 0x3000001 (sound 2088); its level follows the camera's distance, as the world's do.
+## Two-frame motion chunks: retail's 30 fps step (2026-11-14)
+
+- FUN_1001a8e0 (a queue entry's frame step): a chunk of 2 frames whose speed x 0.5 is 0.5 steps a whole frame per
+  call (frame += 1.0), every other chunk ticks x speed x 0.5 x rate. Retail calls it once a drawn frame at its 30 fps,
+  so such a loop swaps its two keys every 2 ticks: the wings of bees and hornets (model 272 / 273, skeleton k_be,
+  `idl1`: 2 frames, speed 1, 12 tracks; `idl0` the body, 12 frames at 0.3) beat at 15 Hz.
+- Ours called it once a rendered frame: at 144 fps the keys swapped every frame and read as two still, ghosted
+  wings (user: Temple Bees and Davoi Hornets "don't flap"), and the beat changed with the frame rate. Now the whole
+  step comes every 2 ticks of elapsed time (motionq Entry::flip) *(inf: retail's frame is 2 ticks at 30 fps)*. Test
+  two_frame_chunk_steps_every_two_ticks.
+## Our engage is never held (2026-11-14)
+
+- Retail copies the server status (+0x16c) into the applied one (+0x170) only when the entity's busy counter (+0x11c)
+  is 0 (FUN_1008e9a0 -> FUN_1008b460, asm 0x1008b4a6: ECX = entity +0xa0, the actor; FUN_10083320 reads its
+  entity's +0x11c), unless actor +0x100 (Conflict teams only, FUN_1008e290: +0x1ff in 2..99). Every hold a monster
+  puts on its target raises that counter: op 0x56 / 0x20 through FUN_100601f0 -> FUN_10083300 -> FUN_100a4140. An
+  Orcish Farkiller's shot (category 11, effect 3916) holds its target 160 ticks (op 0x56), its swings 48 (op 0x20),
+  so being shot at kept our engage parked for seconds, and our first rounds landed before the draw (user, Davoi: "the
+  weapons haven't been drawn yet").
+- Ours: the 0x037 handler applies our own idle -> engaged change at once whatever holds us; every other change (the
+  disengage, death) still waits for the holds *(ours, on the user's word against the decompile's parking)*. The log
+  prints "status N parked (was M): <holds>" when ours is held (combat::held_why, Effects::held_by). Live (Lnxcsfix,
+  Davoi, an Orcish Farkiller's shot holding her until about 43.05 s): /attack at 42.08, engaged and drawing at 42.42,
+  the first round at 45.19 with its swing.
+## Event scenes: data/weat, the first-folder fallback, the default env (2026-11-15)
+
+- Some event-only scenes keep their envs one folder deeper, under `<zone>/data/weat/<tag>` (516 and 517, the Rise of
+  the Zilart ending, event 7 of zone 163; ordinary zones have `<zone>/weat/<tag>`). Our parser read that `data` folder
+  as a scenery area named "data", so the scene had no env of its own and drew unlit: 516's hills black against a
+  plain blue clear colour. Now `data` is the scene's own.
+- FUN_1018a7a0 picks the weather folder: the asked weather, else `suny`, else (FUN_10072290 on `weat`) the env keys
+  of the whole `weat` folder, nearest at or before the time; with every key at 0000 that is the first folder. 516
+  has only `rain` / `thdr` (and the event asks for weather 2 then), so it takes rain: dark, fog to about 290.
+  ZoneWeather::first.
+- A scene with no `weat` folder at all is lit by DAT_1065ca58 as FUN_1018b170 fills it (FUN_101880c0's payload
+  without a weather object): grey 0x80 light and fog, fog 80..100, a black clear colour, draw distance 100, no dome
+  (Env::retail_default, ZoneWeather::retail_default); ours drew such a scene unlit. zone-shot takes it too.
+- Test event_scene_weather. Live (Lnxcsfix, event 7 replayed in zone 163): 516's storm plain textured and lit, 517
+  clean.
+## Zone schedulers run through the event runner (2026-11-15)
+
+- Event op 0x2d (zone_sched) / 0x51 (its stop) start and stop a scheduler of the zone's (or event area's) effect file
+  by 4cc, the same CMoSchedularTask as op 0x45 (sched_file). Ours started only its effects side, so its camera paths
+  (op 0x04), fades (0x0f / 0x51) and crossfades (0x10), which the event runner plays for 0x45's, never ran: in the
+  Rise of the Zilart ending (zone 163 event 7) the event-area scenes 516 (`kon0`, `lat0`), 517 (`mel0`) and 519
+  (`sha0`) kept the last shot's camera, pointing at nothing (the "floating knights" were the cave scene's actors
+  seen from that stale camera). Now 0x2d / 0x51 go through the same Scheduler / SchedulerStop path as 0x45 / 0x52.
+- Live (Lnxcsfix, event 7 replayed; compared with the user's retail recording): the Ark and the Zilart crowd, the
+  band of light over the purple plain, the Ark breaking, the 519 forest ruins all show as retail.
+- Not done: scheduler op 0x7c (FUN_101874f0: the zone env's weather to the 4cc @8 over u16 @6) and op 0x7d
+  (FUN_1018c210: the clock), which `kon0` uses: retail's first 516 shot has a lighter purple sky.
+## Effect ZBIAS as Wine's polygon offset (2026-11-15)
+
+- D3DRS_ZBIAS 15 for the effect draw (FUN_10045950; FUN_1017c840 for MMB elements via FUN_101705e0(DAT_10616f78))
+  was ours as a fixed -7.5e-5 in NDC depth (to_clip, "as Wine maps it", 2026-10-22). With near 0.1 that is no small
+  bias far away: depth 1 - 0.1 / z moves a surface at 600 to look like 414. Wine's d3d8 sets
+  WINED3D_LEGACY_DEPTH_BIAS and draws ZBIAS as glPolygonOffset(-bias, -bias): a slope term plus units of the depth
+  buffer's resolution. Ours is now the pipelines' depth bias (render/effects.rs ZBIAS: constant -15, slope -15),
+  same semantics in Vulkan, on every effect pipeline but the CMoDist fan (vs_dist, which draws after ZBIAS 0).
+- Seen in the Zilart ending (zone 163 event 7, area 519, scheduler `sha0`): the cloud domes cld1 / cld2 (MMB
+  `suny`, 0x2440004 camera-relative, scale (8, 5, 8) / (7, 5, 7)) were pulled in front of the tree rows (420..780
+  away; the dome's cap is about 150 high there), so the trees showed through the clouds. The user's retail
+  recording has the trees solid in front of the clouds and the explosion glow; ours does too now (offscreen and
+  live). The same dome is every zone's weather cloud layer (e.g. Konschtat `weat/suny/cld1`, (9, 7, 9)).
+- The case the old bias was for (zone 101's gate tunnel at night, the `gin1` lamplight MMB over the walls) does not
+  z-fight with the polygon offset; the far lamp glows (MMB `ltla`, 40..60 away) now sit partly behind their lamp
+  housings, which the old bias pulled them in front of *(not compared with retail)*.
+## Event crossfade: the captured frame has the effects (2026-11-15)
+
+- Op 0x10's crossfade (FUN_1005f020) fades from the last frame as drawn. Ours redraws that frame offscreen from its
+  camera (client/mod.rs cross_capture) and drew only the scenery and actors, so whatever was an effect blinked out
+  at each crossfade cut: in the Zilart ending's Qufim shot (area 126, camera paths cp02 -> cp03) the whole sea,
+  which is effect meshes. The capture now draws the effects too (their GPU state is still last frame's).
+## Face-the-motion elements: any motion counts (2026-11-14)
+
+- FUN_10044350 orientation modes 1 / 2 (flags >> 6 & 7) turn the element by the atan2s of its position less its last
+  one, with no minimum length. Stoneskin's spikes (effect 2854, `g000` / `g001`: template flags 0x1242, mode 1) sit
+  on a ring (op 0x1f, 6 by count) with a 0.611 rad tilt (op 0x09) and a 1e-6 outward drift (op 0x08) that only gives
+  each its heading, so the tilt points out from the centre. Ours skipped the turn below 1e-12 squared, so every
+  spike tilted the same way (user: "supposed to all be tilted out from the center"). Now any motion turns it; none
+  leaves it as retail's atan2(0, 0) does.
+## Zone-in: no steps before the settle, and the settle snaps as FUN_1017a400 (2026-11-15)
+
+- Reported: walking through the door from Ve'Lugannon Palace (177) into Ru'Aun Gardens (130) left the user floating
+  under the island. LSB placed us at (145.6, -25.66, 404.5); the road there is at -24.0. The key was still held, and
+  the steps ran on the new zone during the half second before it settled (falls were held, input steps were not),
+  taking us to -23.0; the settle then looked only from 0.5 above the feet down (a step's floor ray), missed the road
+  1.0 above and took the next face down, 3.08: the island's underside, 26 below.
+- Now no input step runs while the zone-in is unsettled, and Ground::settle is FUN_1017a400's snap (from 2 above the
+  feet down 50, else from 2 below up 15; nearest to the start), the ray retail puts entities on the floor with, then
+  the nearest face. Test ruaun_zone_in_settles_on_the_road (-25.66, -24.5 and -23.0 all land on -24.0). The select
+  screen ring (select.rs, settle from -1) renders the same.
+
+## Grammar 0x81 / 0x83 and the choice mask's sign (2026-11-17)
+
+Addresses are 30261006_0's.
+- 0x81 / 0x83 (FUN_100bdc50 cases 0 / 2): a table byte by FUN_100bdb80 (0x40 | k: slot k's byte; low 6 bits 1:
+  (b1 & 0x7f) ^ (b2 << 7) as a byte; else 0xff), then entry num[n] by FUN_100bdbe0. Nothing is appended when the
+  lookup gives no string.
+  - 0x83 FUN_1022ec10: mission log table (objects at 0x10667a90 + t * 0x94, t < 0xf, else none) entry n, its leading
+    '_'s skipped. The 15 tables are language slots 0x49..0x4c, 0x4d..0x51, 0x55..0x57, 0x52..0x54 (FUN_1022d7a0):
+    dat/journal.rs MISSION_FILES in that order.
+  - 0x81 FUN_1022f330: quest area table (0x10668380 + t * 0x94; slots 0x40..0x48, 0x58, 0x59, FUN_1022f3d0) entry n,
+    one leading '+' skipped (no bound on t). dat/journal.rs QUEST_FILES.
+  - Both index the file's entries in order (FUN_1022edf0: none past the count).
+- First seen in Beaucedine Glacier [S]'s Regal Pawprints (event 0x17, message 8608 "Attempt which objective?"): row
+  1 mission log 7 num[0], row 2 log 8 (WotG) num[1], rows 3..8 quest area 7 (Crystal War) num[2..7]; the script
+  hides each row whose param is 0. LSB's params [0, 22] show "None." and "Dungeons and Dancers.". Ours printed the
+  rows as "." before.
+- FUN_100b0960 shifts the choice's hide mask as a signed int (`(int)mask >> 1`), so past row 32 its sign bit hides
+  (or shows) every further row. Ours shifted a u32: rows 33 and on always showed (the battlefield menus' trailing
+  "." rows, e.g. Horlais Peak 7611).
+
+## InvisFlag cleared under a held actor (2026-11-17)
+
+- FUN_100973f0 gates only two writes on the hold count (+0x84 == 0): the InvisFlag colour (0x27808080 / 0x00808080
+  with +0x128 bit 7 set) and the last step (a colour with alpha left back to 0x80808080). With InvisFlag clear, the
+  bit 7 check (cleared, colour 0x80808080) runs before the hold test, so the flag's colour is undone even while a
+  task holds the actor.
+- Ours returned for all of it while held. A weapon aura's loop (Excalibur, file 65916: `!in1` -> `auon` -> `lop0`,
+  never ending) starts again the moment InvisFlag clears and holds the actor, so `!hide` off left Nine translucent
+  for good (user, 2026-11-17). wepfx::colour now follows the order above.
+- Seen live: Lnxcsfix as RDM 99 with Excalibur 119 III: `!hide` translucent (after a bot's Cure tasks on her ended),
+  `!hide` again solid with the aura, `!hide status` 0.
+
+## Mode-0 generators keep their matrix: Nightmare Scythe's discs (2026-11-17)
+
+- User report: Nightmare Scythe was missing its two spinning discs that slice through the target.
+- Mithra file 37131 (37067 + animation 64), its `main`:
+  - At t95, op 0x02 starts `g0a0`..`g0a2` (attach 0xc402; elements of life 15; update op 0x33).
+  - Each of their elements clones `g0b0`..`g0b2` (emission op 0x53).
+  - The `g0b` clones draw D3m 4441, a quad textured with the green crescent blades (texture 4441, 256x128).
+  - They run along the Vtx `line` with keyframe `k004` (emission op 0x54, update op 0x34), each disc living 90 ticks.
+- FUN_10052eb0 (the per-frame generator attach) returns at once for attach mode 0, so the matrix stays.
+- Ours reset a mode-0 instance's matrix to none every frame. That was written for zone generators, before element
+  sub-clones existed.
+  - An element sub-clone (attach `&= 0xfffefff0`: mode 0) kept the matrix ops 0x53 / 0x6a gave it only while the
+    driving element re-placed it every frame (update op 0x33 / 0x46).
+  - Once the parent element died, or at once without those ops, the clone's discs were drawn about the world origin.
+- Ours now leaves a mode-0 instance's matrix as it is. Test fx::tasks::tests::element_clone_keeps_its_matrix.
+- Seen offscreen (`fx-shot 232 --file 37131`): the two discs come in above the target, grow and slice down through it
+  (t108..t174), where before nothing was drawn there.
+
+## A freed skill file takes its effects: Nightmare Scythe's red sphere (2026-11-17)
+
+- User report: Nightmare Scythe's red sphere (file 37131 `g000`, endless, flag 0x1000) stays after the weapon skill.
+  `st44`'s op 0x1e stop misses it in retail too ("Dolls go with their actor"; checked again):
+  - op 0x1e passes the child task's actors (0x10058d5f: FUN_10056c30 / FUN_10056c40), and op 0x03 starts the child
+    on the undolled pair;
+  - FUN_10052a50 compares the clone's own actor 2 (clone +0x30, FUN_1003a8c0, asm 0x10052b38..51), the doll since
+    op 0x23 moved it (FUN_10061da0).
+  - That note's conclusion, that retail ends `g000` only with the target, was wrong.
+- What ends it is the skill file going:
+  - The skill files sit on the caster's model list (+0x7e4) as 0x24-byte entries (FUN_100d4410; class FUN_1001b710,
+    vtable 0x1032a2e0) holding the file's resource at +0x1c, referenced when used (FUN_1001b7b0 -> FUN_10071e90).
+  - At `main`'s end, FUN_100d44b0(caster, 6) unlinks every kind-6 entry and deletes it (vtable +0x18(1)).
+  - The destructor (FUN_1001b760 -> FUN_1001b7d0) releases the resource (FUN_10071ec0) and calls FUN_10073b20, which
+    deletes the file's resource tree once its count is 0.
+  - A clone references only its template (the +0x28 walk of FUN_10071e90 / FUN_10071ec0 stops at a node whose
+    handle is itself), so live clones do not keep the file.
+  - So the clones of its generators go with it *(inf: the tree's delete takes the clones of its templates)*.
+- Ours: Effects::release_file kills every live instance and task of the file. The client calls it for each dropped
+  skill file that no other actor holds (extra list or skill_want). Test fx::tasks::tests::released_skill_file_takes_its_clones.
+- Seen live (Lnxcsfix, Mithra DRK 75, Mythril Scythe, a Snipper in Valkurm Dunes): the sphere goes at +5.4 s, when
+  "skill files dropped" is logged; before, it sat by the corpse until the despawn about 15 s later.

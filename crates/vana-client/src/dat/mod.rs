@@ -200,6 +200,7 @@ pub mod collision;
 pub mod cursor;
 pub mod dancer;
 pub mod dialog;
+pub mod effect;
 pub mod event;
 pub mod event_ops;
 pub mod font;

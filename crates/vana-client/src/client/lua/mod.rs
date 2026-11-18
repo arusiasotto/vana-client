@@ -296,8 +296,8 @@ impl Looks<'_> {
 pub struct Host {
     vms: Vec<Vm>,
     started: bool,
-    /// `/lua hide`: every mod's HUD, windows and world drawing hidden (they keep running).
-    all_hidden: bool,
+    /// `/lua hide`: every mod's HUD, windows and world drawing hidden (they keep running); shared with a parked stand-in.
+    all_hidden: std::rc::Rc<std::cell::Cell<bool>>,
     /// The map the mods' HUD maps draw (opened and followed as the minimap's).
     map: std::cell::RefCell<Option<super::map::Overlay>>,
     /// Events raised by the client since the last mod phase.
@@ -324,6 +324,9 @@ pub struct Host {
     canvases: Vec<CanvasAt>,
     /// The canvas a HUD drag is over now: (mod, window, canvas, the dragged element).
     drag_over: Option<(String, String, String, String)>,
+    /// A stand-in left in `World::lua` while the host is out running the mods (`Host::park`): the host's mod states, read
+    /// live by the World's queries (focus, typing, modal) during the call.
+    parked: Vec<std::rc::Rc<std::cell::RefCell<vm::ModState>>>,
     /// `/lua watch`: mods reloaded when their files are saved.
     watch: Option<Watch>,
     /// The keys and mouse, shared with every mod (input.held, input.mouse).
@@ -827,6 +830,8 @@ impl Host {
         self.filters_dirty = true;
         lend_opt(&vm, w, |vm| vm.emit("unload", ()));
         save(&vm, w);
+        // A parked stand-in may still hold its state: its windows are gone with it.
+        vm.st.borrow_mut().gone = true;
         // The keys it held for the game come up.
         let held = std::mem::take(&mut vm.st.borrow_mut().keys_down);
         self.synth.extend(held.into_iter().map(|key| input::Synth {
@@ -1036,9 +1041,10 @@ impl Host {
             }
             // Every mod's drawing hidden or shown again (hideui); the mods keep running.
             "hide" | "show" => {
-                self.all_hidden = args[0] == "hide";
+                self.all_hidden.set(args[0] == "hide");
                 out.push((
-                    if self.all_hidden { "Mods hidden (/lua show brings them back)." } else { "Mods shown." }.into(),
+                    if self.all_hidden.get() { "Mods hidden (/lua show brings them back)." } else { "Mods shown." }
+                        .into(),
                     super::WHITE,
                 ));
             }
@@ -1265,7 +1271,7 @@ pub(super) fn frame(w: &mut World, gu: Option<&super::game_ui::GameUi>) {
     if !w.lua.opt_owners.is_empty() {
         release_options(w);
     }
-    let mut host = std::mem::take(&mut w.lua);
+    let mut host = Host::park(&mut w.lua);
     host.gu = gu.map(|g| g as *const _);
     if !host.started {
         // Mods start with our character's state in: in a zone, our vitals known (or 5 s on, whatever came).
@@ -1776,7 +1782,7 @@ fn apply(w: &mut World, gu: Option<&super::game_ui::GameUi>, op: Op) {
 
 /// The mods' world shapes as vertices for the renderer: [line pairs, triangles].
 pub(super) fn world_shapes(w: &World) -> [Vec<crate::render::LineVertex>; 2] {
-    if w.lua.started && !w.lua.all_hidden { draw::vertices(w) } else { [Vec::new(), Vec::new()] }
+    if w.lua.started && !w.lua.all_hidden.get() { draw::vertices(w) } else { [Vec::new(), Vec::new()] }
 }
 
 /// The mods' HUD elements, under the windows (world_hud).
@@ -1784,7 +1790,7 @@ pub(super) fn draw_hud(gu: &mut super::game_ui::GameUi, w: &World) {
     if !w.modern {
         w.lua.set_modern_scale(None);
     }
-    if w.lua.started && !w.lua.all_hidden {
+    if w.lua.started && !w.lua.all_hidden.get() {
         draw::draw_overlay(gu, w);
         hud::draw(gu, w);
     } else {
@@ -1828,7 +1834,7 @@ impl Host {
     /// mod's) and when they were given; None while the panel is hidden or has no such window.
     pub(in crate::client) fn timers_sections(&self) -> [Option<(Vec<window::TimerGroup>, std::time::Instant)>; 3] {
         TIMERS_PANELS.map(|p| {
-            if self.all_hidden || self.hides(p) {
+            if self.all_hidden.get() || self.hides(p) {
                 return None;
             }
             // Read in place (edge_panel copies the window).
@@ -1866,17 +1872,13 @@ impl Host {
 
     /// Whether an open edge window stands in for a built-in panel (edge_panel, without copying the window).
     pub(in crate::client) fn has_edge_panel(&self, panel: &str) -> bool {
-        !self.all_hidden
-            && self
-                .vms
-                .iter()
-                .filter(|v| v.suspended.is_none())
-                .any(|v| v.st.borrow().windows.iter().any(|w| w.open && w.edge && w.panel.as_deref() == Some(panel)))
+        !self.all_hidden.get()
+            && self.running().any(|s| s.windows.iter().any(|w| w.open && w.edge && w.panel.as_deref() == Some(panel)))
     }
 
     /// The open edge window standing in for a built-in panel (the newest mod's).
     pub(in crate::client) fn edge_panel(&self, panel: &str) -> Option<window::Window> {
-        if self.all_hidden {
+        if self.all_hidden.get() {
             return None;
         }
         self.vms.iter().rev().filter(|v| v.suspended.is_none()).find_map(|v| {
@@ -1903,7 +1905,7 @@ impl Host {
 
     /// Whether the mods' HUD draws: they run and `/lua hide` is off.
     pub(in crate::client) fn hud_shown(&self) -> bool {
-        self.started && !self.all_hidden
+        self.started && !self.all_hidden.get()
     }
 
     /// The actors the mods' HUD portraits show (hud.portrait), first by layer, each once (as its first element asks).
@@ -2382,6 +2384,48 @@ mod tests {
         lua.globals().set("TEST", t)
     }
 
+    /// The stand-in parked in `World::lua` while the host runs the mods answers the World's queries from the mods'
+    /// states as they are now (the macro gate read by game.info().macros from a pad filter). A throwaway mod: the
+    /// host saves its storage when it drops.
+    #[test]
+    fn parked_host_reads_windows_live() {
+        let vm = Vm::new(
+            manifest::Manifest { id: "t".into(), ..Default::default() },
+            PathBuf::from("."),
+            vm::Source::Dir(PathBuf::from(".")),
+        )
+        .unwrap();
+        let mut win = window::Window::new("w");
+        (win.open, win.focus) = (true, true);
+        vm.st.borrow_mut().windows.push(win);
+        let mut slot = Host::default();
+        slot.vms.push(vm);
+        assert!(slot.focused());
+        let host = Host::park(&mut slot);
+        assert!(slot.vms.is_empty() && slot.focused() && host.focused());
+        // Changes made during the call show at once.
+        host.vms[0].st.borrow_mut().windows[0].focus = false;
+        assert!(!slot.focused());
+        host.vms[0].st.borrow_mut().windows[0].focus = true;
+        host.all_hidden.set(true);
+        assert!(!slot.focused() && !slot.typing());
+        host.all_hidden.set(false);
+        host.vms[0].st.borrow_mut().windows[0].modal = true;
+        assert_eq!(slot.modal(), Some((0, "w".to_string())));
+        // A state the mod's own code holds is passed over, not a panic.
+        {
+            let _held = host.vms[0].st.borrow_mut();
+            assert!(!slot.focused() && slot.modal().is_none());
+        }
+        // An unloaded mod's windows go with it.
+        let mut host = host;
+        let st = host.vms[0].st.clone();
+        host.unload(None, 0);
+        assert!(st.borrow().gone && !slot.focused() && slot.modal().is_none());
+        slot = host;
+        assert!(!slot.focused() && slot.parked.is_empty());
+    }
+
     /// Every mod's tests: each assets/mods/<id>/tests/*.lua in a fresh VM of its mod. VANA_MOD_TEST=<id> or
     /// <id>/<file stem> runs only those; every failure is listed.
     #[test]
@@ -2709,7 +2753,7 @@ mod tests {
             )
         );
         assert_eq!((want[1].size, want[1].look.oval, want[1].look.frame_w), ([96.0, 96.0], true, 5.0));
-        host.all_hidden = true;
+        host.all_hidden.set(true);
         assert!(host.portraits_wanted().is_empty());
     }
 
@@ -3465,7 +3509,7 @@ pub(in crate::client) fn filter_battle(
     target: &mut Option<Who>,
     mut lines: Vec<String>,
 ) -> Verdict {
-    let host = std::mem::take(&mut w.lua);
+    let host = Host::park(&mut w.lua);
     let mut verdict = Verdict::Keep;
     for vm in host.vms.iter().filter(|v| v.suspended.is_none()) {
         let funcs: Vec<mlua::Function> =
@@ -3540,7 +3584,7 @@ pub(super) fn filter_typed(w: &mut World, line: &str) -> Option<String> {
     if w.lua.vms.iter().all(|v| v.st.borrow().typed_filters.is_empty()) {
         return Some(line.to_string());
     }
-    let host = std::mem::take(&mut w.lua);
+    let host = Host::park(&mut w.lua);
     let mut line = line.to_string();
     let mut blocked = false;
     for vm in host.vms.iter().filter(|v| v.suspended.is_none()) {
@@ -4033,10 +4077,28 @@ impl Host {
 }
 
 impl Host {
+    /// Moves the host out of `slot` to run the mods (the free `lend` goes the other way: the World to a mod). The
+    /// stand-in left behind shares the mods' states, `/lua hide` and the frame info, so what the World asks it during
+    /// the call (the macro gate, game.info().menu_open, a mod line being typed) is the mods' state now.
+    pub(in crate::client) fn park(slot: &mut Host) -> Host {
+        let host = std::mem::take(slot);
+        slot.parked = host.vms.iter().map(|v| v.st.clone()).collect();
+        slot.all_hidden = host.all_hidden.clone();
+        slot.info = host.info.clone();
+        host
+    }
+
+    /// The running mods' states, in load order: the host's, or a parked stand-in's (live). A state borrowed by the
+    /// mod's own code at this moment is skipped.
+    fn running(&self) -> impl Iterator<Item = std::cell::Ref<'_, vm::ModState>> {
+        let own = self.vms.iter().filter(|v| v.suspended.is_none()).filter_map(|v| v.st.try_borrow().ok());
+        let parked = self.parked.iter().filter_map(|s| s.try_borrow().ok()).filter(|s| !s.suspended && !s.gone);
+        own.chain(parked)
+    }
+
     /// Whether a mod window has the keys.
     pub(super) fn focused(&self) -> bool {
-        !self.all_hidden
-            && self.vms.iter().any(|v| v.suspended.is_none() && v.st.borrow().windows.iter().any(|w| w.open && w.focus))
+        !self.all_hidden.get() && self.running().any(|s| s.windows.iter().any(|w| w.open && w.focus))
     }
 
     /// The loaded mods' ids.
@@ -4046,8 +4108,12 @@ impl Host {
 
     /// The open modal window (vm, id), the last opened when there are several.
     pub(super) fn modal(&self) -> Option<(usize, String)> {
-        self.vms.iter().enumerate().filter(|(_, v)| v.suspended.is_none()).find_map(|(k, v)| {
-            v.st.borrow().windows.iter().rev().find(|w| w.open && w.modal).map(|w| (k, w.id.clone()))
+        // The index is the mod's place in `vms` (a parked stand-in's states are in the same order).
+        let all = self.vms.iter().map(|v| (v.suspended.is_none(), &v.st));
+        let parked = self.parked.iter().map(|s| (true, s));
+        all.chain(parked).enumerate().filter(|(_, (on, _))| *on).find_map(|(k, (_, st))| {
+            let s = st.try_borrow().ok().filter(|s| !s.suspended && !s.gone)?;
+            s.windows.iter().rev().find(|w| w.open && w.modal).map(|w| (k, w.id.clone()))
         })
     }
 
@@ -4177,20 +4243,13 @@ impl Host {
 
     /// Whether a mod window's line is being typed (it takes the text and the keys).
     pub(super) fn typing(&self) -> bool {
-        !self.all_hidden
-            && self.vms.iter().any(|v| {
-                v.suspended.is_none() && v.st.borrow().windows.iter().any(|w| w.open && w.focus && w.takes_text())
-            })
+        !self.all_hidden.get() && self.running().any(|s| s.windows.iter().any(|w| w.open && w.focus && w.takes_text()))
     }
 
     /// The focused window's title and the help under its cursor, for the classic help bar.
     pub(super) fn focused_help(&self) -> Option<(String, String)> {
-        self.vms.iter().filter(|v| v.suspended.is_none()).find_map(|v| {
-            v.st.borrow()
-                .windows
-                .iter()
-                .find(|w| w.open && w.focus)
-                .map(|w| (w.title.clone(), w.help_now().to_string()))
+        self.running().find_map(|s| {
+            s.windows.iter().find(|w| w.open && w.focus).map(|w| (w.title.clone(), w.help_now().to_string()))
         })
     }
 }
@@ -4305,7 +4364,7 @@ impl Host {
     /// The windows `keep` takes, open or not (a closed animated window still folds away).
     pub(super) fn windows_where(&self, keep: impl Fn(&window::Window) -> bool) -> Vec<(String, window::Window)> {
         let mut out = Vec::new();
-        if self.all_hidden {
+        if self.all_hidden.get() {
             return out;
         }
         for vm in self.vms.iter().filter(|v| v.suspended.is_none()) {
@@ -4416,7 +4475,7 @@ impl Host {
 /// centred, or at their anchor kept on screen).
 fn classic_places(w: &World) -> Vec<(usize, String, f32, f32)> {
     let (mut out, mut modal) = (Vec::new(), Vec::new());
-    if w.lua.all_hidden {
+    if w.lua.all_hidden.get() {
         return out;
     }
     let (screen, uk) = {
@@ -4773,7 +4832,7 @@ pub(super) fn packets_in(
     w: &mut World,
     packets: Vec<crate::net::map::session::SubPacket>,
 ) -> Vec<crate::net::map::session::SubPacket> {
-    let host = std::mem::take(&mut w.lua);
+    let host = Host::park(&mut w.lua);
     let mut out = Vec::new();
     let injected: Vec<Vec<u8>> =
         host.vms.iter().flat_map(|v| std::mem::take(&mut v.st.borrow_mut().inject_in)).collect();
@@ -4790,7 +4849,7 @@ pub(super) fn packets_in(
 
 /// A batch about to be sent through the mods' outgoing hooks, then what they injected; what to send.
 pub(super) fn packets_out(w: &mut World, packets: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
-    let host = std::mem::take(&mut w.lua);
+    let host = Host::park(&mut w.lua);
     let injected: Vec<Vec<u8>> =
         host.vms.iter().flat_map(|v| std::mem::take(&mut v.st.borrow_mut().inject_out)).collect();
     let mut out = Vec::new();

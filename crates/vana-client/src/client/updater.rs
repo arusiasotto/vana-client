@@ -30,7 +30,7 @@ pub enum Game {
     Current,
     /// Out of date (the server's version), the files still being checked.
     Behind(String),
-    Available(crate::patch::Plan),
+    Available(Box<crate::patch::Plan>),
     Failed(String),
 }
 
@@ -62,21 +62,59 @@ pub enum Client {
 
 pub struct Status {
     pub game: Game,
+    /// The PlayOnline Viewer kept in config::viewer_dir (None: not asked, no PlayOnline log-in).
+    pub viewer: Option<Game>,
     pub client: Client,
 }
 
 impl Status {
     /// Something to offer.
     pub fn any(&self) -> bool {
-        self.game.offered() || matches!(self.client, Client::Available(_))
+        self.game.offered()
+            || self.viewer.as_ref().is_some_and(Game::offered)
+            || matches!(self.client, Client::Available(_))
     }
 }
 
 pub type Shared = Arc<Mutex<Status>>;
 
-/// Starts both checks in the background.
-pub fn start(root: PathBuf) -> Shared {
-    let s: Shared = Arc::new(Mutex::new(Status { game: Game::Checking, client: Client::Checking }));
+/// The PlayOnline Viewer's check in the background, into `s` (a player who picks PlayOnline after start gets its
+/// row without the other checks running again).
+pub fn start_viewer(s: &Shared) {
+    s.lock().unwrap().viewer = Some(Game::Checking);
+    let v = s.clone();
+    std::thread::spawn(move || {
+        let root = crate::config::viewer_dir();
+        // Out of date or missing: offered at once, the file check sizing it afterwards (patch.ver is written even
+        // when every file is current).
+        let viewer = match crate::patch::viewer_behind(&root) {
+            Ok(Some(server)) => {
+                v.lock().unwrap().viewer = Some(Game::Behind(server.version.clone()));
+                match crate::patch::plan_viewer(&root, server) {
+                    Ok(plan) => Game::Available(Box::new(plan)),
+                    Err(e) => Game::Failed(format!("{e:#}")),
+                }
+            }
+            Ok(None) => Game::Current,
+            Err(e) => Game::Failed(format!("{e:#}")),
+        };
+        match &viewer {
+            Game::Available(p) => {
+                log::info!("update check: PlayOnline Viewer {}: {} files to fetch", p.server.version, p.todo.len())
+            }
+            Game::Failed(e) => log::warn!("update check: PlayOnline Viewer: {e}"),
+            _ => log::info!("update check: PlayOnline Viewer current"),
+        }
+        v.lock().unwrap().viewer = Some(viewer);
+    });
+}
+
+/// Starts the checks in the background; `playonline`: the PlayOnline Viewer's too.
+pub fn start(root: PathBuf, playonline: bool) -> Shared {
+    let s: Shared = Arc::new(Mutex::new(Status { game: Game::Checking, viewer: None, client: Client::Checking }));
+    if playonline {
+        start_viewer(&s);
+    }
     let g = s.clone();
     std::thread::spawn(move || {
         // The button shows as soon as the version says so; the file check sizes it afterwards.
@@ -84,7 +122,7 @@ pub fn start(root: PathBuf) -> Shared {
             Ok(Some(server)) => {
                 g.lock().unwrap().game = Game::Behind(server.version.clone());
                 match crate::patch::plan_against(&root, server) {
-                    Ok(plan) if !plan.todo.is_empty() => Game::Available(plan),
+                    Ok(plan) if !plan.todo.is_empty() => Game::Available(Box::new(plan)),
                     Ok(_) => Game::Current,
                     Err(e) => Game::Failed(format!("{e:#}")),
                 }
@@ -333,13 +371,17 @@ pub struct Out {
 }
 
 const W: f32 = 440.0;
+/// The rows: game files, the PlayOnline Viewer, vana-client.
+const ROWS: usize = 3;
+const UPDATE: usize = ROWS;
+const CLOSE: usize = ROWS + 1;
 
 pub struct UpdateUi {
     status: Shared,
     root: PathBuf,
-    /// Checkboxes: game files, vana-client.
-    pick: [bool; 2],
-    /// 0, 1 the rows; 2 Update; 3 Close.
+    /// Checkboxes, one per row.
+    pick: [bool; ROWS],
+    /// The rows, then Update, then Close.
     cursor: usize,
     job: Option<Arc<Mutex<Job>>>,
     reloaded: bool,
@@ -349,16 +391,16 @@ pub struct UpdateUi {
 
 impl UpdateUi {
     pub fn open(status: Shared, root: PathBuf) -> Self {
-        let (g, c) = {
+        let pick = {
             let s = status.lock().unwrap();
-            (s.game.offered(), matches!(s.client, Client::Available(_)))
+            [0, 1, 2].map(|r| offered(&s, r))
         };
-        Self { status, root, pick: [g, c], cursor: if g || c { 2 } else { 3 }, job: None, reloaded: false, zoom: 1.0 }
+        let cursor = if pick.iter().any(|&p| p) { UPDATE } else { CLOSE };
+        Self { status, root, pick, cursor, job: None, reloaded: false, zoom: 1.0 }
     }
 
     fn available(&self, row: usize) -> bool {
-        let s = self.status.lock().unwrap();
-        if row == 0 { s.game.offered() } else { matches!(s.client, Client::Available(_)) }
+        offered(&self.status.lock().unwrap(), row)
     }
 
     fn running(&self) -> bool {
@@ -368,7 +410,8 @@ impl UpdateUi {
     fn start(&mut self) {
         let s = self.status.lock().unwrap();
         let game = self.pick[0] && s.game.offered();
-        let release = match (&s.client, self.pick[1]) {
+        let viewer = self.pick[1] && offered(&s, 1);
+        let release = match (&s.client, self.pick[2]) {
             (Client::Available(r), true) => Some(r.clone()),
             _ => None,
         };
@@ -381,36 +424,7 @@ impl UpdateUi {
             let mut lines = Vec::new();
             let mut restart = false;
             let result = (|| -> Result<()> {
-                // Asked for before the file check finished: wait for it here.
-                let plan = if game {
-                    loop {
-                        let mut s = status.lock().unwrap();
-                        match std::mem::replace(&mut s.game, Game::Checking) {
-                            Game::Available(p) => break Some(p),
-                            Game::Behind(v) => {
-                                s.game = Game::Behind(v);
-                                drop(s);
-                                set(Progress {
-                                    label: "Checking game files".into(),
-                                    done: 0,
-                                    total: 0,
-                                    detail: String::new(),
-                                });
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                            }
-                            Game::Failed(e) => {
-                                s.game = Game::Failed(e.clone());
-                                bail!("checking the game files: {e}");
-                            }
-                            other => {
-                                s.game = other;
-                                break None;
-                            }
-                        }
-                    }
-                } else {
-                    None
-                };
+                let plan = if game { wait_plan(&status, &set, |s| &mut s.game, "game files")? } else { None };
                 if let Some(plan) = plan {
                     let total_files = plan.todo.len();
                     let total_bytes: u64 = plan.todo.iter().map(|t| t.2).sum();
@@ -431,6 +445,32 @@ impl UpdateUi {
                     })?;
                     status.lock().unwrap().game = Game::Current;
                     lines.push(format!("Game files updated to {version} ({total_files} files)."));
+                }
+                let plan = if viewer {
+                    wait_plan(&status, &set, |s| s.viewer.get_or_insert(Game::Current), "PlayOnline Viewer files")?
+                } else {
+                    None
+                };
+                if let Some(plan) = plan {
+                    let total_files = plan.todo.len();
+                    let total_bytes: u64 = plan.todo.iter().map(|t| t.2).sum();
+                    let version = plan.server.version.clone();
+                    crate::patch::apply(&crate::config::viewer_dir(), &plan, 4, &|f, b| {
+                        set(Progress {
+                            label: "Updating PlayOnline Viewer".into(),
+                            done: b,
+                            total: total_bytes,
+                            detail: format!(
+                                "{} / {} files, {:.1} of {:.1} MB",
+                                thousands(f as u64),
+                                thousands(total_files as u64),
+                                b as f64 / 1e6,
+                                total_bytes as f64 / 1e6
+                            ),
+                        });
+                    })?;
+                    status.lock().unwrap().viewer = Some(Game::Current);
+                    lines.push(format!("PlayOnline Viewer updated to {version} ({total_files} files)."));
                 }
                 if let Some(r) = release {
                     let dest = exe().context("no executable path")?.with_extension("new");
@@ -484,10 +524,10 @@ impl UpdateUi {
             Some(Some(restart)) => {
                 match key {
                     egui::Key::ArrowLeft | egui::Key::ArrowRight | egui::Key::Tab if restart => {
-                        self.cursor = if self.cursor == 2 { 3 } else { 2 };
+                        self.cursor = if self.cursor == UPDATE { CLOSE } else { UPDATE };
                         out.sounds.push(Se::Cursor);
                     }
-                    egui::Key::Enter if restart && self.cursor == 2 => out.restart = true,
+                    egui::Key::Enter if restart && self.cursor == UPDATE => out.restart = true,
                     egui::Key::Enter | egui::Key::Escape => {
                         out.closed = true;
                         out.sounds.push(Se::Cancel);
@@ -500,18 +540,18 @@ impl UpdateUi {
         }
         match key {
             egui::Key::ArrowDown | egui::Key::Tab => {
-                self.cursor = (self.cursor + 1) % 4;
+                self.cursor = (self.cursor + 1) % (CLOSE + 1);
                 out.sounds.push(Se::Cursor);
             }
             egui::Key::ArrowUp => {
-                self.cursor = (self.cursor + 3) % 4;
+                self.cursor = (self.cursor + CLOSE) % (CLOSE + 1);
                 out.sounds.push(Se::Cursor);
             }
-            egui::Key::ArrowLeft | egui::Key::ArrowRight if self.cursor >= 2 => {
-                self.cursor = if self.cursor == 2 { 3 } else { 2 };
+            egui::Key::ArrowLeft | egui::Key::ArrowRight if self.cursor >= UPDATE => {
+                self.cursor = if self.cursor == UPDATE { CLOSE } else { UPDATE };
                 out.sounds.push(Se::Cursor);
             }
-            egui::Key::Enter if self.cursor < 2 => {
+            egui::Key::Enter if self.cursor < ROWS => {
                 if self.available(self.cursor) {
                     self.pick[self.cursor] ^= true;
                     out.sounds.push(Se::Select);
@@ -519,7 +559,7 @@ impl UpdateUi {
                     out.sounds.push(Se::Error);
                 }
             }
-            egui::Key::Enter if self.cursor == 2 => {
+            egui::Key::Enter if self.cursor == UPDATE => {
                 if self.pick.iter().zip(0..).any(|(&p, i)| p && self.available(i)) {
                     self.start();
                     out.sounds.push(Se::Select);
@@ -544,13 +584,13 @@ impl UpdateUi {
         {
             self.reloaded = true;
             out.reload = lines.iter().any(|l| l.starts_with("Game files"));
-            self.cursor = 2;
+            self.cursor = UPDATE;
         }
         out
     }
 
     fn rect(sw: f32, sh: f32) -> [f32; 4] {
-        let h = 164.0;
+        let h = 96.0 + 34.0 * ROWS as f32;
         [((sw - W) / 2.0).round(), ((sh - h) / 2.0).round(), W, h]
     }
 
@@ -568,8 +608,13 @@ impl UpdateUi {
         let busy = self.running();
         // The rows (whole width) and the buttons the view shows.
         let v = self.view(sw, sh);
-        let targets: Vec<(usize, [f32; 4])> =
-            v.rows.iter().copied().enumerate().chain(v.buttons.iter().enumerate().map(|(i, b)| (2 + i, b.0))).collect();
+        let targets: Vec<(usize, [f32; 4])> = v
+            .rows
+            .iter()
+            .copied()
+            .enumerate()
+            .chain(v.buttons.iter().enumerate().map(|(i, b)| (UPDATE + i, b.0)))
+            .collect();
         for (i, r) in targets {
             if inside(r) && !busy {
                 if moved || clicked {
@@ -587,8 +632,9 @@ impl UpdateUi {
     pub fn help(&self) -> String {
         match self.cursor {
             0 => "The game's data files, from the PlayOnline patch server.".into(),
-            1 => "vana-client itself, from its latest release.".into(),
-            2 => "Download and install what is checked.".into(),
+            1 => "The PlayOnline Viewer's files, which a PlayOnline log-in needs current (kept, never run).".into(),
+            2 => "vana-client itself, from its latest release.".into(),
+            UPDATE => "Download and install what is checked.".into(),
             _ => "Close this window.".into(),
         }
     }
@@ -610,7 +656,7 @@ impl UpdateUi {
         };
         let buttons = |v: &mut View, labels: &[&'static str], cursor: usize| {
             for (i, &label) in labels.iter().enumerate() {
-                v.buttons.push((Self::button_rect(x, y, h, i), label, cursor == 2 + i));
+                v.buttons.push((Self::button_rect(x, y, h, i), label, cursor == UPDATE + i));
             }
         };
         let job = self.job.as_ref().map(|j| match &*j.lock().unwrap() {
@@ -633,31 +679,25 @@ impl UpdateUi {
                 if lines.is_empty() {
                     text(&mut v, [x + 20.0, y + 48.0], "Nothing was updated.", true, 1);
                 }
-                if restart { buttons(&mut v, &["Restart", "Later"], self.cursor) } else { buttons(&mut v, &["OK"], 2) }
+                if restart {
+                    buttons(&mut v, &["Restart", "Later"], self.cursor)
+                } else {
+                    buttons(&mut v, &["OK"], UPDATE)
+                }
             }
             Some(Job::Failed(e)) => {
                 text(&mut v, [x + 20.0, y + 48.0], "The update did not finish:", true, 1);
                 text(&mut v, [x + 20.0, y + 68.0], &e, false, 4);
-                buttons(&mut v, &["OK"], 2);
+                buttons(&mut v, &["OK"], UPDATE);
             }
             None => {
                 let s = self.status.lock().unwrap();
-                let rows: [(&str, String, bool); 2] = [
+                let rows: [(&str, String, bool); ROWS] = [
+                    ("Game files", files_line(&s.game), s.game.offered()),
                     (
-                        "Game files",
-                        match &s.game {
-                            Game::Available(p) => format!(
-                                "{} files, {} MB ({})",
-                                thousands(p.todo.len() as u64),
-                                thousands((p.todo.iter().map(|t| t.2).sum::<u64>() as f64 / 1e6).round() as u64),
-                                p.server.version
-                            ),
-                            Game::Behind(v) => format!("Out of date ({v}), checking files..."),
-                            Game::Checking => "Checking...".into(),
-                            Game::Current => "Up to date".into(),
-                            Game::Failed(_) => "Could not check".into(),
-                        },
-                        s.game.offered(),
+                        "PlayOnline Viewer",
+                        s.viewer.as_ref().map_or_else(|| "Only for PlayOnline log-ins".into(), files_line),
+                        offered(&s, 1),
                     ),
                     (
                         "vana-client",
@@ -726,6 +766,62 @@ impl UpdateUi {
             gu.text(label, r[0] + r[2] / 2.0, r[1], 1, white);
             if on {
                 gu.cursor(r[0], r[1]);
+            }
+        }
+    }
+}
+
+/// Whether a row has something to install: game files, the Viewer, vana-client.
+fn offered(s: &Status, row: usize) -> bool {
+    match row {
+        0 => s.game.offered(),
+        1 => s.viewer.as_ref().is_some_and(Game::offered),
+        _ => matches!(s.client, Client::Available(_)),
+    }
+}
+
+/// A files row's state.
+fn files_line(g: &Game) -> String {
+    match g {
+        Game::Available(p) => format!(
+            "{} files, {} MB ({})",
+            thousands(p.todo.len() as u64),
+            thousands((p.todo.iter().map(|t| t.2).sum::<u64>() as f64 / 1e6).round() as u64),
+            p.server.version
+        ),
+        Game::Behind(v) => format!("Out of date ({v}), checking files..."),
+        Game::Checking => "Checking...".into(),
+        Game::Current => "Up to date".into(),
+        Game::Failed(_) => "Could not check".into(),
+    }
+}
+
+/// A files row's plan, once its file check is done (asked for before it finished: waited for here); None when it
+/// turned out current.
+fn wait_plan(
+    status: &Shared,
+    set: &dyn Fn(Progress),
+    row: fn(&mut Status) -> &mut Game,
+    what: &str,
+) -> Result<Option<crate::patch::Plan>> {
+    loop {
+        let mut s = status.lock().unwrap();
+        let g = row(&mut s);
+        match std::mem::replace(g, Game::Checking) {
+            Game::Available(p) => return Ok(Some(*p)),
+            Game::Behind(v) => {
+                *g = Game::Behind(v);
+                drop(s);
+                set(Progress { label: format!("Checking {what}"), done: 0, total: 0, detail: String::new() });
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Game::Failed(e) => {
+                *g = Game::Failed(e.clone());
+                bail!("checking the {what}: {e}");
+            }
+            other => {
+                *g = other;
+                return Ok(None);
             }
         }
     }

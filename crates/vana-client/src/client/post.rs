@@ -344,13 +344,7 @@ fn may_open(w: &mut World) -> bool {
     if active(w) {
         return false;
     }
-    if w.win.is_some()
-        || w.map.is_some()
-        || w.config.is_some()
-        || w.mogdoor.is_some()
-        || w.magic.is_some()
-        || w.ability.is_some()
-    {
+    if blocked(w) {
         super::textcmd::refuse(w, 0x45);
         return false;
     }
@@ -359,6 +353,20 @@ fn may_open(w: &mut World) -> bool {
         return false;
     }
     true
+}
+
+fn blocked(w: &World) -> bool {
+    w.win.is_some()
+        || w.map.is_some()
+        || w.config.is_some()
+        || w.mogdoor.is_some()
+        || w.magic.is_some()
+        || w.ability.is_some()
+}
+
+/// FUN_1012f100(0) without its messages (event op 0xb2 1 waits on it): the send UI idle, no blocking window, not healing.
+pub fn can_open(w: &World) -> bool {
+    !active(w) && !blocked(w) && !matches!(w.my_motion.status, 0x21 | 7)
 }
 
 // --- The receive UI ---

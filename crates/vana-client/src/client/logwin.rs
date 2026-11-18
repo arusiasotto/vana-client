@@ -1140,6 +1140,29 @@ impl LogWin {
         self.width = -1.0;
     }
 
+    /// The rows a refill from the history gives this window (FUN_1012a520: the filter walk over the stored lines,
+    /// 50 at most).
+    pub fn refill_rows(&self, chat: &super::combat::ChatLog, route: Route) -> usize {
+        let window = self.second as usize;
+        (chat.start()..chat.len())
+            .rev()
+            .filter(|&k| {
+                let (mode, gm) = chat.route(k);
+                route.shows(window, mode, gm)
+            })
+            .take(50)
+            .count()
+    }
+
+    /// FUN_1012a520 runs FUN_10163b30(logwindo, 1) for every row it writes, whichever ring it refills: each one
+    /// keeps window 1 open a period longer (capped at its max lines, rounded up), with nothing to slide.
+    pub fn refilled(&mut self, rows: usize) {
+        let cfg = self.cfg;
+        for _ in 0..rows {
+            self.anim.extend(&cfg);
+        }
+    }
+
     /// Window 2's frame: its width and eased height, placed on window 1's frame `w1` by config 0xb4.
     pub fn frame_beside(&mut self, sw: f32, w1: [f32; 4], mode: u32) -> LogFrame {
         let w = text_width(sw, self.cfg.pct) + 14.0;

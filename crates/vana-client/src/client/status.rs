@@ -87,12 +87,15 @@ fn exists(v: u16) -> bool {
 }
 
 /// Per frame (FUN_10148be0): once stats are ready, 3 / 4 / 5 by the skills there are (once); 12 while the main level is
-/// 99+ with a master level unlocked (0x061 @0x66 bit 0), 13 with the level and key item 0xd21 (each for good).
+/// 99+ with a master level unlocked (0x061 @0x66 bit 0), 13 with the level and key item 0xd21 or 0xd2f (FUN_1014a0b0;
+/// each for good).
 pub fn update(w: &mut World) {
     let ready = w.recasts_seen && w.stats.is_some();
     let level = w.stats.as_ref().map_or(0, |s| s.main.1);
     let ml = w.stats.as_ref().is_some_and(|s| s.ml.1 & 1 != 0);
-    let ae = w.has_key_item(0xd21);
+    let ae = super::celestite::keys(w);
+    // Game files older than 30261102 have no fe_main: row 13 opens fp_cat, gated on Alter Ego Points alone.
+    let fe_menu = w.fe_menu;
     let skills = w.skill_base;
     let mon = super::monstrosity::active(w);
     let Some(s) = w.status.as_mut() else { return };
@@ -118,7 +121,7 @@ pub fn update(w: &mut World) {
     if level > 98 && ml {
         s.off.retain(|&o| o != 12);
     }
-    if level > 98 && ae {
+    if ae.0 || (fe_menu && ae.1) {
         s.off.retain(|&o| o != 13);
     }
 }
@@ -183,7 +186,7 @@ pub(super) fn enter(w: &mut World) {
         11 => super::unity::open(w),
         7 => super::merits::open(w),
         8 => super::jobpoints::open(w),
-        13 => super::aepoints::open(w),
+        13 => super::celestite::open_main(w),
         c if page(c).is_none() => log::info!("status: statcom2 row {c} is not implemented yet"),
         _ => {}
     }

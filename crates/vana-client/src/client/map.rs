@@ -695,7 +695,10 @@ impl MapWin {
         let mode = Mode::of_event_zone(zone);
         let key = sub_key(w, op_key, false);
         let region = Region::find_key(regions, zone as u16, key).or_else(|| Region::find(regions, zone as u16))?;
-        let owned = owned(w, &region);
+        // FUN_101fb060 modes 1..3 call FUN_101f9970 with its "owned" argument 1: an event's map shows the map image
+        // whether or not we hold the area's map (only modes 0 and 5 ask FUN_10097e80 for the key item), so a
+        // newcomer shown another nation's city gets its map, not NO MAP.
+        let owned = true;
         let facing = w.net.me.lock().map_or(0.0, |m| super::event::rad_of(m.dir));
         log::info!("map: event map zone {zone} key {key} mode {mode:?} owned {owned}");
         let mut m = Self::new(

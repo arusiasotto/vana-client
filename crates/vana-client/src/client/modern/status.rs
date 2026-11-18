@@ -39,6 +39,7 @@ fn shown(w: &World) -> bool {
         && w.merits_ui.is_none()
         && w.jp_ui.is_none()
         && w.ae_ui.is_none()
+        && w.fe_main.is_none()
 }
 
 fn cursor_row(sel: u16) -> usize {
@@ -170,6 +171,9 @@ pub fn draw(p: &mut Panels, w: &mut World) {
     let row = cursor_row(s.sel);
     let sel = ROWS[row].0;
     let white = m.theme.color("text");
+    // Row 13 since build 30261102 (statcom2's windowps 845): fe_main, with Alter Ego Points as its first row.
+    let fe_menu = w.fe_menu;
+    let name = |id: u16, label: &'static str| if id == 13 && fe_menu { "Trust Ascension" } else { label };
     let (gold, blue, muted) = (m.theme.color("gold"), m.theme.color("focus"), m.theme.color("muted"));
 
     // The level: retail's level window as a gauge (the master level once one is unlocked).
@@ -297,7 +301,7 @@ pub fn draw(p: &mut Panels, w: &mut World) {
                         ui.painter().text(
                             pos2(r.min.x + 24.0, r.center().y),
                             Align2::LEFT_CENTER,
-                            *label,
+                            name(*id, label),
                             FontId::proportional(m.theme.ui),
                             if off { muted } else { white },
                         );
@@ -323,7 +327,7 @@ pub fn draw(p: &mut Panels, w: &mut World) {
                     ui.vertical(|ui| {
                         ui.set_width(PAGE_W);
                         ui.label(
-                            egui::RichText::new(ROWS[row].1)
+                            egui::RichText::new(name(sel, ROWS[row].1))
                                 .size(m.theme.title)
                                 .family(FontFamily::Name(super::STRONG.into()))
                                 .color(gold),

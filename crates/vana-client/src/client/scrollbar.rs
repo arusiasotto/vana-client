@@ -211,6 +211,7 @@ fn dispatch(w: &mut World, owner: Owner, m: Msg, bar: (usize, usize, usize)) -> 
             super::merits::bar(w, m)
                 || super::jobpoints::bar(w, m)
                 || super::aepoints::bar(w, m)
+                || super::celestite::bar(w, m)
                 || super::unity::bar(w, m)
         }
         Owner::Config => match &mut w.config {

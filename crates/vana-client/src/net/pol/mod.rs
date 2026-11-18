@@ -4,6 +4,7 @@
 
 pub mod chat;
 pub mod cipher;
+pub mod patchver;
 pub mod polpro;
 
 use super::lobby::{Failed, Session};
@@ -77,6 +78,14 @@ impl Profile {
         st.activity = u16::from_le_bytes([s[4], s[5]]) as i32;
         st.p5 = s[7] as i32;
         Ok(())
+    }
+
+    /// A list the Viewer loads that the game never reads (the friend and group lists): asked for as the Viewer does,
+    /// the reply read past; a failure is only logged.
+    fn read_past(&mut self, category: u8, opcode: u8) {
+        if let Err(e) = self.transact(category, opcode, None, ReplyBody::Sized) {
+            log::warn!("PlayOnline {category}/{opcode}: {e:#}");
+        }
     }
 
     /// LoadCharacterList (1/3, 0x100217a0): a linked record fills its handle's slot byte.
@@ -187,6 +196,27 @@ impl std::fmt::Debug for Link {
     }
 }
 
+/// The Viewer's start-up check (app.dll FUN_1013fb5c: step 8, before the sign-in at step 0x23): the Viewer kept in
+/// `root` (config::viewer_dir) against the patch server's. Out of date or missing, or no answer, stops the log-in
+/// there, as the Viewer goes no further until it is updated.
+pub fn viewer_check(root: &std::path::Path) -> Result<()> {
+    let server = crate::patch::viewer_version().map(|v| v.version);
+    let local = crate::patch::installed_version(root, crate::patch::VIEWER);
+    if let Ok(v) = &server {
+        log::info!("PlayOnline Viewer {v}; here {}", local.as_deref().unwrap_or("none"));
+    }
+    viewer_verdict(local.as_deref(), server)
+}
+
+/// The Viewer's strings 0x5654 (no answer) and 0x36c5 (out of date).
+fn viewer_verdict(local: Option<&str>, server: Result<String>) -> Result<()> {
+    let server = server.context("Network Connection Error: the PlayOnline Viewer's version could not be checked")?;
+    if !local.is_some_and(|l| crate::patch::up_to_date(&server, l)) {
+        bail!("Please update PlayOnline Viewer in order to proceed. Select \"Update\" to begin ({server}).");
+    }
+    Ok(())
+}
+
 /// Signs the member in at polcore's hosts.
 pub fn sign_in(c: &Credentials) -> Result<(Session, Pol)> {
     sign_in_at(c, &Servers { chat: (chat::HOST.to_string(), chat::PORT), profile: None })
@@ -194,7 +224,8 @@ pub fn sign_in(c: &Credentials) -> Result<(Session, Pol)> {
 
 /// Signs the member in as Viewer 1.18.15e and FFXiMain do: the chat login; polcore's connect, the member login (4/7)
 /// and its ChangeMyStatus `(-2, -2, 1, -2, -1, -2)` (POLCON 0x1b, 0x28; both skipped when the chat said so);
-/// app.dll's LoadMyStatus (4/6), handle and character lists (0/9, 1/3) and ChangeMyStatus `(handle, -2, 1, 2, 0, -2)`;
+/// app.dll's LoadMyStatus (4/6), friend, handle, character and group lists (2/3, 0/9, 1/3, 7/c) and ChangeMyStatus
+/// `(handle, -2, 1, 2, 0, -2)`;
 /// then FFXiMain's `(-2, -1, 0, -2, -1, 1)`, whose reply makes the lobby's session.
 pub fn sign_in_at(c: &Credentials, servers: &Servers) -> Result<(Session, Pol)> {
     let chat = chat::Chat::sign_in(&servers.chat.0, servers.chat.1, &c.pol_id, &c.pol_password)?;
@@ -218,9 +249,13 @@ pub fn sign_in_at(c: &Credentials, servers: &Servers) -> Result<(Session, Pol)> 
         p.change_status([-2, -2, 1, -2, -1, -2])?;
     }
     p.load_status()?;
+    // app.dll's LoadMyStatus handler (0x102df51e in the 2026-09-28 build) asks for the friend list (2/3), the handle and character lists and
+    // the group list (7/c), in that order.
+    p.read_past(2, 3);
     let handles = p.transact(0, 9, None, ReplyBody::Records(0x88))?;
     p.tables.load_handles(&handles[8..].as_chunks::<0x88>().0[..handles[0] as usize]);
     p.load_characters()?;
+    p.read_past(7, 0xc);
     // The handle the Viewer plays with: the current one, else the account's first (0/9 records: [0] handle index).
     let content = if p.status.content >= 0 {
         p.status.content
@@ -374,6 +409,18 @@ mod tests {
         assert_eq!(seen[1].2[0x40 + 4 * 8..][..3], [0, 0, 0]);
         assert_eq!(seen[2].2[0x10..0x13], [1, 1, 0]);
         assert_eq!(p.tables.slots[1], [6 << 1 | 1, 0, 0, 4 << 1 | 1, 0, 0, 0, 0]);
+    }
+
+    /// The Viewer check lets a log-in on only with the Viewer kept here current, as the Viewer goes on only then.
+    #[test]
+    fn viewer_verdicts() {
+        assert!(viewer_verdict(Some("20261022_0"), Ok("20261022_0".into())).is_ok());
+        assert!(viewer_verdict(Some("20261201_0"), Ok("20261022_0".into())).is_ok());
+        let e = format!("{:#}", viewer_verdict(Some("20261022_0"), Ok("20271231_0".into())).unwrap_err());
+        assert!(e.starts_with("Please update PlayOnline Viewer") && e.contains("20271231_0"), "{e}");
+        assert!(viewer_verdict(None, Ok("20261022_0".into())).is_err());
+        let e = format!("{:#}", viewer_verdict(Some("20261022_0"), Err(anyhow::anyhow!("refused"))).unwrap_err());
+        assert!(e.starts_with("Network Connection Error"), "{e}");
     }
 
     /// No handle with a free slot, or no entry: the code is -1 and nothing is sent. A refused store is polcore's code

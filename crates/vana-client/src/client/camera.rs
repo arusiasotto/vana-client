@@ -295,6 +295,10 @@ pub struct Inputs {
 /// The look point the free camera eases toward: 0.6 of the model height above the feet, at most 2.5.
 fn look_target(w: &World) -> Vec3 {
     let p = super::drawn_pos(w);
+    // FUN_1001ee60 at 0x1001f325: init's op 0xbd point (+0x8a9) sets the look height, ahead of riding (no 0.6, no cap).
+    if let Some(k) = w.actors.get(&w.my_id).map(|a| a.anchors[3]).filter(|k| *k != 0x80) {
+        return p + Vec3::new(0.0, super::target::point_height(w, w.my_id, k as usize), 0.0);
+    }
     // FUN_1001ee60 riding: the riding box's height plus the mount's camera add, x 0.6, no cap.
     if let Some(h) = super::ride::look_height(w, w.my_id, w.my_motion.status) {
         return p + Vec3::new(0.0, -h * 0.6, 0.0);

@@ -35,6 +35,11 @@ pub struct Parent {
     pub frame: Option<ParentFrame>,
     /// The parent's generator (op 0x94 takes its op 0x4e point list).
     pub src: Option<Ref>,
+    /// A point light parent's intensity +0x1a0 and range +0x19c (emission ops 0x7e / 0x7f).
+    pub light: Option<[f32; 2]>,
+    /// Its generator's first emission op 0x3e..0x40 (code) and the parent's S[k + code - 0x3e], S[k + 3] (ops
+    /// 0x98..0x9a).
+    pub slots: Option<(u8, [u32; 2])>,
 }
 
 /// The parent element's frame (FUN_10046440: its matrix slot) and its generator's attach word and actors.
@@ -48,8 +53,8 @@ pub struct ParentFrame {
     pub actors: [super::sched::Who; 2],
 }
 
-/// FUN_1003b900: the attach word fields op 0x45 copies (all but bit 17 and byte 3).
-const ATTACH_COPY: u32 = 0xfd_ffff;
+/// FUN_1003c740: the attach word bits ops 0x45 / 0x86 copy (0..16 and 24..27).
+const ATTACH_COPY: u32 = 0x0ffd_ffff;
 
 pub struct Spawn {
     pub elem: Elem,
@@ -59,6 +64,8 @@ pub struct Spawn {
     pub parts: Vec<[f32; 9]>,
     /// A sound element (kind 0x3d, CYySoundElem).
     pub sound: Option<super::sound::Sound>,
+    /// Kind 1, CMoSkeletonElem: the model folder (skeleton, meshes, motions) its CXiSkeletonActor is made from.
+    pub model: Option<Ref>,
 }
 
 /// Resource kind after FUN_1004d920's remap (table 0x10051748): Vum / Om1 -> D3m, Anm -> D3a, Mmd -> D3b.
@@ -193,6 +200,17 @@ fn emit_ops(
             _ => Draw::None,
         }
     };
+    // Kind 1 (CMoSkeletonElem): a folder holding a whole model; none, no element.
+    let model = if res_kind == kind::FOLDER {
+        let r = reg.resolve(lib, from, kind::FOLDER, name);
+        if r.is_none() {
+            reg.miss(lib, from, name, res_kind);
+            return None;
+        }
+        r
+    } else {
+        None
+    };
     // Kind 0x3d: a SeSep; no resource means no element (FUN_1004d920 returns at op 1).
     let mut sound = None;
     if res_kind == 0x3d {
@@ -207,11 +225,17 @@ fn emit_ops(
         sound = Some(s);
     }
     e.0[w::FLAGS] = flags;
+    if let Draw::Mesh(id) | Draw::GroundProj(id) = draw {
+        let r = reg.meshes.get(id as usize).and_then(|r| reg.libs[r.0].meshes.get(&r.1)).map_or(0.0, |m| m.radius);
+        e.set(w::RADIUS, r);
+    }
     let mut pos = Vec3::new(op1.f32(5), op1.f32(6), op1.f32(7));
     // Step 4: flag 0x800000 snapshots the emitter frame at spawn.
     let mut snapshot = (flags & 0x80_0000 != 0 && (inst.matrix.is_some() || parent.is_some()))
         .then(|| inst.matrix.unwrap_or(Mat4::IDENTITY));
     let mut borrow = None;
+    // 0x100511c6..: the snapshot takes the generator's scales here; a later op 0x45 changes only the generator's.
+    let mut snap_scale = (inst.scale_a, inst.scale_b);
     // Step 8: flag 0x4000000 = position in camera space (z negated, through the inverse view).
     if flags & 0x400_0000 != 0 {
         pos.z = -pos.z;
@@ -236,7 +260,32 @@ fn emit_ops(
     let batched = inst.flags & 0x2000_0000 != 0;
     // Bit 1: no parent step in the light matrix; MMB stand-ins (elem +0x179) skip it too.
     let mmb = matches!(draw, Draw::Mesh(id) if reg.meshes.get(id as usize).and_then(|r| reg.libs[r.0].meshes.get(&r.1)).is_some_and(|m| m.mmb));
-    e.0[w::GEN_BITS] = ((inst.de as u32) << 8) | ((lit_parent_off(reg.libs[lib].file_id, inst.name) || mmb) as u32 * 2);
+    // Bits 16..20: the attach mode (FUN_10045190 picks the bit-0 basis by it).
+    e.0[w::GEN_BITS] = ((inst.de as u32) << 8)
+        | ((lit_parent_off(reg.libs[lib].file_id, inst.name) || mmb) as u32 * 2)
+        | ((inst.mode as u32) << 16);
+    // Bits 23..31: this generator's first emission op 0x3e..0x40 (slot k, code - 0x3e), for a child's ops 0x98..0x9a.
+    if let Some(o) = inst.streams[1].iter().find(|o| (0x3e..=0x40).contains(&o.code)) {
+        e.0[w::GEN_BITS] |= 1 << 23 | (o.slot as u32 & 0x3f) << 24 | ((o.code - 0x3e) as u32) << 30;
+    }
+    // FUN_10040c20 -> FUN_10183760: an MMB is culled by its box (bit 21); in zone 237 (scene DAT 337) the chunks
+    // FUN_10176ed0 lists move -0.8 down the view (bit 22).
+    if let Draw::Mesh(id) = draw
+        && let Some(&(ml, node)) = reg.meshes.get(id as usize)
+        && let Some(m) = reg.libs[ml].meshes.get(&node).filter(|m| m.mmb)
+    {
+        let (lo, hi) = (Vec3::from(m.bbox[0]), Vec3::from(m.bbox[1]));
+        let (c, h) = ((lo + hi) * 0.5, (hi - lo) * 0.5);
+        e.set_v3(w::MMB_BOX, c);
+        e.set(w::MMB_BOX + 3, h.x);
+        e.set(w::MMB_BOX + 4, h.y);
+        e.0[w::GEN_BITS] |= 1 << 21;
+        let name = reg.libs[ml].tree.nodes[node].name();
+        let in_237 = reg.zone.is_some_and(|z| reg.libs[z].file_id == 337);
+        if in_237 && matches!(name.trim_end_matches('\0'), "awan" | "brac" | "col1" | "sh-u" | "suim") {
+            e.0[w::GEN_BITS] |= 1 << 22;
+        }
+    }
     e.0[w::KIND] = match draw {
         // FUN_10055340: key = the generator's 4cc; FUN_10171720 finds its table entry (none: it does nothing).
         Draw::None if res_kind == 0x47 => {
@@ -283,10 +332,10 @@ fn emit_ops(
     let count = inst.emitted;
     let gen_dist = inst.dist;
     let key = |reg: &mut Registry, op: &Op| reg.key_ref(lib, from, op.u32(2));
-    // Op 0x94: this stream's point list is the parent generator's op 0x4e / 0x4f list (its scope).
+    // Op 0x94 (0x1004fed3): this stream's op 0x4e takes the parent generator's op 0x4e list (0x4e on both sides).
     let parent_vtx = if stream.iter().any(|o| o.code == 0x94) {
         parent.and_then(|p| p.src).and_then(|(pl, pn)| {
-            let name = reg.libs[pl].generator(pn)?.streams[1].iter().find(|o| matches!(o.code, 0x4e | 0x4f))?.u32(2);
+            let name = reg.libs[pl].generator(pn)?.streams[1].iter().find(|o| o.code == 0x4e)?.u32(2);
             reg.resolve(pl, pn, kind::VTX, name)
         })
     } else {
@@ -307,7 +356,11 @@ fn emit_ops(
             0x1e => e.0[w::BLEND] = op.u32(1) & 0xffff,
             0x30 => e.set(w::BIAS, op.f32(1)),
             // 0x72 scales by the target's model size; actors are not linked yet *(inf: size 1)*.
-            0x72 => e.set(w::BIAS, op.f32(1)),
+            // 0x10051d23: on a skeleton target the bias scales with its depth size, (size - 1) x f + 1 (f = @2, 0 = 1).
+            0x72 => {
+                let k = if op.f32(2) == 0.0 { 1.0 } else { op.f32(2) };
+                e.set(w::BIAS, op.f32(1) * ((inst.target_depth - 1.0) * k + 1.0));
+            }
             // Position.
             0x06 if !batched => {
                 let r = rng.uf(op.f32(1)) + op.f32(2);
@@ -361,6 +414,7 @@ fn emit_ops(
                     if let Some(pf) = p.frame {
                         inst.attach = (inst.attach & !ATTACH_COPY) | (pf.attach & ATTACH_COPY);
                         inst.mode = crate::dat::generator::attach_mode(inst.attach);
+                        inst.size_scaled = (inst.attach >> 24) & 0xf != 0;
                         inst.actors = pf.actors;
                         if let Some(m) = pf.matrix {
                             if snapshot.is_some() {
@@ -376,8 +430,38 @@ fn emit_ops(
                     pos0 = pos;
                 }
             }
-            0x86 | 0x9b => {
+            // 0x1004fff0: the parent's actors, then its world position through this generator's inverse frame,
+            // x over scale A's x *(the attachment is not rebuilt for the new actors until the next frame)*.
+            0x9b => {
                 if let Some(p) = parent {
+                    if let Some(pf) = p.frame {
+                        inst.actors = pf.actors;
+                    }
+                    let mut v = inst.matrix.map_or(p.world, |m| m.inverse().transform_point3(p.world));
+                    if inst.scale_a.x != 0.0 {
+                        v.x /= inst.scale_a.x;
+                    }
+                    pos += v;
+                    pos0 = pos;
+                }
+            }
+            // 0x1004fac3: the attach copy without the actors; under 0x800000 the snapshot is the parent frame's
+            // translation alone with the parent's scales, else a frameless element borrows the parent's frame.
+            0x86 => {
+                if let Some(p) = parent {
+                    if let Some(pf) = p.frame {
+                        inst.attach = (inst.attach & !ATTACH_COPY) | (pf.attach & ATTACH_COPY);
+                        inst.mode = crate::dat::generator::attach_mode(inst.attach);
+                        inst.size_scaled = (inst.attach >> 24) & 0xf != 0;
+                        if let Some(m) = pf.matrix {
+                            if snapshot.is_some() {
+                                snapshot = Some(Mat4::from_translation(m.w_axis.truncate()));
+                                snap_scale = (pf.scale_a, pf.scale_b);
+                            } else if inst.matrix.is_none() {
+                                borrow = Some(pf.slot);
+                            }
+                        }
+                    }
                     pos += p.pos;
                     pos0 = pos;
                 }
@@ -385,13 +469,20 @@ fn emit_ops(
             // Point list (Vtx, kind 0x3e): u32 count, points from +0x10 (vec4); random (0x4e) or by emission count
             // (0x4f) *(the attach-rotation option, byte op+0xc bit 0, is not applied)*.
             0x4e | 0x4f if !batched => {
-                if let Some(r) = parent_vtx.or_else(|| reg.resolve(lib, from, kind::VTX, op.u32(2))) {
+                let shared = parent_vtx.filter(|_| op.code == 0x4e);
+                if let Some(r) = shared.or_else(|| reg.resolve(lib, from, kind::VTX, op.u32(2))) {
                     let d = reg.libs[r.0].data(r.1);
                     let n = d.get(0..4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
                     if n > 0 {
                         let i = if op.code == 0x4e { rng.un(n) } else { count % n } as usize;
-                        let f = |o: usize| d.get(o..o + 4).map_or(0.0, |b| f32::from_le_bytes(b.try_into().unwrap()));
-                        pos += Vec3::new(f(0x10 + i * 16), f(0x14 + i * 16), f(0x18 + i * 16));
+                        let g = |o: usize| d.get(o..o + 4).map_or(0.0, |b| f32::from_le_bytes(b.try_into().unwrap()));
+                        let mut p = Vec3::new(g(0x10 + i * 16), g(0x14 + i * 16), g(0x18 + i * 16));
+                        // 0x1004eb5d: option bit 0 with a frame (FUN_100473f0): p x M x (b90 x M)^-1, i.e. the point
+                        // through the view rotation's inverse.
+                        if op.u32(3) & 1 != 0 && (inst.matrix.is_some() || snapshot.is_some()) {
+                            p = glam::Mat3::from_mat4(f.view).transpose() * p;
+                        }
+                        pos += p;
                     }
                 }
             }
@@ -515,10 +606,16 @@ fn emit_ops(
             0x91 => e.set_s(s, e.0[w::COLOR]),
             0x8f | 0x90 => {
                 // Tint by the area light: the brighter of (sun + ambient) and (moon + ambient); 0x8f of the
-                // caster's area (FUN_101819a0), 0x90 of the zone.
-                let c = if op.code == 0x8f { inst.area_light.unwrap_or(f.area_light) } else { f.area_light };
-                for (k, ch) in [(2usize, c.x), (1, c.y), (0, c.z)] {
-                    e.set_cb(k, (e.cb(k) as f32 * ch).max(0.0) as u32 as u8);
+                // caster's area (FUN_101819a0), 0x90 of the zone. 0x8f without a source actor (FUN_1003b6d0) tints nothing.
+                let c = match (op.code, inst.actors[0]) {
+                    (0x8f, super::sched::Who::None) => None,
+                    (0x8f, _) => Some(inst.area_light.unwrap_or(f.area_light)),
+                    _ => Some(f.area_light),
+                };
+                if let Some(c) = c {
+                    for (k, ch) in [(2usize, c.x), (1, c.y), (0, c.z)] {
+                        e.set_cb(k, (e.cb(k) as f32 * ch).max(0.0) as u32 as u8);
+                    }
                 }
             }
             // Slot initialisers.
@@ -557,8 +654,9 @@ fn emit_ops(
                 let d = (pos - pos0).normalize_or_zero();
                 e.set_sv3(s, e.sv3(s) + d * op.f32(1));
             }
+            // 0x1004e986: S[s] = the keyframe linked from the 4cc @2 (word 1 is 0 in the files).
             0x50..=0x52 => {
-                e.set_s(s, op.u32(1));
+                e.set_s(s, key(reg, op));
                 e.set_s(s + 1, op.u32(3));
                 if let Some(k) = reg.update_op_slot(inst.src, 0x02) {
                     let src = match op.code {
@@ -631,8 +729,14 @@ fn emit_ops(
                     }
                     0x33..=0x37 => Some(0.0f32.to_bits()),
                     0x7c => Some(e.0[w::L_INT]),
+                    // 0x10050b27: S[s+2] = the update stream's op 0x2c record (FUN_10049330), read by update op 0x44.
+                    0x69 => Some(u32::from(reg.update_op_slot(inst.src, 0x2c).is_some())),
                     0x7d => Some(e.0[w::L_RANGE]),
                     0x38 => Some((1.0f32 / 120.0).to_bits()),
+                    // 0x10050bc6: the distortion classes' base is their offset (+0x194, op 0x32's).
+                    0x39 if matches!(draw, Draw::Dist | Draw::VuDist(..) | Draw::DistModel(_) | Draw::DistMorph(_)) => {
+                        Some(e.0[w::DIST_OFF])
+                    }
                     // The specular fields' bases: angles / pi, colour bytes R, G, B, A / 255.
                     0x59..=0x5b if spec_on => Some((e.f(w::SPEC_ANG + (op.code - 0x59) as usize) / PI).to_bits()),
                     0x5c..=0x5f if spec_on => Some(
@@ -668,12 +772,35 @@ fn emit_ops(
                     e.set(w::BIAS, p.bias)
                 }
             }
+            // 0x1004f126 / f1ae / f238: with a living parent (+0x110 != 0), its life and max life; then, when its
+            // generator's emission stream has op 0x3e / 0x3f / 0x40, S[s + n] = P[k + n] and S[s + 3] = P[k + 3].
             0x98..=0x9a => {
-                if let Some(p) = parent.filter(|p| p.max_life != 0.0) {
+                if let Some(p) = parent.filter(|p| p.life != 0.0) {
                     e.set(w::LIFE, p.life);
                     e.set(w::MAX_LIFE, p.max_life);
+                    let n = (op.code - 0x98) as usize;
+                    if let Some((code, v)) = p.slots
+                        && code == 0x3e + n as u8
+                    {
+                        e.set_s(s + n, v[0]);
+                        e.set_s(s + 3, v[1]);
+                    }
                 }
             }
+            // 0x1004ff54 / 0x1004ff8c: a point light takes its parent's intensity / range.
+            0x7e if e.0[w::KIND] == dk::LIGHT => {
+                if let Some(l) = parent.and_then(|p| p.light) {
+                    e.set(w::L_INT, l[0]);
+                }
+            }
+            0x7f if e.0[w::KIND] == dk::LIGHT => {
+                if let Some(l) = parent.and_then(|p| p.light) {
+                    e.set(w::L_RANGE, l[1]);
+                }
+            }
+            // 0x1004ea4d: S[s] = word 1 (its pointer walk to the next 0x4e / 0x4f only runs on a non-zero word 1,
+            // which none of its 7 generators can reach).
+            0x89 => e.set_s(s, op.u32(1)),
             // Op 0x4b (CMoLfdElem): the glare colour (the two floats have no reader).
             0x4b if e.0[w::KIND] == dk::FLARE => {
                 let [r, g, b, a] = op.u32(3).to_le_bytes();
@@ -722,7 +849,8 @@ fn emit_ops(
                 // Op 0x4e / 0x4f (0x1004ec2c): each particle starts at a point of the list, random per particle or
                 // the generator's emission count for all (fixed for the element's life).
                 let list = find(1, 0x4e).or_else(|| find(1, 0x4f)).and_then(|o| {
-                    let r = parent_vtx.or_else(|| reg.resolve(lib, from, kind::VTX, o.u32(2)))?;
+                    let shared = parent_vtx.filter(|_| o.code == 0x4e);
+                    let r = shared.or_else(|| reg.resolve(lib, from, kind::VTX, o.u32(2)))?;
                     let d = reg.libs[r.0].data(r.1);
                     let c = d.get(0..4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
                     let f = |o: usize| d.get(o..o + 4).map_or(0.0, |b| f32::from_le_bytes(b.try_into().unwrap()));
@@ -836,6 +964,7 @@ fn emit_ops(
         inst: usize::MAX,
         serial: 0,
         born: 0,
+        late: false,
         life,
         max_life,
         flags,
@@ -847,6 +976,7 @@ fn emit_ops(
         back: None,
         child: None,
         snapshot,
+        snap_scale,
         mslot: NONE,
         frame,
         borrowed: borrow.is_some(),
@@ -855,7 +985,7 @@ fn emit_ops(
         light_scale: (e.0[w::KIND] == dk::LIGHT).then(|| [e.f(w::L_ISCALE), e.f(w::L_RSCALE)]),
         drift: reg.update_op_slot(inst.src, 0x02).is_some(),
     };
-    Some(Spawn { elem: e, cpu, children, parts, sound })
+    Some(Spawn { elem: e, cpu, children, parts, sound, model })
 }
 
 /// FUN_10048740 steps 2-3: the generator's stream. Returns false when this frame's emission is skipped
@@ -886,7 +1016,24 @@ pub fn generator_stream(reg: &mut Registry, inst: &mut Instance, f: &Frame) -> b
                 if op.code == 0x04 && x == 0.0 {
                     continue;
                 }
-                match sample(reg, op, t) {
+                // 0x10049a10: op 4 is linked only by the clone ctor (FUN_100536c0), which also makes its keyframe's first
+                // value the resource's count (word 4 = float(d8 & 0x1ff)); a resource running as itself stops.
+                let clone = inst.clone
+                    || inst.driven.is_some()
+                    || matches!(inst.owner, super::Owner::Task(_) | super::Owner::Actor(_) | super::Owner::Step(_));
+                if op.code == 0x04 && !clone {
+                    inst.countdown = 32767.0;
+                    continue;
+                }
+                let v = if op.code == 0x04 {
+                    let n = reg.libs[lib].generator(from).map_or(0, |g| g.flags & 0x1ff) as f32;
+                    reg.resolve(lib, from, kind::KEYFRAME, op.u32(2))
+                        .and_then(|r| reg.keyframe(r))
+                        .map(|k| k.sample_v0(t, op.u32(3) & 0xf != 0, n))
+                } else {
+                    sample(reg, op, t)
+                };
+                match v {
                     Some(v) if v > 0.0 => {
                         let interval = ((60.0 / v) as i32).min(0x7fff) as i16;
                         inst.interval = interval;
@@ -938,30 +1085,31 @@ pub fn generator_stream(reg: &mut Registry, inst: &mut Instance, f: &Frame) -> b
                     break;
                 }
             }
-            // FUN_100496f0 case 0x15 / FUN_1004a870: the box diag(f32 @0xc, @0x10, @0x14) about the emission position,
-            // through the generator's matrix and the view; off screen, no emission this frame and the stream stops.
-            // Retail projects the 8 corners (and runs an occlusion query when it can); ours: off screen = all corners
-            // outside one frustum plane of the scene projection (fovy 2 atan(192 / focal)). The path offset is not added.
+            // FUN_100496f0 case 0x15 / FUN_1004a870 / FUN_1006ed10: the unit cube (word 1 is 0 in every file) as
+            // diag(@0xc, @0x10, @0x14) at the emission position, through the generator's matrix, the view and the
+            // projection. Shown when a corner is strictly inside the viewport (x / |w|, y / |w|; |w| = 1 at w = 0: a
+            // box bigger than the view with every corner off it is hidden, no near test); word 6 bit 1 also needs every
+            // corner with w != 0 between near and far (z / w in 0..1, 0.1 / 65535). The occlusion query runs only for
+            // an element's clone (none in the data); op 0x54's +0xa0 is dead (no 0x15 generator keys it).
             0x15 => {
                 let p = inst.streams[1].first().map(|o| Vec3::new(o.f32(5), o.f32(6), o.f32(7))).unwrap_or_default();
                 let s = Vec3::new(op.f32(3), op.f32(4), op.f32(5));
                 let m = f.view * inst.matrix.unwrap_or(glam::Mat4::IDENTITY);
                 let ys = f.focal / 192.0;
                 let xs = ys / reg.aspect.max(0.1);
-                let corners: Vec<Vec3> = (0..8)
-                    .map(|k| {
-                        m.transform_point3(
-                            p + s * Vec3::new([-1.0, 1.0][k & 1], [-1.0, 1.0][k >> 1 & 1], [-1.0, 1.0][k >> 2]),
-                        )
-                    })
-                    .collect();
-                let out = |test: &dyn Fn(Vec3) -> bool| corners.iter().all(|&c| test(c));
-                let hidden = out(&|c| -c.z < crate::render::NEAR)
-                    || out(&|c| c.x * xs > -c.z)
-                    || out(&|c| -c.x * xs > -c.z)
-                    || out(&|c| c.y * ys > -c.z)
-                    || out(&|c| -c.y * ys > -c.z);
-                if hidden {
+                let mut on = false;
+                let mut deep = true;
+                for k in 0..8 {
+                    let c = Vec3::new([-1.0, 1.0][k & 1], [-1.0, 1.0][k >> 1 & 1], [-1.0, 1.0][k >> 2]);
+                    let v = m.transform_point3(p + s * c);
+                    let w = -v.z;
+                    let aw = if w == 0.0 { 1.0 } else { w.abs() };
+                    on |= (v.x * xs / aw).abs() < 1.0 && (v.y * ys / aw).abs() < 1.0;
+                    if w != 0.0 && !(crate::render::NEAR..=65535.0).contains(&w) {
+                        deep = false;
+                    }
+                }
+                if !on || (op.u32(6) & 2 != 0 && !deep) {
                     emit = false;
                     break;
                 }

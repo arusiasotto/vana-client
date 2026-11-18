@@ -35,10 +35,11 @@ pub struct SubArea {
     pub weather: Option<ZoneWeather>,
 }
 
-/// What FUN_10178a20 decides: a load (id, asked by an event, asked at all: FUN_10178900's synchronous form).
+/// What FUN_10178a20 decides: a load (id, asked by an event, asked at all: FUN_10178900's synchronous form), or an
+/// unload (asked by an event: no 0x0F2).
 pub enum Step {
     Load(u32, bool, bool),
-    Unload,
+    Unload(bool),
 }
 
 impl SubArea {
@@ -66,12 +67,13 @@ impl SubArea {
             return None;
         }
         if id == 0 {
-            return self.current.is_some().then_some(Step::Unload);
+            return self.current.is_some().then_some(Step::Unload(from_event));
         }
         zone::declares_sub_area(&self.regions, id).then_some(Step::Load(id, from_event, asked))
     }
 
-    /// This frame's request: one asked for, else the trigger under the player (FUN_10014390 -> FUN_10181540).
+    /// This frame's request: one asked for, else the trigger under the player (FUN_10014390 -> FUN_10181540), in an
+    /// event's area too: its RID against our position there.
     pub fn next(&mut self, feet: [f32; 3]) -> Option<Step> {
         if let Some((id, ev)) = self.asked.take() {
             return self.request(id, ev, true);

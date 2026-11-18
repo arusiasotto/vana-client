@@ -415,11 +415,13 @@ pub struct Member {
 
 /// How a reply's body comes: none, a fixed size (checksum included), or a counted list of records (an 8-byte
 /// preamble with the count in byte 0, then the records). polcore's list readers (0x1001e490, 0x10022260) go from the
-/// last record straight to done: whatever follows is never read or checked.
+/// last record straight to done: whatever follows is never read or checked. `Sized`: the length the reply header gives,
+/// read whole and not checked (a reply only read past).
 pub enum ReplyBody {
     None,
     Fixed(usize),
     Records(usize),
+    Sized,
 }
 
 /// One transaction on a separate connection (0x1001f0f0's states): the plain handshake and its token, the header
@@ -491,6 +493,13 @@ pub fn transact<S: Stream>(
             d.extend(read(count * size)?);
             return Ok(d);
         }
+        ReplyBody::Sized => {
+            let n = u32::from_le_bytes(rh[4..8].try_into().unwrap()) as usize;
+            if n > 1 << 20 {
+                bail!("the profile server announced a {n}-byte reply");
+            }
+            return read(n);
+        }
     };
     let (payload, sum) = data.split_at(data.len() - 4);
     if checksum(payload).to_le_bytes() != sum {
@@ -511,8 +520,8 @@ pub fn transact<S: Stream>(
     Ok(payload.to_vec())
 }
 
-/// polcore's *5-chain cipher (schedule 0x10007bc0, blocks 0x10007d10): the authCode's, and polerr.bin's.
-struct C5 {
+/// polcore's *5-chain cipher (schedule 0x10007bc0, blocks 0x10007d10): the authCode's, polerr.bin's and patch.ver's.
+pub(crate) struct C5 {
     words: [u64; 32],
     pos: u32,
     ck: u32,
@@ -560,8 +569,50 @@ impl C5 {
         self.pos = pos.wrapping_add(8);
     }
 
+    /// One block back (polcore 1.18.00n FUN_10008090, then FUN_10007fd0): the chain undone, the byte substitution
+    /// taken off, then the word steps in reverse.
+    fn unblock(&mut self, blk: &[u8; 8], out: &mut Vec<u8>) {
+        let pos = self.pos;
+        let w = self.words[(pos >> 3) as usize & 31];
+        let sub = w.to_le_bytes().iter().fold(0u32, |s, &x| s + x as u32).wrapping_add(8 * 0x88);
+        let mut prev = ((pos >> 3) ^ 0x45) as u8;
+        let mut x = [0u8; 8];
+        for (i, &c) in blk.iter().enumerate() {
+            x[i] = (c ^ prev).wrapping_sub(sub as u8);
+            prev = c;
+        }
+        let mut c = pos as u64;
+        for _ in 0..3 {
+            c = c << 10 | pos as u64;
+        }
+        let v = (u64::from_le_bytes(x).wrapping_sub(w) ^ c.wrapping_add(0xa165_2347)) ^ w;
+        let (lo, hi) = ((v >> 32) as u32, v as u32);
+        out.extend_from_slice(&lo.to_le_bytes());
+        out.extend_from_slice(&hi.to_le_bytes());
+        let n = out.len();
+        self.ck = self.ck.wrapping_add(out[n - 8] as u32 + out[n - 4] as u32);
+        self.pos = pos.wrapping_add(8);
+    }
+
+    /// [`C5::encrypt`]'s output back (FUN_10008100): the data, or None when its tag's checksum does not match.
+    pub(crate) fn decrypt(key: [u8; 8], coded: &[u8]) -> Option<Vec<u8>> {
+        if coded.len() < 8 || !coded.len().is_multiple_of(8) {
+            return None;
+        }
+        let mut c = Self::new(key);
+        let mut out = Vec::with_capacity(coded.len());
+        let (body, tag) = coded.split_at(coded.len() - 8);
+        for blk in body.as_chunks::<8>().0 {
+            c.unblock(blk, &mut out);
+        }
+        let ck = c.ck;
+        let mut t = Vec::with_capacity(8);
+        c.unblock(tag.try_into().unwrap(), &mut t);
+        (u32::from_le_bytes(t[4..8].try_into().unwrap()) == ck).then_some(out)
+    }
+
     /// Whole blocks, a zero-padded last one, then the tag {u32 length, u32 checksum}.
-    fn encrypt(key: [u8; 8], data: &[u8]) -> Vec<u8> {
+    pub(crate) fn encrypt(key: [u8; 8], data: &[u8]) -> Vec<u8> {
         let mut c = Self::new(key);
         let mut out = Vec::with_capacity(data.len() + 16);
         for chunk in data.chunks(8) {

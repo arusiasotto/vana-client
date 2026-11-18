@@ -174,6 +174,9 @@ pub fn install(opts: &Options, progress: Arc<Progress>) -> Result<()> {
         targets.insert(file.key.clone(), (path, file.size));
     }
     let total: u64 = targets.values().map(|(_, size)| size).sum();
+    // The files below go back to the installer's versions: the applied manifest no longer describes them, so the
+    // next update reads every file (also after a run that stops part way).
+    crate::patch::forget_applied(&install_root)?;
     progress.begin(format!("Installing {} files", targets.len()), total);
 
     let cab_dir = root.join("FINAL_FANTASY_XI");

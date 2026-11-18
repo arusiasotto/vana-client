@@ -428,11 +428,28 @@ fn send_lsmes(w: &mut World, id: u16, flag: u8, bag: u8, slot: u8, text: &[u8], 
     let _ = w.net.commands.send(NetCommand::Packet { id, body: b });
 }
 
-/// /lsmes (FUN_100805f0) and /ls2mes (FUN_100807d0): linkshell 1 (2) worn, else 7 0x71 *(inf: actor +0x124 bit 27, a
-/// zone-in flag, is not modelled)*. No argument asks for the message (reason 0); /lsmes "level" asks the edit level,
-/// "level ls|ps|all" sets it, "clear" empties the message, "set TEXT" or TEXT sets it.
+/// The comment editor's mode 3 close (FUN_100e9870(.., 1) then FUN_100eae20): linkshell 1's message set to `text`
+/// ("" clears it); nothing without linkshell 1 worn.
+pub(super) fn set_message(w: &mut World, text: &[u8]) {
+    if let Some((slot, bag, _)) = equipped(w, 1) {
+        send_lsmes(w, 0x0E2, 0x40, bag, slot, text, None);
+    }
+}
+
+/// FUN_100805f0's second test: linkshell 1's command needs the server's LinkShellFlag on our entity.
+fn lsmes_flag(n: usize, flag: bool) -> bool {
+    n != 1 || flag
+}
+
+/// /lsmes (FUN_100805f0) and /ls2mes (FUN_100807d0): linkshell 1 (2) worn, else 7 0x71. /lsmes also needs our entity's
+/// LinkShellFlag (+0x124 bit 27: s2c 0x037 u32 @0x28 bit 25, at zone-in 0x00A u32 @0x20 bit 17), so with the shell just
+/// put on and no 0x037 yet it still refuses; /ls2mes has no such test. No argument asks for the message (reason 0);
+/// /lsmes "level" asks the edit level, "level ls|ps|all" sets it, "clear" empties the message, "set TEXT" or TEXT sets
+/// it.
 pub fn lsmes(w: &mut World, n: usize, args: &[String], tail1: &str, tail2: &str) {
-    let Some((slot, bag, _)) = equipped(w, n) else { return super::textcmd::refuse(w, 0x71) };
+    let Some((slot, bag, _)) = equipped(w, n).filter(|_| lsmes_flag(n, w.my_plate.marks.ls)) else {
+        return super::textcmd::refuse(w, 0x71);
+    };
     if args.len() <= 1 {
         return ask_message(w, n as u8, bag, slot, 0);
     }
@@ -594,7 +611,8 @@ fn select(w: &mut World, name: &'static str, child: u16) {
     }
 }
 
-/// The generic links (up, down, right, left = links 2..5), SE 0001 when the cursor moves.
+/// The generic links (up, down, right, left = links 2..5), SE 0001 when the cursor moves. A link is a signed byte
+/// (FUN_1011c6b0, movsx): 0xff is -1 and FUN_101196f0 does not move.
 fn step(w: &mut World, gu: &GameUi, name: &str, sel: &mut u16, key: egui::Key) {
     let k = match key {
         egui::Key::ArrowUp => 2,
@@ -603,11 +621,16 @@ fn step(w: &mut World, gu: &GameUi, name: &str, sel: &mut u16, key: egui::Key) {
         egui::Key::ArrowLeft => 5,
         _ => return,
     };
-    let to = gu.menu_links(name, *sel).map_or(*sel, |l| l[k] as u16);
-    if to != *sel && to != 0 && to != 0xff {
+    if let Some(to) = link_to(*sel, gu.menu_links(name, *sel).map(|l| l[k])) {
         *sel = to;
         w.sounds.push(Ui::Cursor as u32);
     }
+}
+
+/// The child a link moves the cursor to: none for 0, for the child itself, or for a negative link (0x80..=0xff reads
+/// as negative through movsx).
+fn link_to(sel: u16, link: Option<u8>) -> Option<u16> {
+    link.filter(|&l| (l as i8) > 0).map(u16::from).filter(|&to| to != sel)
 }
 
 /// The list base (FUN_101f6c70): Up / Down stop at the ends, Right / Left turn a page of 10, Escape closes link5 and
@@ -814,9 +837,13 @@ pub fn update(w: &mut World) {
     }
 }
 
-/// link5 has the keys while no submenu, link11 or prompt is up.
+/// link5 has the keys while no submenu, link11, prompt or message editor is up.
 pub fn focused(w: &World) -> bool {
-    w.linkshell.as_ref().is_some_and(|l| l.sub.is_none() && l.naming.is_none()) && w.confirm.is_none()
+    w.linkshell.as_ref().is_some_and(|l| has_focus(l, w.seacom_edit.is_some(), w.confirm.is_some()))
+}
+
+fn has_focus(l: &Linkshell, editing: bool, confirming: bool) -> bool {
+    l.sub.is_none() && l.naming.is_none() && !editing && !confirming
 }
 
 /// Mouse *(inf: the generic child hit test)*: hover moves the cursor, a click on the cursor row is Enter.
@@ -1038,6 +1065,35 @@ pub(super) fn channel_open(w: &World) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FUN_100805f0 tests entity +0x124 bit 27 beside the worn shell; FUN_100807d0 (/ls2mes) only the shell.
+    #[test]
+    fn lsmes_needs_the_flag() {
+        assert!(!lsmes_flag(1, false) && lsmes_flag(1, true));
+        assert!(lsmes_flag(2, false) && lsmes_flag(2, true));
+    }
+
+    /// FUN_1011c6b0 / FUN_101196f0: a negative link (0xff) leaves the cursor where it is.
+    #[test]
+    fn caption_links_stay() {
+        assert_eq!(link_to(4, Some(0xff)), None);
+        assert_eq!(link_to(4, Some(0x80)), None);
+        assert_eq!(link_to(4, None), None);
+        assert_eq!(link_to(1, Some(0)), None);
+        assert_eq!(link_to(1, Some(1)), None);
+        assert_eq!(link_to(1, Some(3)), Some(3));
+        assert_eq!(link_to(1, Some(0x7f)), Some(0x7f));
+    }
+
+    /// A comment editor open over link5 with no submenu left: link5 loses the wheel, its scroll bar and its cursor's
+    /// focus.
+    #[test]
+    fn editor_takes_focus() {
+        let l = Linkshell { top: 0, cursor: 0, sub: None, naming: None };
+        assert!(has_focus(&l, false, false));
+        assert!(!has_focus(&l, true, false));
+        assert!(!has_focus(&l, false, true));
+    }
 
     #[test]
     fn names() {
