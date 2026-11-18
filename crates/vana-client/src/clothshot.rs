@@ -170,7 +170,7 @@ pub fn run(file: u32, zone: u32, hour: f32, pos: [f32; 3], steps: u32, out_dir: 
         };
         actor.cloth = data;
         r.begin_poses();
-        r.pose_actor_gpu(&mut actor, &ch, &[], &idle, &[], 1.0, m, None, None, &[]);
+        r.pose_actor_gpu(&mut actor, &ch, &crate::render::anim::plain_layers(&ch, &idle), [0.0; 2], m, None, &[]);
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         r.upload_poses(&gpu, &mut enc);
         r.render(&gpu, &mut enc, &view, &depth, &camera, w as f32 / h as f32, &[&actor]);

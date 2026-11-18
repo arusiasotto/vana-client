@@ -540,13 +540,38 @@ pub fn strip_codes(s: &str) -> String {
 /// An auto-translate phrase (`FD kind lang hi lo FD`) kept in a String: its four inner bytes as U+100000 + 0x100 x
 /// position + byte, so encode_sjis gives the block back.
 pub const PHRASE_BASE: u32 = 0x10_0000;
+/// The byte that opens (and closes) an auto-translate block.
+pub const PHRASE_MARK: u8 = 0xFD;
+/// The kind byte of a variable auto-translate block (`FD 06 ..`).
+pub const KIND_VARIABLE: u8 = 6;
+
+/// One of a phrase's four chars (`PHRASE_BASE`).
+pub fn is_phrase(c: char) -> bool {
+    (PHRASE_BASE..PHRASE_BASE + 0x400).contains(&(c as u32))
+}
+
+/// The byte a char keeps for a byte Shift-JIS has no character for, or of a variable auto-translate block.
+pub fn raw_byte(c: char) -> Option<u8> {
+    (BYTE_BASE..BYTE_BASE + 0x100).contains(&(c as u32)).then_some(c as u32 as u8)
+}
 
 pub fn decode_sjis(sjis: &[u8]) -> String {
     let mut out = String::with_capacity(sjis.len());
     let mut i = 0;
     while i < sjis.len() {
         let b = sjis[i];
-        if b == 0xFD && sjis.get(i + 5) == Some(&0xFD) {
+        // A variable auto-translate block, FD 06 x x x nn <nn bytes> x (FUN_101adbb0: nn + 7 bytes, nn a signed
+        // byte): every byte is kept as it is for autotrans::Dictionary::expand, and encode_sjis gives them back.
+        if b == PHRASE_MARK
+            && sjis.get(i + 1) == Some(&KIND_VARIABLE)
+            && let Some(&nn) = sjis.get(i + 5).filter(|&&n| n < 0x80)
+            && let Some(block) = sjis.get(i..i + nn as usize + 7)
+        {
+            out.extend(block.iter().map(|&x| char::from_u32(BYTE_BASE + x as u32).unwrap()));
+            i += block.len();
+            continue;
+        }
+        if b == PHRASE_MARK && sjis.get(i + 5) == Some(&PHRASE_MARK) {
             for (k, &x) in sjis[i + 1..i + 5].iter().enumerate() {
                 out.push(char::from_u32(PHRASE_BASE + 0x100 * k as u32 + x as u32).unwrap());
             }
@@ -716,5 +741,33 @@ mod tests {
         assert!(!s.contains('\u{FFFD}'));
         assert_eq!(encode_sjis(&s), b);
         assert_eq!(glyphs(&b), vec![b'a' as i32 - 0x20, 723, b'b' as i32 - 0x20, 724]);
+    }
+
+    /// `1e 09` on the installed files (FUN_10163710): the glyphs after it take the table's colour with the line's
+    /// alpha (the table's own alpha, 0x60, is not used), and `1e 01` gives the line's colour back. The table has a
+    /// colour for code 9 from build 30261102_0; before that the code leaves the line's colour.
+    #[test]
+    fn colour_code_9() {
+        let cfg = crate::config::Config::load();
+        let (Ok(index), Ok(dll)) =
+            (DatIndex::open(&cfg.ffxi_dir()), std::fs::read(crate::dat::ffximain(&cfg.ffxi_dir())))
+        else {
+            return;
+        };
+        let font = Font::load(&index, &dll, 1, Quality::Compressed).unwrap();
+        let base = [0x80, 0x70, 0x60, 0x50];
+        let nine = match font.codes[9] {
+            0 => base,
+            c => {
+                assert_eq!(c, 0x6040_4040);
+                [0x40, 0x40, 0x40, 0x50]
+            }
+        };
+        assert_eq!(font.code_colour(0, 9, base), nine);
+        let mut quads = Vec::new();
+        let end = font.layout_line(b"a\x1e\x09bc\x1e\x01d", 0, 0, base, [1.0, 1.0], &mut quads);
+        assert_eq!(quads.iter().map(|q| q.color).collect::<Vec<_>>(), [base, nine, nine, base]);
+        // the codes take no room
+        assert_eq!(end, font.layout_line(b"abcd", 0, 0, base, [1.0, 1.0], &mut Vec::new()));
     }
 }

@@ -1844,6 +1844,7 @@ mod layout_tests {
 #[cfg(test)]
 mod panel_tests {
     use super::*;
+    use crate::client::egui_pass;
 
     /// A docked panel whose contents grow or shrink keeps its bottom on the panel it sits on the same frame (the item
     /// info moving between a long and a short item stood a frame too high or too low).
@@ -1851,8 +1852,7 @@ mod panel_tests {
     fn docked_panel_keeps_its_bottom_as_it_resizes() {
         let ctx = egui::Context::default();
         let side = Some(16384);
-        let mut o = ctx.run_ui(egui::RawInput { max_texture_side: side, ..Default::default() }, |_| {});
-        o.textures_delta.clear();
+        egui_pass(&ctx, egui::RawInput { max_texture_side: side, ..Default::default() }, |_| {});
         let m = Modern::new(&ctx);
         let mut layout = Layout::new();
         let mut bottoms = Vec::new();
@@ -1864,7 +1864,7 @@ mod panel_tests {
                 ..Default::default()
             };
             let mut info = None;
-            let mut o = ctx.run_ui(raw, |ui| {
+            egui_pass(&ctx, raw, |ui| {
                 let ctx = ui.ctx();
                 let (mut changed, mut chat_font) = (false, 14.0);
                 let mut p = Panels {
@@ -1900,7 +1900,6 @@ mod panel_tests {
                     .zip(combat);
                 *m.rects.borrow_mut() = std::mem::take(&mut p.this);
             });
-            o.textures_delta.clear();
             // Frame 0 has egui's default screen.
             if f > 0 {
                 let (r, under) = info.unwrap();
@@ -1918,8 +1917,7 @@ mod panel_tests {
     fn mod_placed_panel_moves_and_scales() {
         let ctx = egui::Context::default();
         let side = Some(16384);
-        let mut o = ctx.run_ui(egui::RawInput { max_texture_side: side, ..Default::default() }, |_| {});
-        o.textures_delta.clear();
+        egui_pass(&ctx, egui::RawInput { max_texture_side: side, ..Default::default() }, |_| {});
         let m = Modern::new(&ctx);
         let mut layout = Layout::new();
         let place =
@@ -1947,7 +1945,7 @@ mod panel_tests {
                 max_texture_side: side,
                 ..Default::default()
             };
-            let mut o = ctx.run_ui(raw, |ui| {
+            egui_pass(&ctx, raw, |ui| {
                 let ctx = ui.ctx();
                 let (mut changed, mut chat_font) = (false, 14.0);
                 let placed = placed.map(|p| HashMap::from([("focus".to_string(), p)])).unwrap_or_default();
@@ -1977,7 +1975,6 @@ mod panel_tests {
                 }));
                 *m.rects.borrow_mut() = std::mem::take(&mut p.this);
             });
-            o.textures_delta.clear();
         }
         let r: Vec<Rect> = seen.into_iter().skip(1).map(Option::unwrap).collect();
         let ppp = ctx.pixels_per_point();
@@ -2011,8 +2008,7 @@ mod panel_tests {
     #[test]
     fn skin_replaces_and_gives_back() {
         let ctx = egui::Context::default();
-        let mut o = ctx.run_ui(egui::RawInput { max_texture_side: Some(16384), ..Default::default() }, |_| {});
-        o.textures_delta.clear();
+        egui_pass(&ctx, egui::RawInput { max_texture_side: Some(16384), ..Default::default() }, |_| {});
         let m = Modern::new(&ctx);
         let base = m.art.sprite("gauges/hp_full").unwrap();
         let img = std::sync::Arc::new((64u32, 8u32, vec![255u8; 64 * 8 * 4]));

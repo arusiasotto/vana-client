@@ -490,6 +490,7 @@ pub(super) fn install(lua: &Lua, game: &Table) -> mlua::Result<()> {
             t.set("mog_house", w.room_flag)?;
             t.set("chat_open", w.typing)?;
             t.set("menu_open", super::super::world_window_open(w))?;
+            t.set("macros", super::super::retail_macro_gate(w))?;
             t.set("event", w.event.is_some())?;
             t.set("in_combat", w.my_motion.status == 1)?;
             t.set("locked", w.locked)?;

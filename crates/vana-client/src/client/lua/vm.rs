@@ -110,6 +110,8 @@ pub(super) struct ModState {
     pub frame_no: u64,
     /// Suspended for its errors (the Vm's flag, seen by other mods' calls).
     pub suspended: bool,
+    /// Unloaded: a parked stand-in still holding this state counts none of its windows.
+    pub gone: bool,
     /// The character storage file it loaded (saved there even when the client closes without a world).
     pub char_file: Option<String>,
     /// Keys it holds down for the game (input.send), let go when it unloads.

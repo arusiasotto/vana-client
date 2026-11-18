@@ -65,6 +65,8 @@ pub struct Screen {
     filter: u16,
     /// pupsibor's cursor row while it is open.
     sibo: Option<u16>,
+    /// When the pointer's refused hand-over last sounded (`pointer`).
+    buzzed: Option<std::time::Instant>,
 }
 
 /// FUN_100fcbc0(side, 0x1200, i): slot i's byte (0 head, 1 frame, 2..13 attachments), 0 without a PUP block.
@@ -226,6 +228,7 @@ pub fn open(w: &mut World) {
         mode: Mode::All,
         filter: 0,
         sibo: None,
+        buzzed: None,
     });
 }
 
@@ -576,7 +579,18 @@ pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), move
     gu.hover.set(true);
     let on_grid = matches!(h, Hit::Grid(_));
     if on_grid != (s.focus == Focus::Grid) {
-        if moved {
+        // automato's frame hook (win_automato_v28 0x10209050): while the pointer drives the menus and rests on
+        // bluinven it sends itself message 8 every frame. With nothing picked that hands the focus over once; with a
+        // pick the focus stays, so the refusal's SE 0004 sounds again every retail frame until the pointer leaves.
+        if s.focus == Focus::Grid && (s.pick.is_some() || s.slot_pick.is_some()) {
+            let due = s.buzzed.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(33));
+            if due {
+                num_plus(w);
+                if let Some(s) = w.pupset.as_mut() {
+                    s.buzzed = Some(std::time::Instant::now());
+                }
+            }
+        } else if moved {
             num_plus(w);
         }
         return;

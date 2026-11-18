@@ -58,9 +58,10 @@ pub fn parse_look(b: &[u8]) -> Result<NpcLook> {
             hands: id(4),
             legs: id(5),
             feet: id(6),
-            main: 0,
-            sub: 0,
-            range: 0,
+            // FUN_1009b3f0 writes all nine words @0x32..@0x42 into the look slots (+0xfc..+0x10c).
+            main: id(7),
+            sub: id(8),
+            range: id(9),
         }),
         k => bail!("look kind {k} (door/elevator/ship) has no model"),
     })
@@ -119,6 +120,7 @@ pub fn init_scheduler(file: &[u8]) -> InitScheduler {
         let d = c.data;
         let Some(mut at) = d.get(16..20).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize) else { continue };
         let mut v = [None; 9];
+        let mut range = None;
         while at + 2 <= d.len() {
             let (op, len) = (d[at], d[at + 1] as usize * 4);
             if op == 0 || len == 0 || at + len > d.len() {
@@ -127,6 +129,8 @@ pub fn init_scheduler(file: &[u8]) -> InitScheduler {
             let value = (len >= 12).then(|| u32::from_le_bytes(d[at + 8..at + 12].try_into().unwrap()));
             match op {
                 0x8d..=0x95 => v[(op - 0x8d) as usize] = value,
+                // vt+0xfc FUN_100848c0: slot 8, the ranged weapon.
+                0x96 => range = value,
                 0x98 => out.model = value.map(|m| m as u16),
                 0x79 | 0x8c | 0xa4 | 0xa5 => out.motion_ops.extend(value.map(|s| (op, s))),
                 _ => {}
@@ -145,7 +149,7 @@ pub fn init_scheduler(file: &[u8]) -> InitScheduler {
                 feet: s(6),
                 main: s(7),
                 sub: s(8),
-                range: 0,
+                range: range.unwrap_or(0) as u16,
             });
         }
     }
@@ -204,6 +208,15 @@ pub fn load_file_model(index: &DatIndex, id: u32) -> Result<Character> {
     let mut ch = self_contained(id, &file, f, skeleton, "riding model");
     ch.hide_covered();
     Ok(ch)
+}
+
+/// A model folder inside an effect file (bytes `a..b`: the folder's chunks), a CMoSkeletonElem's (FUN_1004e8d0 kind 1).
+pub fn load_folder_model(index: &DatIndex, id: u32, a: u32, b: u32) -> Result<Character> {
+    let file = index.read(id)?;
+    let Some(bytes) = file.get(a as usize..b as usize) else { bail!("file {id}: folder {a:#x}..{b:#x} out of range") };
+    let mut f = load_file(bytes)?;
+    let Some(skeleton) = f.skeleton.take() else { bail!("file {id}: folder at {a:#x} has no skeleton") };
+    Ok(self_contained(id, bytes, f, skeleton, "effect model"))
 }
 
 fn self_contained(
@@ -284,6 +297,27 @@ pub fn load_npc(index: &DatIndex, look: &NpcLook) -> Result<Character> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Titan's effect file (50196) keeps a whole model in folder 'iwa ' (skeleton, mesh hf_d, motions idl0 / iwa0): a
+    /// CMoSkeletonElem's actor loads from that range alone.
+    #[test]
+    fn effect_folder_model() {
+        let Ok(index) = crate::dat::DatIndex::open(&crate::config::Config::load().ffxi_dir()) else { return };
+        let Ok(file) = index.read(50196) else { return };
+        let lib = crate::fx::lib::Library::load(50196, file).unwrap();
+        let node = lib
+            .tree
+            .nodes
+            .iter()
+            .position(|n| n.kind == crate::dat::generator::kind::FOLDER && &n.name == b"iwa ")
+            .unwrap();
+        let r = lib.folder_range(node);
+        let ch = load_folder_model(&index, 50196, r.start as u32, r.end as u32).unwrap();
+        assert!(!ch.skeleton.bones.is_empty());
+        assert!(!ch.parts.is_empty(), "no mesh");
+        let names: Vec<&str> = ch.animations.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.iter().any(|n| n.starts_with("iwa")) && names.iter().any(|n| n.starts_with("idl")), "{names:?}");
+    }
 
     /// Prints a model file's init scheduler (by hand: `cargo test --release init_of -- --ignored --nocapture`).
     #[test]
@@ -416,6 +450,11 @@ mod tests {
             panic!()
         };
         assert_eq!(c.race, 32);
+        // SubKind 7 carries all eight slot words, the weapons @0x3E..@0x42 too (FUN_1009b3f0).
+        let NpcLook::Equipped(w) = parse_look(&hex("0700050001100220033004400550066007700880")).unwrap() else {
+            panic!()
+        };
+        assert_eq!((w.race, w.head, w.feet, w.main, w.sub, w.range), (5, 1, 5, 6, 7, 8));
     }
 
     #[test]

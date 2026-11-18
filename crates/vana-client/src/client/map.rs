@@ -120,7 +120,7 @@ impl Region {
 
     /// The record for where `w` stands (the sub-key under the player), else the zone's key-0 map.
     pub(super) fn here(regions: &[Region], w: &World) -> Option<Region> {
-        let key = w.ground.as_ref().map_or(0, |g| g.map_key(w.pos));
+        let key = sub_key(w, -1, true);
         Self::find_key(regions, w.pos_zone, key).or_else(|| Self::find(regions, w.pos_zone))
     }
 
@@ -152,12 +152,7 @@ impl Region {
 
     /// FUN_101ee650: world (x, z) to raw map pixels, k = 2560 / |scale|; C truncation.
     pub fn px(&self, x: f32, z: f32) -> (i32, i32) {
-        let s = self.scale.unsigned_abs() as f32;
-        if s == 0.0 {
-            return (0, 0);
-        }
-        let k = 2560.0 / s;
-        ((x * (1.0 / k) * 512.0 + 0.5) as i32, -((z * (1.0 / k) * 512.0 + 0.5) as i32))
+        px_of(self.scale, x, z)
     }
 
     /// FUN_101f1a60: "(%c-%d)" from 32-pixel cells 16 in from the origin.
@@ -255,9 +250,25 @@ struct List {
     v2: Option<(usize, u16)>,
     /// Placing a marker in this slot: cursor mode (flag 0x100, sub-mode 1) at a screen point.
     placing: Option<(usize, (f32, f32))>,
-    /// The name entry for a slot (FUN_101fbd90, 15 characters).
+    /// The name entry for a slot (FUN_101fd3a0, 15 characters).
     rename: Option<(usize, String)>,
 }
+
+/// The placing cursor's sprite (keytops3, the window's sprite list entry 1 at +0x118).
+const PLACE_CURSOR: usize = 151;
+/// mapv3's name column (FUN_101cb320's width limit).
+const NAME_FIT: f32 = 68.0;
+
+/// A party or alliance member's marker (slots 20..39): name, map pixel, of our party (sprite kind 5, else 6).
+#[derive(Clone, Debug, PartialEq)]
+struct MemberMark {
+    name: String,
+    px: (f32, f32),
+    party: bool,
+}
+
+/// mapv2's place from mapv3's (FUN_101fd930): the row's left edge (16) less mapv2's width (112), the first row's top (6).
+const V2_AT: (f32, f32) = (16.0 - 112.0, 6.0);
 
 /// Marker sprites of the four sets (list 0x1038214c indices 3..6): yours, event, party, alliance.
 const SET_SPRITE: [usize; 4] = [150, 152, 154, 155];
@@ -309,6 +320,10 @@ pub struct MapWin {
     /// The sub-key asked for (+0x102; the record may be the zone's key 0), and no record at all (+0xa47).
     key: u8,
     no_record: bool,
+    /// The op's raw key FUN_100b2570 keeps (DAT_104897f6) to test for the same map; -1 when none was given.
+    op_key: i16,
+    /// The placing cursor sprite's width, read as drawn; FUN_101fa1a0 halves it to find its centre.
+    cursor_w: f32,
     need: Need,
     owned: bool,
     /// Teleport points (modes 1 / 3 / 6, 0 / 5 with the map).
@@ -325,12 +340,19 @@ pub struct MapWin {
     mark_dir: Option<std::path::PathBuf>,
     char_id: u32,
     dirty: bool,
-    /// Sets 2 / 3: members in this zone and sub-map with a model (FUN_101f7db0): name, map pixel, alliance.
-    party: Vec<(String, (f32, f32), bool)>,
-    /// Marker alpha per set and slot (FUN_101eef90), 0..0x80.
+    /// Sets 2 / 3 (slots 20..39, FUN_101fa720): our party's members from slot 20, the alliance's others from
+    /// `rest_from`; how many of each were placed (+0x10e / +0x10f) and whether one landed in set 3 (+0xa48).
+    members: [Option<MemberMark>; 20],
+    rest_from: usize,
+    party_count: u8,
+    rest_count: u8,
+    set3: bool,
+    /// The map is of the zone we are in (party markers and c2s 0x0D2 only then).
+    here: bool,
+    /// Marker alpha per set and slot (FUN_101f0560), 0..0x80.
     mark_alpha: [[f32; 10]; 4],
-    /// Sets 2 / 3: the one member whose label shows (picked in the list).
-    label_only: Option<usize>,
+    /// Sets 2 / 3: the one member of each whose label shows (flag 8 cleared by FUN_101fa6d0; it stays over set changes).
+    label_only: [Option<usize>; 2],
     list: Option<List>,
     /// Change Map's list (maplist) while open.
     pub maplist: Option<MapList>,
@@ -340,7 +362,7 @@ pub struct MapWin {
     set: u8,
     /// Interface sounds for the caller to play.
     pub sounds: Vec<u32>,
-    /// Party positions (c2s 0x0D2) asked for this map (+0xa45), and an ask waiting to be sent.
+    /// Party positions (c2s 0x0D2) asked for this map (+0xa45); preset for a map of another zone (FUN_101fa620(0)).
     party_asked: bool,
     /// Requests for the caller: packets and prompts.
     pub outs: Vec<Out>,
@@ -417,47 +439,85 @@ impl MapWin {
             w.game.get(0x8a),
             true,
         );
-        m.attach(w);
+        // FUN_101f8ff0: +0x102 is the sub-key under the player even when the key-0 record is shown. Set 2 to start
+        // (FUN_101f7810 in 30261006_0); attach moves on past empty sets.
+        (m.key, m.set) = (sub_key(w, -1, true), 2);
+        m.attach(w, regions);
         Some(m)
     }
 
-    /// FUN_101f80b0 (the .MRK) and FUN_101f7db0 (party markers) at open, then FUN_101fad70(0): a set with entries.
-    fn attach(&mut self, w: &World) {
+    /// FUN_101f96c0 (the .MRK, named by the zone and the sub-key asked for) and, in modes 0 / 5 for a map of the
+    /// zone we are in, FUN_101f93c0 (party markers from the actors); then FUN_101fc380(0): a set with entries.
+    fn attach(&mut self, w: &World, regions: &[Region]) {
         self.mark_dir = marks_dir(w);
         self.char_id = w.my_id;
         if let Some(d) = &self.mark_dir {
-            self.marks = super::mapmark::MarkFile::load(d, self.region.zone as u16, self.region.key as u8, w.my_id);
+            self.marks = super::mapmark::MarkFile::load(d, self.region.zone as u16, self.key, w.my_id);
         }
-        self.scan_ok = w.recasts_seen && self.region.zone == w.pos_zone as i16;
+        self.here = self.region.zone == w.pos_zone as i16;
+        self.scan_ok = w.recasts_seen && self.here;
         self.tracking = w.scan.tracking().is_some();
         self.tracked = w.scan.tracking().map(|t| {
             let (x, y) = self.region.px(t.pos[0], t.pos[2]);
             (x as f32, y as f32)
         });
-        let own = w.party.own_flags;
-        for m in w.party.members().skip(1).filter(|m| m.zone == w.pos_zone && m.away == 0) {
-            let Some(e) = w.entities.get(&m.id) else { continue };
-            if w.ground.as_ref().is_some_and(|g| g.map_key(e.pos) != self.region.key as u8) {
-                continue;
+        self.rest_from = rest_from(w);
+        let menu = matches!(self.mode, Mode::Menu | Mode::Other) && self.need != Need::Nothing;
+        // FUN_101fa620(0): a mode 5 map of another zone never asks for positions.
+        self.party_asked = self.mode == Mode::Other && !self.here;
+        if menu && self.here {
+            // FUN_101f93c0: members after us with an actor on the sub-map under us, each through FUN_101f94d0 as an
+            // s2c 0x0A0 answer would be (the same record lookup and pixel).
+            let mine = sub_key(w, -1, true);
+            let own = w.party.own_flags;
+            for m in w.party.members().skip(1) {
+                let Some(e) = w.entities.get(&m.id) else { continue };
+                if w.ground.as_ref().map_or(0, |g| g.map_key(e.pos)) != mine {
+                    continue;
+                }
+                let (px, py) = reply_px(regions, w.pos_zone, mine, e.pos.x, e.pos.z);
+                self.add_member(&m.name, (px as f32, py as f32), (m.flags ^ own) & 3 == 0);
             }
-            let (px, py) = self.region.px(e.pos.x, e.pos.z);
-            self.party.push((m.name.clone(), (px as f32, py as f32), (m.flags ^ own) & 3 != 0));
         }
         self.step_set(0);
     }
 
-    /// FUN_101fad70(d): the set by d, wrapping, past sets with nothing to show (0 needs the map, 2 any member, 3 an
-    /// alliance member; 1 always).
-    /// Marker set `s` can be shown (FUN_101fad70 skips the others).
+    /// FUN_101fa720: a member's marker. Our party's take the first free slot from 20, the alliance's others from
+    /// `rest_from`; a slot that already holds the name ends it (the first position wins). A member landing in slots
+    /// 30..39 makes set 3 showable.
+    fn add_member(&mut self, name: &str, px: (f32, f32), party: bool) {
+        let mut i = if party { 0 } else { self.rest_from };
+        while i < 20 {
+            match &self.members[i] {
+                Some(m) if m.name == name => return,
+                Some(_) => i += 1,
+                None => break,
+            }
+        }
+        if i >= 20 {
+            return;
+        }
+        self.members[i] = Some(MemberMark { name: name.into(), px, party });
+        if party {
+            self.party_count += 1;
+        } else {
+            self.rest_count += 1;
+            self.set3 |= i >= 10;
+        }
+    }
+
+    /// Marker set `s` can be shown (FUN_101fc380 skips the others): 0 needs the map held (+0xa46, worked out in modes
+    /// 0 / 5 only), 2 any member, 3 a member in slots 30..39 (+0xa48); 1 always.
     fn set_shown(&self, s: u8) -> bool {
         match s {
-            0 => self.owned && self.need != Need::Nothing,
-            2 => !self.party.is_empty(),
-            3 => self.party.iter().any(|p| p.2),
+            0 => self.owned && self.need != Need::Nothing && matches!(self.mode, Mode::Menu | Mode::Other),
+            2 => self.party_count != 0 || self.rest_count != 0,
+            3 => self.set3,
             _ => true,
         }
     }
 
+    /// FUN_101fc380(d): the set by d, wrapping, past sets with nothing to show.
     fn step_set(&mut self, d: i32) {
         let step = if d < 0 { 3 } else { 1 };
         if d != 0 {
@@ -469,7 +529,26 @@ impl MapWin {
             }
             self.set = (self.set + step) % 4;
         }
-        self.label_only = None;
+    }
+
+    /// FUN_101fd680's first test: an event map's mapv3 (+0x10a, FUN_101f8ef0 passes 1) takes no keys and has no
+    /// cursor.
+    fn locked(&self) -> bool {
+        !matches!(self.mode, Mode::Menu | Mode::Other)
+    }
+
+    /// Opened through FUN_100b2570 (DAT_104896e6 set): the event modes and the op 0xd4 preview.
+    fn event_opened(&self) -> bool {
+        matches!(self.mode, Mode::Event | Mode::Illustration | Mode::RegionMap | Mode::Preview)
+    }
+
+    /// FUN_100b2570's same-map test for ops 0x89 / 0x8d / 0xc8: the mode, the zone and, when given, the op's key as
+    /// the last op gave it.
+    fn shows_event(&self, zone: i16, key: i16) -> bool {
+        !self.closing()
+            && self.mode == Mode::of_event_zone(zone)
+            && self.region.zone == zone
+            && (key < 0 || self.op_key == key)
     }
 
     /// The map's zone (for c2s 0x0D2).
@@ -477,23 +556,25 @@ impl MapWin {
         self.region.zone as u16
     }
 
-    /// FUN_101f9070: c2s 0x0D2 for the map's zone, once per map, when a party set is about to show.
+    /// FUN_101fa680: c2s 0x0D2 for the map's zone, once per map (+0xa45).
     fn want_party(&mut self) {
-        if self.set > 1 && !self.party_asked {
+        if !self.party_asked {
             self.party_asked = true;
             self.outs.push(Out::AskParty);
         }
     }
 
-    /// s2c 0x0A0 (FUN_101f9110): a member's position on this map, replacing what the actors gave; `same_key` is
-    /// whether the sub-key under it matches the map's.
-    pub fn party_pos(&mut self, name: &str, x: f32, z: f32, alliance: bool, same_key: bool) {
-        if !same_key {
-            return;
-        }
-        let (px, py) = self.region.px(x, z);
-        self.party.retain(|p| p.0 != name);
-        self.party.push((name.into(), (px as f32, py as f32), alliance));
+    /// The sub-key the map was asked for (+0x102): what s2c 0x0A0 positions are tested against, and the .MRK's name.
+    pub fn asked_key(&self) -> u8 {
+        self.key
+    }
+
+    /// s2c 0x0A0 (FUN_100f07b0 -> FUN_101f94d0) for a listed member in our zone on the sub-map asked for: placed by
+    /// FUN_101fa720 on whatever map is open, so a member the actors already placed stays where they were. `from` is
+    /// `rest_from` now.
+    pub fn party_pos(&mut self, name: &str, px: (i16, i16), party: bool, from: usize) {
+        self.rest_from = from;
+        self.add_member(name, (px.0 as f32, px.1 as f32), party);
     }
 
     /// Set s, slot i: its map pixel, label and sprite, when it holds a marker.
@@ -503,28 +584,31 @@ impl MapWin {
                 .get(i)
                 .filter(|m| m.valid)
                 .map(|m| ((m.px.0 as f32, m.px.1 as f32), Some(m.name.as_str()), SET_SPRITE[s])),
-            2 => {
-                let p = self.party.iter().filter(|p| !p.2).chain(self.party.iter().filter(|p| p.2)).nth(i)?;
-                Some((p.1, Some(p.0.as_str()), SET_SPRITE[if p.2 { 3 } else { 2 }]))
-            }
-            _ => self.party.iter().filter(|p| p.2).nth(i).map(|p| (p.1, Some(p.0.as_str()), SET_SPRITE[3])),
+            _ => self
+                .members
+                .get((s - 2) * 10 + i)?
+                .as_ref()
+                .map(|m| (m.px, Some(m.name.as_str()), SET_SPRITE[if m.party { 2 } else { 3 }])),
         }
     }
 
-    /// Op 0x8b / 0xb8 on an open event map (FUN_101f8d50 / FUN_101f8de0 / FUN_101f8e30): set 1's slot at the world
-    /// (x, z), named, then scrolled to.
-    fn mark(&mut self, slot: usize, x: f32, z: f32, name: &str) {
+    /// Op 0x8b / 0xb8 (FUN_101f8d50 / FUN_101f8e30): set 1's slot at the world (x, z), named; on an open event map
+    /// also scrolled to (FUN_101f8de0), not on the file path.
+    fn mark(&mut self, slot: usize, x: f32, z: f32, name: &str, scroll: bool) {
         let Some(m) = self.marks.sets[1].get_mut(slot) else { return };
         let (px, py) = self.region.px(x, z);
         *m = super::mapmark::Slot { px: (px as i16, py as i16), name: name.into(), valid: true };
         self.dirty = true;
-        self.scroll_to_px((px as f32, py as f32));
+        if scroll {
+            self.scroll_to_px((px as f32, py as f32));
+        }
     }
 
-    /// Op 0xa8 / 0xb9 (FUN_101f8da0): set 1's slot emptied, its name cleared.
+    /// Op 0xa8 / 0xb9 (FUN_101fa3b0, then FUN_101fa440 with an empty name): set 1's slot no longer holds a marker
+    /// and loses its name; its pixel stays.
     fn unmark(&mut self, slot: usize) {
         if let Some(m) = self.marks.sets[1].get_mut(slot) {
-            *m = Default::default();
+            (m.valid, m.name) = (false, String::new());
             self.dirty = true;
         }
     }
@@ -545,17 +629,33 @@ impl MapWin {
         self.list = Some(List { cursor: 2, ..Default::default() });
     }
 
+    /// Offscreen shots: as `shot_markers`, with a removed marker's row (its name stays), a name past the column
+    /// (the ellipsis) and mapv2 on the removed row (View disabled, Place).
+    pub fn shot_marker_menu(&mut self) {
+        self.shot_markers();
+        self.marks.sets[0][3] = super::mapmark::Slot { px: (0, 0), name: "Old camp".into(), valid: false };
+        self.marks.sets[0][4] = super::mapmark::Slot {
+            px: ((self.home.0 - 60.0) as i16, (self.home.1 + 30.0) as i16),
+            name: "Wwwwwwwwwwwwwww".into(),
+            valid: true,
+        };
+        self.mark_alpha[0][4] = 128.0;
+        self.list = Some(List { cursor: 4, v2: Some((3, 1)), ..Default::default() });
+    }
+
     /// The marker name entry is open: it takes the keys and characters.
     pub fn typing(&self) -> bool {
         self.list.as_ref().is_some_and(|l| l.rename.is_some())
     }
 
-    /// The name entry's keys: up to 15 characters, Backspace; Enter keeps it, Escape discards it (message 6).
+    /// The name entry's keys: up to 15 characters, Backspace. Enter (the input's done callback, message 0x11) and
+    /// Escape (message 6) both end in FUN_101fd450(1), which copies the input's text into the slot: Escape keeps
+    /// what was typed too.
     pub fn text_events(&mut self, events: &[egui::Event]) {
         let Some(l) = self.list.as_mut() else { return };
         let Some((slot, text)) = l.rename.as_mut() else { return };
         let slot = *slot;
-        let mut done = None;
+        let mut done = false;
         for ev in events {
             match ev {
                 egui::Event::Text(t) | egui::Event::Paste(t) => {
@@ -568,42 +668,37 @@ impl MapWin {
                 egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
                     text.pop();
                 }
-                egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => done = Some(true),
-                egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => done = Some(false),
+                egui::Event::Key { key: egui::Key::Enter | egui::Key::Escape, pressed: true, .. } => done = true,
                 _ => {}
             }
         }
-        if let Some(keep) = done {
+        if done {
             let text = std::mem::take(text);
             l.rename = None;
-            if keep {
-                self.marks.sets[0][slot].name = text;
-                self.dirty = true;
-            }
+            // FUN_101fa440: the name and the save flag, changed or not.
+            self.marks.sets[0][slot].name = text;
+            self.dirty = true;
         }
     }
 
-    /// An event's map (FUN_100b2570 -> FUN_101f78e0): zone and sub-key (negative: the one under the player when in
-    /// that zone *(inf)*, else 0); the arrow only with the op's flag.
+    /// An event's map (FUN_100b2570 -> FUN_101f78e0): zone and sub-key (negative: the one under the loaded area's
+    /// origin, whatever the zone); the arrow only with the op's flag.
     pub fn open_event(
         w: &World,
         regions: &[Region],
         zone: i16,
-        key: i16,
+        op_key: i16,
         show_player: bool,
         sw: f32,
         sh: f32,
     ) -> Option<Self> {
         let mode = Mode::of_event_zone(zone);
-        let key = if key >= 0 {
-            key as u8
-        } else if zone == w.pos_zone as i16 {
-            w.ground.as_ref().map_or(0, |g| g.map_key(w.pos))
-        } else {
-            0
-        };
+        let key = sub_key(w, op_key, false);
         let region = Region::find_key(regions, zone as u16, key).or_else(|| Region::find(regions, zone as u16))?;
-        let owned = owned(w, &region);
+        // FUN_101fb060 modes 1..3 call FUN_101f9970 with its "owned" argument 1: an event's map shows the map image
+        // whether or not we hold the area's map (only modes 0 and 5 ask FUN_10097e80 for the key item), so a
+        // newcomer shown another nation's city gets its map, not NO MAP.
+        let owned = true;
         let facing = w.net.me.lock().map_or(0.0, |m| super::event::rad_of(m.dir));
         log::info!("map: event map zone {zone} key {key} mode {mode:?} owned {owned}");
         let mut m = Self::new(
@@ -618,8 +713,8 @@ impl MapWin {
             w.game.get(0x8a),
             show_player,
         );
-        m.key = key;
-        m.attach(w);
+        (m.key, m.op_key) = (key, op_key);
+        m.attach(w, regions);
         // Mode 1 opens mapv3 on set 1 instead of map0 (map records only).
         if mode == Mode::Event && m.need != Need::Nothing {
             m.set = 1;
@@ -641,13 +736,7 @@ impl MapWin {
         sh: f32,
         point_y: f32,
     ) -> Self {
-        let key = if key >= 0 {
-            key as u8
-        } else if zone == w.pos_zone as i16 {
-            w.ground.as_ref().map_or(0, |g| g.map_key(w.pos))
-        } else {
-            0
-        };
+        let key = sub_key(w, key, true);
         let found = Region::find_key(regions, zone as u16, key).or_else(|| Region::find(regions, zone as u16));
         let region = found.unwrap_or(Region { zone, key: 0, num: 0, flags: 0, scale: 0, ki: 0, file: 0, ox: 0, oy: 0 });
         // FUN_101f7480: 0x180 leaves +0xa46 clear, so such a map never shows.
@@ -663,7 +752,7 @@ impl MapWin {
             m.scroll_to_px(m.home);
         }
         m.clamp();
-        m.attach(w);
+        m.attach(w, regions);
         m
     }
 
@@ -710,6 +799,8 @@ impl MapWin {
             region,
             key: region.key as u8,
             no_record: false,
+            op_key: -1,
+            cursor_w: 0.0,
             need,
             owned,
             points: points.then(Points::default),
@@ -721,9 +812,14 @@ impl MapWin {
             mark_dir: None,
             char_id: 0,
             dirty: false,
-            party: Vec::new(),
+            members: Default::default(),
+            rest_from: 5,
+            party_count: 0,
+            rest_count: 0,
+            set3: false,
+            here: false,
             mark_alpha: [[0.0; 10]; 4],
-            label_only: None,
+            label_only: [None; 2],
             list: None,
             maplist: None,
             reopen: None,
@@ -931,15 +1027,36 @@ impl MapWin {
         (self.zoom * 1000.0 / self.fit) as u32
     }
 
+    /// FUN_101fa420 -> FUN_101f82b0 (30261006_0): the .MRK written when a marker changed (+0xa44), named by the zone
+    /// and +0x102. The only caller of the save.
+    fn save_marks(&mut self) {
+        if self.dirty
+            && let Some(d) = &self.mark_dir
+        {
+            self.marks.save(d, self.region.zone as u16, self.key, self.char_id);
+            self.dirty = false;
+        }
+    }
+
+    /// A file edit with this map up. The mode-4 load clears +0xa44 (FUN_101f9a50), so unsaved marks are dropped
+    /// unless the load was refused (`kept`); FUN_101fa420(1) then saves. An event map's mapframe is closed first
+    /// (FUN_100b2570 -> FUN_101fa550, gone at once: true); any other fades (FUN_101ee580).
+    fn close_for_file(&mut self, kept: bool) -> bool {
+        if kept {
+            self.save_marks();
+        }
+        self.dirty = false;
+        if self.event_opened() {
+            return true;
+        }
+        self.begin_close();
+        false
+    }
+
     /// Slot 20 (FUN_101ee580): fade to 0xff at 0x10 a frame, the window gone when that ends or after 3 s.
     pub fn begin_close(&mut self) {
         if self.closing.is_none() {
-            if self.dirty
-                && let Some(d) = &self.mark_dir
-            {
-                self.marks.save(d, self.region.zone as u16, self.region.key as u8, self.char_id);
-                self.dirty = false;
-            }
+            self.save_marks();
             self.list = None;
             self.closing = Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
             self.fade = (self.fade.0, 255.0, 16.0);
@@ -974,7 +1091,9 @@ impl MapWin {
             return true;
         }
         if self.list.is_some() {
-            self.list_key(key);
+            if !self.locked() {
+                self.list_key(key);
+            }
             return true;
         }
         if self.scan.is_some() {
@@ -1017,9 +1136,11 @@ impl MapWin {
                 self.sounds.push(Ui::Cancel as u32);
                 return false;
             }
-            // FUN_101f7c60 1: mapv3 (asking party positions, c2s 0x0D2, is not done).
+            // FUN_101f9270 1: mapv3, asking for party positions first when it opens on set 2 / 3.
             egui::Key::Enter if self.cursor == 1 => {
-                self.want_party();
+                if self.set > 1 {
+                    self.want_party();
+                }
                 self.list = Some(List { cursor: 1, ..Default::default() });
                 self.sounds.push(Ui::Select as u32);
             }
@@ -1145,11 +1266,13 @@ impl MapWin {
         let set = self.set as usize;
         if let Some((slot, cur)) = l.placing {
             match key {
-                // FUN_101f8cf0: the marker at the map pixel under the cursor, then the name entry.
+                // FUN_101fa1a0 -> FUN_101fa300: the marker at the map pixel under the centre of the cursor sprite
+                // (half its width / zoom, on both axes), then the name entry.
                 K::Enter => {
+                    let half = (self.cursor_w * 0.5 / self.zoom + 0.5).trunc();
                     let px = (
-                        cur.0 / self.zoom + self.view.0 + 0.5 + self.shift.0,
-                        cur.1 / self.zoom + self.view.1 + 0.5 + self.shift.1,
+                        (cur.0 / self.zoom + self.view.0 + 0.5).trunc() + half + self.shift.0,
+                        (cur.1 / self.zoom + self.view.1 + 0.5).trunc() + half + self.shift.1,
                     );
                     let name = self.marks.sets[0][slot].name.clone();
                     self.marks.sets[0][slot] =
@@ -1173,41 +1296,42 @@ impl MapWin {
                     l.v2 = None;
                     self.sounds.push(Ui::Cancel as u32);
                 }
-                K::Enter => match *c {
-                    1 if valid => {
-                        let p = self.marks.sets[0][row].px;
-                        self.scroll_to_px((p.0 as f32, p.1 as f32));
-                        self.sounds.push(Ui::Select as u32);
+                // FUN_101fda10: every choice closes mapv2. View (disabled on an empty slot, FUN_101fd930) scrolls;
+                // Remove (FUN_101fa3b0) clears only the valid byte, the name and the pixel stay; Place starts the
+                // cursor (FUN_101fa130); Rename opens the name entry (FUN_101fd3a0).
+                K::Enter => {
+                    match *c {
+                        1 if valid => {
+                            let p = self.marks.sets[0][row].px;
+                            self.scroll_to_px((p.0 as f32, p.1 as f32));
+                        }
+                        2 if valid => {
+                            self.marks.sets[0][row].valid = false;
+                            self.dirty = true;
+                        }
+                        2 => l.placing = Some((row, self.point)),
+                        3 => l.rename = Some((row, self.marks.sets[0][row].name.clone())),
+                        _ => {
+                            self.sounds.push(Ui::Error as u32);
+                            self.list = Some(l);
+                            return;
+                        }
                     }
-                    2 if valid => {
-                        self.marks.sets[0][row] = Default::default();
-                        self.dirty = true;
-                        self.sounds.push(Ui::Select as u32);
-                    }
-                    2 => {
-                        l.placing = Some((row, self.point));
-                        self.sounds.push(Ui::Select as u32);
-                    }
-                    3 => {
-                        l.rename = Some((row, self.marks.sets[0][row].name.clone()));
-                        self.sounds.push(Ui::Select as u32);
-                    }
-                    _ => self.sounds.push(Ui::Error as u32),
-                },
+                    l.v2 = None;
+                    self.sounds.push(Ui::Select as u32);
+                }
                 _ => {}
             }
         } else {
             match key {
                 K::ArrowUp => l.cursor = if l.cursor <= 1 { 10 } else { l.cursor - 1 },
                 K::ArrowDown => l.cursor = if l.cursor >= 10 { 1 } else { l.cursor + 1 },
-                // Messages 3 / 4: the next / previous set.
+                // Messages 3 / 4: the positions asked for (once, whatever the set), then the next / previous set.
                 K::ArrowRight | K::ArrowLeft => {
                     self.want_party();
                     self.step_set(if key == K::ArrowRight { 1 } else { -1 });
-                    self.want_party();
                     self.sounds.push(Ui::Cursor as u32);
                 }
-                K::Escape if self.mode == Mode::Event => {}
                 K::Escape => {
                     self.sounds.push(Ui::Cancel as u32);
                     return;
@@ -1223,8 +1347,9 @@ impl MapWin {
                             self.scroll_to_px(p);
                             self.sounds.push(Ui::Select as u32);
                         }
+                        // FUN_101fa6d0: only this member of the set labelled.
                         (_, Some((p, ..))) => {
-                            self.label_only = Some(row);
+                            self.label_only[set - 2] = Some(row);
                             self.scroll_to_px(p);
                             self.sounds.push(Ui::Select as u32);
                         }
@@ -1422,12 +1547,12 @@ impl MapWin {
                 self.outs.push(Out::NotBusy);
             }
         }
-        if self.fade.0 == 0.0 {
-            // FUN_101eef90: list markers of the shown set fade in 6 a tick, the rest out.
-            let open = self.list.is_some();
+        if self.fade.0 == 0.0 && self.list.is_some() {
+            // FUN_101f0560 over the list mapv3 hands the window while it is open (+0x94, FUN_101fd280 / FUN_101fd310):
+            // the shown set's markers fade in 6 a tick, the rest out. With mapv3 shut nothing runs and the alphas stay.
             for s in 0..4 {
                 for i in 0..10 {
-                    let on = open && s == self.set as usize && self.slot(s, i).is_some();
+                    let on = s == self.set as usize && self.slot(s, i).is_some();
                     let a = &mut self.mark_alpha[s][i];
                     *a = (*a + if on { 6.0 } else { -6.0 } * ticks).clamp(0.0, 128.0);
                 }
@@ -1436,9 +1561,10 @@ impl MapWin {
         if self.fade.0 == 0.0
             && let Some(p) = self.points.as_mut()
         {
-            // FUN_101eef90 (flags 0x81): fade in 6 a tick; with 0x1000 (not registered) out again and back, blinking.
+            // FUN_101f0560 (flags 0x81): fade in 6 a tick; with 0x1000 (not registered) out again at 1.5 a tick (flag
+            // 0x2000: 3 x 0.5 against the rise's 12 x 0.5) and back, blinking.
             for m in &mut p.marks {
-                m.alpha += if m.falling { -6.0 } else { 6.0 } * ticks;
+                m.alpha += if m.falling { -1.5 } else { 6.0 } * ticks;
                 if m.alpha >= 128.0 {
                     (m.alpha, m.falling) = (128.0, m.blink);
                 } else if m.alpha <= 0.0 {
@@ -1447,7 +1573,7 @@ impl MapWin {
             }
         }
         if self.fade.0 == 0.0 && self.show_player {
-            // FUN_101eef90 (flags 0x9f): fade in 6 a tick, then blink between 0 and 0x80 at the same speed.
+            // FUN_101f0560 (flags 0x9f): fade in 6 a tick, then blink between 0 and 0x80 at the same speed (flag 0x400).
             self.alpha += if self.rising { 6.0 } else { -6.0 } * ticks;
             if self.alpha >= 128.0 {
                 (self.alpha, self.rising) = (128.0, false);
@@ -1576,6 +1702,10 @@ impl MapWin {
             }
         }
         self.draw_scan(gu, sw, sh, modern);
+        // FUN_101fa1a0 reads the cursor's width from its sprite (x1 - x0), as a sprite pack may have resized it.
+        if let Some(b) = gu.cell_bounds("menu    keytops3", PLACE_CURSOR, 0) {
+            self.cursor_w = b[2] - b[0];
+        }
         self.draw_list(gu, sw, sh, modern);
         if let Some(l) = self.maplist.as_ref().filter(|_| !modern) {
             l.draw(gu, sw, sh);
@@ -1652,11 +1782,15 @@ impl MapWin {
     /// FUN_101ee7b0 for the four sets: the sprite centred on its pixel, alpha << 24 | 0x808080; a label (colour 2,
     /// 0x606070, scaled by the alpha) at (+16, +1) for sets 0 / 1 and the picked member.
     fn draw_markers(&self, gu: &mut GameUi) {
+        // The window draws the records only while mapv3 lends them (+0x94).
+        if self.list.is_none() {
+            return;
+        }
         for s in 0..4 {
             for i in 0..10 {
                 let a = self.mark_alpha[s][i];
                 let Some((px, label, k)) = self.slot(s, i).filter(|_| a > 0.0) else { continue };
-                let labelled = s < 2 || (s == self.set as usize && self.label_only == Some(i));
+                let labelled = s < 2 || self.label_only[s - 2] == Some(i);
                 self.draw_mark(gu, px, k, label.filter(|_| labelled), a);
             }
         }
@@ -1771,16 +1905,18 @@ impl MapWin {
     }
 
     /// mapv3's row `i` of the shown set: its icon (keytops3) and name (the one being typed, with the caret).
+    /// FUN_101fd4d0: sets 0 / 1 show the empty or the placed icon and the slot's name either way (Remove leaves the
+    /// name); set 2 the party icon for rows under the party count, the alliance one after; set 3 the alliance one.
     fn marker_row(&self, l: &List, i: usize) -> (Option<usize>, String) {
         let (s, slot) = (self.set as usize, self.slot(self.set as usize, i));
-        let party = self.party.iter().filter(|p| !p.2).count();
         let icon = match s {
             0 | 1 => Some(ROW_ICON[2 * s + slot.is_some() as usize]),
-            2 => slot.map(|_| ROW_ICON[if i < party { 5 } else { 7 }]),
+            2 => slot.map(|_| ROW_ICON[if i < self.party_count as usize { 5 } else { 7 }]),
             _ => slot.map(|_| ROW_ICON[7]),
         };
         let name = match l.rename.as_ref().filter(|r| r.0 == i) {
             Some((_, t)) => format!("{t}|"),
+            None if s < 2 => self.marks.sets[s][i].name.clone(),
             None => slot.and_then(|s| s.1).unwrap_or_default().to_string(),
         };
         (icon, name)
@@ -1790,7 +1926,7 @@ impl MapWin {
     pub fn markers_look(&self) -> Option<MarkersLook> {
         let l = self.list.as_ref()?;
         let rows = (0..10).map(|i| self.marker_row(l, i)).collect();
-        let keys = l.v2.is_none() && l.placing.is_none() && l.rename.is_none();
+        let keys = l.v2.is_none() && l.placing.is_none() && l.rename.is_none() && !self.locked();
         let sets = [0, 1, 2, 3].map(|s| self.set_shown(s));
         let v2 = l.v2.map(|(row, c)| (row, c, self.marks.sets[0][row].valid));
         Some(MarkersLook {
@@ -1803,31 +1939,53 @@ impl MapWin {
         })
     }
 
-    /// mapv3 (FUN_101fbec0): per row the icon at (16, 5 + 16 i) and the name at (0x1f, 7 + 16 i) (font 0x44 taken as
-    /// fontshp *(inf)*); mapv2 beside the row (its place is inferred); the placing cursor (keytops3 151). `modern`: the
-    /// modern layer draws the windows, the placing cursor stays here.
+    /// mapv3 (FUN_101fd4d0), mapv2 beside the cursor row (FUN_101fd930) and the placing cursor; `modern`: the
+    /// modern layer draws the two windows.
     fn draw_list(&self, gu: &mut GameUi, sw: f32, sh: f32, modern: bool) {
         let Some(l) = &self.list else { return };
         if let Some((_, (cx, cy))) = l.placing {
-            gu.sprite("menu    keytops3", 151, cx, cy, 0x8080_8080);
+            gu.sprite("menu    keytops3", PLACE_CURSOR, cx, cy, 0x8080_8080);
         }
         if modern {
             return;
         }
-        let sel = if l.v2.is_some() || l.placing.is_some() { 0 } else { l.cursor };
+        let sel = if l.v2.is_some() || l.placing.is_some() || self.locked() { 0 } else { l.cursor };
         let Some((x, y)) = gu.menu_sel("menu    mapv3", sw, sh, sel) else { return };
+        // Icon at (16, 5 + 16 i), name at (0x1f, 7 + 16 i) fitted into 0x44 px with the ellipsis (FUN_101cb320).
         for i in 0..10 {
             let ry = y + 16.0 * i as f32;
             let (icon, name) = self.marker_row(l, i);
             if let Some(k) = icon {
                 gu.sprite("menu    keytops3", k, x + 16.0, ry + 5.0, 0x8080_8080);
             }
-            if !name.is_empty() {
+            if l.rename.as_ref().is_some_and(|r| r.0 == i) {
                 gu.shape_text(&name, x + 31.0, ry + 7.0, 0x8080_8080, false);
+            } else if !name.is_empty() {
+                gu.shape_fit(&name, x + 31.0, ry + 7.0, NAME_FIT, 0x8080_8080);
             }
         }
         if let Some((row, c)) = l.v2 {
-            gu.lobby_window_off("menu    mapv2", sw, sh, (x - 112.0, y + 16.0 * row as f32), Some(c), true, &[]);
+            let valid = self.marks.sets[0][row].valid;
+            let at = (x + V2_AT.0, y + V2_AT.1 + 16.0 * row as f32);
+            // Child 2's sprite: keytops3 29 "Place", 35 "Remove" (the window's +0x18 / +0x1c).
+            let swaps: &[(u16, usize)] = if valid { &[(2, 35)] } else { &[] };
+            let hide: &[u16] = if valid { &[] } else { &[1] };
+            if let Some(win) = gu.lobby_window_swaps("menu    mapv2", sw, sh, at, Some(c), true, hide, swaps)
+                && !valid
+                && let Some(&(_, r)) = win.children.iter().find(|ch| ch.0 == 2)
+            {
+                // View disabled: its state-4 sprite (keytops3 332) a row above child 2; under the cursor at (+1, +1)
+                // in 0x80805020, as map0's Wide Scan.
+                let on = c == 1;
+                let d = if on { 1.0 } else { 0.0 };
+                gu.sprite(
+                    "menu    keytops3",
+                    332,
+                    r[0] + d,
+                    r[1] - 16.0 + d,
+                    if on { 0x8080_5020 } else { 0x8080_8080 },
+                );
+            }
         }
     }
 }
@@ -2176,6 +2334,12 @@ pub enum Cmd {
     },
     /// FUN_100b2a60 -> FUN_101fa420(1): an answer closes the event map (any event mode), no reopen.
     CloseEvent,
+    /// s2c 0x0A0 (FUN_100f07b0): a party member's position.
+    Party {
+        id: u32,
+        zone: u16,
+        pos: [f32; 3],
+    },
     /// FUN_101fb140: a Primer page's image (mode 7); nothing while another map is up (FUN_101f9a20).
     Primer {
         first: u32,
@@ -2194,9 +2358,79 @@ fn not_owned(w: &mut World, zone: u16) {
     w.chat.push_colour(line, colour);
 }
 
+/// FUN_101f8a40(zone, key, 0) -> FUN_101f8b80: a reply's map pixel (16-bit) through the record of exactly this zone
+/// and sub-key. With no such record the index is -1 and FUN_101f8bd0 reads the scale byte 14 bytes before the table
+/// (0x103832af, 0x10 in 30261102_0).
+fn reply_px(regions: &[Region], zone: u16, key: u8, x: f32, z: f32) -> (i16, i16) {
+    let (px, py) = px_of(Region::find_key(regions, zone, key).map_or(0x10, |r| r.scale), x, z);
+    (px as i16, py as i16)
+}
+
+/// FUN_101ee650 / FUN_101f8b80: world (x, z) to raw map pixels for a record's scale byte, k = 2560 / |scale|; C
+/// truncation.
+fn px_of(scale: i8, x: f32, z: f32) -> (i32, i32) {
+    let s = scale.unsigned_abs() as f32;
+    if s == 0.0 {
+        return (0, 0);
+    }
+    let k = 2560.0 / s;
+    ((x * (1.0 / k) * 512.0 + 0.5) as i32, -((z * (1.0 / k) * 512.0 + 0.5) as i32))
+}
+
+/// Where the alliance's other members start among the 20 member slots (FUN_101fa720: slot 0x13 + the party window's
+/// count for our party, which counts us).
+pub(super) fn rest_from(w: &World) -> usize {
+    w.party.slots().counts[0].max(1) - 1
+}
+
 /// The character's USER folder, where the .MRK files sit with the macros (FUN_101c3d00).
 fn marks_dir(w: &World) -> Option<std::path::PathBuf> {
     w.macros.as_ref().map(|m| m.dir().to_path_buf())
+}
+
+/// FUN_101f78e0 / FUN_101f79e0: a negative key is the sub-key (FUN_101811d0) under the player or the loaded area's
+/// origin, for any zone (neither tests it).
+fn sub_key(w: &World, key: i16, under_player: bool) -> u8 {
+    if key >= 0 {
+        return key as u8;
+    }
+    let at = if under_player { w.pos } else { glam::Vec3::ZERO };
+    w.ground.as_ref().map_or(0, |g| g.map_key(at))
+}
+
+/// Ops 0x8b / 0xb8 / 0xa8 / 0xb9 through the file (FUN_100b2570(4, ...), the change, FUN_100b2a60). The mode-4 load
+/// (FUN_101f9a50) refuses on a lift (0x61) or with no record (0x62); the change then lands in the open map instead.
+fn through_file(
+    w: &mut World,
+    regions: &[Region],
+    zone: i16,
+    key: i16,
+    on_map: impl FnOnce(&mut MapWin),
+    on_file: impl FnOnce(&mut super::mapmark::MarkFile, &Region),
+) {
+    let has_record = Region::find_key(regions, zone as u16, sub_key(w, key, false))
+        .or_else(|| Region::find(regions, zone as u16))
+        .is_some();
+    let refused = if w.riding { Some(0x61) } else { (!has_record).then_some(0x62) };
+    if let Some(id) = refused {
+        super::textcmd::refuse(w, id);
+    }
+    // FUN_100b2a60 resets DAT_104896e6: no event map is left open.
+    w.map_open = None;
+    if let Some(m) = w.map.as_mut().filter(|m| !m.closing()) {
+        if refused.is_some() {
+            on_map(m);
+        }
+        if m.close_for_file(refused.is_some()) {
+            w.map = None;
+            w.scan.party_busy = false;
+        } else {
+            w.game.set(0x8a, m.zoom_cfg());
+        }
+    }
+    if refused.is_none() {
+        edit_file(w, regions, zone, key, on_file);
+    }
 }
 
 /// FUN_100b2570(4, ...) / FUN_100b2a60: the zone's .MRK edited without a window, then saved.
@@ -2207,25 +2441,41 @@ fn edit_file(
     key: i16,
     f: impl FnOnce(&mut super::mapmark::MarkFile, &Region),
 ) {
-    let key = if key >= 0 {
-        key as u8
-    } else if zone == w.pos_zone as i16 {
-        w.ground.as_ref().map_or(0, |g| g.map_key(w.pos))
-    } else {
-        0
-    };
+    // Named by the key asked for (+0x102) even when the zone's key-0 record stands in.
+    let key = sub_key(w, key, false);
     let (Some(dir), Some(region)) =
         (marks_dir(w), Region::find_key(regions, zone as u16, key).or_else(|| Region::find(regions, zone as u16)))
     else {
         return;
     };
-    let mut file = super::mapmark::MarkFile::load(&dir, region.zone as u16, region.key as u8, w.my_id);
+    let mut file = super::mapmark::MarkFile::load(&dir, region.zone as u16, key, w.my_id);
     f(&mut file, &region);
-    file.save(&dir, region.zone as u16, region.key as u8, w.my_id);
+    file.save(&dir, region.zone as u16, key, w.my_id);
 }
 
 pub(super) fn apply(w: &mut World, regions: &[Region], c: Cmd, sw: f32, sh: f32) {
     match c {
+        Cmd::Party { id, zone, pos } => {
+            // FUN_100f07b0 -> FUN_101f94d0, once a map has asked: a listed member in our zone on the asked sub-map.
+            let Some(key) = w.scan.party_key else { return };
+            w.scan.party_busy = false;
+            if w.map.is_none()
+                || zone != w.pos_zone
+                || w.ground.as_ref().map_or(0, |g| g.map_key(glam::Vec3::from(pos))) != key
+            {
+                return;
+            }
+            let own = w.party.own_flags;
+            let Some((name, party)) =
+                w.party.members().skip(1).find(|m| m.id == id).map(|m| (m.name.clone(), (m.flags ^ own) & 3 == 0))
+            else {
+                return;
+            };
+            let (px, from) = (reply_px(regions, zone, key, pos[0], pos[2]), rest_from(w));
+            if let Some(m) = w.map.as_mut() {
+                m.party_pos(&name, px, party, from);
+            }
+        }
         // FUN_101f9a50: not while riding a lift (group 7 0x61).
         Cmd::Menu | Cmd::Other { .. } if w.riding => super::textcmd::refuse(w, 0x61),
         Cmd::Menu => match MapWin::open(w, regions, sw, sh) {
@@ -2234,13 +2484,7 @@ pub(super) fn apply(w: &mut World, regions: &[Region], c: Cmd, sw: f32, sh: f32)
         },
         Cmd::Other { zone, key, return_menu } => {
             let here = zone == w.pos_zone as i16;
-            let k = if key >= 0 {
-                key as u8
-            } else if here {
-                w.ground.as_ref().map_or(0, |g| g.map_key(w.pos))
-            } else {
-                0
-            };
+            let k = sub_key(w, key, true);
             if let Some(region) =
                 Region::find_key(regions, zone as u16, k).or_else(|| Region::find(regions, zone as u16))
             {
@@ -2257,17 +2501,14 @@ pub(super) fn apply(w: &mut World, regions: &[Region], c: Cmd, sw: f32, sh: f32)
                     w.game.get(0x8a),
                     here,
                 );
-                m.attach(w);
+                m.key = k;
+                m.attach(w, regions);
                 m.return_menu = return_menu;
                 w.map = Some(m);
             }
         }
         Cmd::Open { zone, key, show_player } => {
-            // FUN_100b2570 reopens only for another map.
-            if w.map
-                .as_ref()
-                .is_some_and(|m| !m.closing() && m.region.zone == zone && (key < 0 || m.region.key as i16 == key))
-            {
+            if w.map.as_ref().is_some_and(|m| m.shows_event(zone, key)) {
                 return;
             }
             match MapWin::open_event(w, regions, zone, key, show_player, sw, sh) {
@@ -2283,29 +2524,47 @@ pub(super) fn apply(w: &mut World, regions: &[Region], c: Cmd, sw: f32, sh: f32)
         }
         // With an event map open: reopened for that zone if needed, the marker set and scrolled to; else the file.
         Cmd::Mark { zone, key, slot, x, z, name } => {
-            if w.map.as_ref().is_some_and(|m| m.mode != Mode::Menu && !m.closing()) {
+            if w.map.as_ref().is_some_and(|m| m.event_opened() && !m.closing()) {
                 apply(w, regions, Cmd::Open { zone, key, show_player: false }, sw, sh);
                 if let Some(m) = w.map.as_mut() {
-                    m.mark(slot, x, z, &name);
+                    m.mark(slot, x, z, &name, true);
                 }
             } else {
-                edit_file(w, regions, zone, key, |f, r| {
-                    if let Some(s) = f.sets[1].get_mut(slot) {
-                        let (px, py) = r.px(x, z);
-                        *s = super::mapmark::Slot { px: (px as i16, py as i16), name, valid: true };
-                    }
-                });
+                let on_map = name.clone();
+                through_file(
+                    w,
+                    regions,
+                    zone,
+                    key,
+                    |m| m.mark(slot, x, z, &on_map, false),
+                    |f, r| {
+                        if let Some(s) = f.sets[1].get_mut(slot) {
+                            let (px, py) = r.px(x, z);
+                            *s = super::mapmark::Slot { px: (px as i16, py as i16), name, valid: true };
+                        }
+                    },
+                );
             }
         }
+        // FUN_100b9780 / FUN_100b9820: sub 1 clears the slot in whatever map is loaded, sub 0 always in the file.
         Cmd::Unmark { zone, key, slot, file } => {
-            if let Some(m) = w.map.as_mut().filter(|m| m.region.zone == zone) {
-                m.unmark(slot);
-            } else if file {
-                edit_file(w, regions, zone, key, |f, _| {
-                    if let Some(s) = f.sets[1].get_mut(slot) {
-                        *s = Default::default();
-                    }
-                });
+            if !file {
+                if let Some(m) = w.map.as_mut() {
+                    m.unmark(slot);
+                }
+            } else {
+                through_file(
+                    w,
+                    regions,
+                    zone,
+                    key,
+                    |m| m.unmark(slot),
+                    |f, _| {
+                        if let Some(s) = f.sets[1].get_mut(slot) {
+                            (s.valid, s.name) = (false, String::new());
+                        }
+                    },
+                );
             }
         }
         Cmd::Preview { .. } if w.riding => super::textcmd::refuse(w, 0x61),
@@ -2358,7 +2617,7 @@ pub const SET_ICONS: [usize; 4] = SET_SPRITE;
 /// A click on Markers row `k` (0-based): mapv2 on another row closes first, then the row takes Enter. Nothing while a
 /// marker is placed or named.
 pub fn marker_click(w: &mut World, k: usize) {
-    let Some(l) = w.map.as_ref().and_then(|m| m.list.as_ref()) else { return };
+    let Some(l) = w.map.as_ref().filter(|m| !m.locked()).and_then(|m| m.list.as_ref()) else { return };
     if l.placing.is_some() || l.rename.is_some() || k >= 10 || l.v2.is_some_and(|v| v.0 == k) {
         return;
     }
@@ -2449,12 +2708,11 @@ pub fn maplist_click(w: &mut World, k: usize) {
 pub fn marker_set_click(w: &mut World, s: usize) {
     let Some(m) = w.map.as_mut() else { return };
     let busy = m.list.as_ref().is_none_or(|l| l.v2.is_some() || l.placing.is_some() || l.rename.is_some());
-    if busy || s > 3 || m.set as usize == s || !m.set_shown(s as u8) {
+    if busy || m.locked() || s > 3 || m.set as usize == s || !m.set_shown(s as u8) {
         return;
     }
     m.want_party();
-    (m.set, m.label_only) = (s as u8, None);
-    m.want_party();
+    m.set = s as u8;
     m.sounds.push(crate::audio::Ui::Cursor as u32);
 }
 
@@ -2927,5 +3185,199 @@ mod tests {
         assert_eq!(r.px(-200.0, -1050.0), (-39, 209));
         assert_eq!(r.grid(-39, 209), "(G-15)");
         assert_eq!(r.grid(-264 + 16 + 6 * 32, -256 + 16 + 8 * 32), "(G-9)");
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+    use egui::Key as K;
+
+    fn win(mode: Mode) -> MapWin {
+        let region = Region { zone: 230, key: 0, num: 0, flags: 0, scale: 1, ki: -1, file: 0, ox: -256, oy: -256 };
+        let mut m = MapWin::new(region, true, None, (0.0, 0.0), 0.0, 1024.0, 896.0, mode, 1000, true);
+        m.here = true;
+        m.list = Some(List { cursor: 1, ..Default::default() });
+        m
+    }
+
+    /// FUN_101fa720: our party from slot 20, the alliance's others from 0x13 + our party's count, the first position
+    /// of a name kept, set 3 only once a member lands in slots 30..39; FUN_101fd4d0's row icons.
+    #[test]
+    fn members_take_fixed_slots() {
+        let mut m = win(Mode::Menu);
+        assert!(!m.set_shown(2) && !m.set_shown(3));
+        m.rest_from = 2;
+        m.add_member("Ally", (9.0, 9.0), false);
+        m.add_member("Mate", (1.0, 1.0), true);
+        m.add_member("Ally", (50.0, 50.0), false);
+        m.add_member("Mate", (60.0, 60.0), true);
+        let at = |m: &MapWin, i: usize| m.members[i].as_ref().map(|k| (k.name.clone(), k.px, k.party));
+        assert_eq!(at(&m, 0), Some(("Mate".into(), (1.0, 1.0), true)));
+        assert_eq!((at(&m, 1), at(&m, 2)), (None, Some(("Ally".into(), (9.0, 9.0), false))));
+        assert_eq!((m.party_count, m.rest_count, m.set_shown(2), m.set_shown(3)), (1, 1, true, false));
+        // A party member past the alliance's first slot takes the next free one.
+        m.add_member("Mate2", (2.0, 2.0), true);
+        m.add_member("Mate3", (3.0, 3.0), true);
+        assert_eq!(at(&m, 3).unwrap().0, "Mate3");
+        m.set = 2;
+        let l = m.list.clone().unwrap();
+        let icons: Vec<_> = (0..5).map(|i| m.marker_row(&l, i).0).collect();
+        assert_eq!(icons, [Some(154), Some(154), Some(154), Some(155), None]);
+        assert_eq!(m.slot(2, 2).unwrap().2, SET_SPRITE[3]);
+        // Seven more of the alliance: slots 24..29 and then 30, which opens set 3.
+        for i in 0..7 {
+            assert!(!m.set3);
+            m.add_member(&format!("Other{i}"), (0.0, 0.0), false);
+        }
+        assert!(m.set_shown(3));
+        assert_eq!((m.slot(3, 0).unwrap().1, m.slot(3, 1)), (Some("Other6"), None));
+        // Twenty slots: a full table drops the rest.
+        for i in 0..20 {
+            m.add_member(&format!("More{i}"), (0.0, 0.0), false);
+        }
+        assert_eq!(m.rest_count, 17);
+    }
+
+    /// FUN_101fda10 / FUN_101fa3b0 / FUN_101fa1a0 / FUN_101fd450: every mapv2 choice closes it; Remove keeps the name
+    /// and the pixel; View on an empty slot is refused; the marker goes under the cursor sprite's centre; Escape in
+    /// the name entry keeps what was typed.
+    #[test]
+    fn menu_remove_place_and_name() {
+        use crate::audio::Ui;
+        let mut m = win(Mode::Menu);
+        m.marks.sets[0][0] = super::super::mapmark::Slot { px: (5, 6), name: "Gate".into(), valid: true };
+        let v2 = |m: &MapWin| m.list.as_ref().unwrap().v2;
+        m.key(K::Enter);
+        assert_eq!(v2(&m), Some((0, 1)));
+        m.key(K::Enter);
+        assert_eq!((v2(&m), m.scroll_to), (None, Some((5.0, 6.0))));
+        m.key(K::Enter);
+        m.key(K::ArrowDown);
+        m.key(K::Enter);
+        let s = m.marks.sets[0][0].clone();
+        assert_eq!((v2(&m), s.valid, s.name.as_str(), s.px, m.dirty), (None, false, "Gate", (5, 6), true));
+        let l = m.list.clone().unwrap();
+        assert_eq!(m.marker_row(&l, 0), (Some(ROW_ICON[0]), "Gate".to_string()));
+        // View on the empty slot: the beep, mapv2 stays.
+        m.key(K::Enter);
+        m.sounds.clear();
+        m.key(K::Enter);
+        assert_eq!((v2(&m), m.sounds.as_slice()), (Some((0, 1)), &[Ui::Error as u32][..]));
+        // Place: mapv2 closes, the cursor starts at the cursor point.
+        m.key(K::ArrowDown);
+        m.key(K::Enter);
+        assert_eq!((v2(&m), m.list.as_ref().unwrap().placing), (None, Some((0, m.point))));
+        // The width as read from a (resized) cursor sprite.
+        m.cursor_w = 20.0;
+        let half = (10.0 / m.zoom + 0.5).trunc();
+        let want = (
+            (m.point.0 / m.zoom + m.view.0 + 0.5).trunc() + half,
+            (m.point.1 / m.zoom + m.view.1 + 0.5).trunc() + half,
+        );
+        m.key(K::Enter);
+        let s = m.marks.sets[0][0].clone();
+        assert_eq!((s.valid, s.px, s.name.as_str()), (true, (want.0 as i16, want.1 as i16), "Gate"));
+        assert!(m.typing());
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        m.text_events(&[egui::Event::Text("2".into()), key(K::Escape)]);
+        assert_eq!((m.typing(), m.marks.sets[0][0].name.as_str()), (false, "Gate2"));
+    }
+
+    /// FUN_101f8a40 / FUN_101f8b80 / FUN_101f8bd0: a reply's pixel goes through the record of exactly (zone, sub-key);
+    /// with none, the byte before the table gives scale 16. FUN_101f94d0 places on whatever map is open.
+    #[test]
+    fn reply_pixel_and_placing() {
+        let rec = |key, scale| Region { zone: 230, key, num: 0, flags: 0, scale, ki: -1, file: 0, ox: 0, oy: 0 };
+        let regs = [rec(0, 1), rec(2, 4)];
+        assert_eq!(reply_px(&regs, 230, 2, 100.0, 50.0), (80, -40));
+        assert_eq!(reply_px(&regs, 230, 0, 100.0, 50.0), (20, -10));
+        assert_eq!(reply_px(&regs, 230, 1, 100.0, 50.0), (320, -160));
+        assert_eq!(reply_px(&regs, 231, 2, 100.0, 50.0), (320, -160));
+        let mut m = win(Mode::Other);
+        m.here = false;
+        m.party_pos("Mate", (80, 40), true, 3);
+        m.party_pos("Ally", (7, 8), false, 3);
+        m.party_pos("Mate", (1, 1), true, 3);
+        let at = |i: usize| m.members[i].as_ref().map(|k| (k.name.as_str(), k.px));
+        assert_eq!((at(0), at(3)), (Some(("Mate", (80.0, 40.0))), Some(("Ally", (7.0, 8.0)))));
+    }
+
+    /// FUN_101f7810 / FUN_101fc380(0): the menu map starts on set 2 and stays there with a member placed, so Markers
+    /// asks for the positions as it opens (FUN_101f9270); with nobody it moves on to set 0.
+    #[test]
+    fn menu_map_starts_on_the_party_set() {
+        let mut m = win(Mode::Menu);
+        (m.list, m.set) = (None, 2);
+        m.step_set(0);
+        m.key(K::Enter);
+        assert_eq!((m.set, m.outs.contains(&Out::AskParty)), (0, false));
+
+        let mut m = win(Mode::Menu);
+        (m.list, m.set) = (None, 2);
+        m.add_member("Mate", (1.0, 1.0), true);
+        m.step_set(0);
+        m.key(K::Enter);
+        assert_eq!((m.set, m.outs.iter().filter(|o| **o == Out::AskParty).count()), (2, 1));
+    }
+
+    /// FUN_100b2570: ops 0x89 / 0x8d / 0xc8 reopen unless the mode, the zone and a given key match the last op's,
+    /// whatever record stands in for that key.
+    #[test]
+    fn event_map_same_map_test() {
+        let mut m = win(Mode::Event);
+        (m.op_key, m.key) = (2, 2);
+        assert!(m.shows_event(230, 2) && m.shows_event(230, -1));
+        assert!(!m.shows_event(230, 0) && !m.shows_event(231, 2));
+        m.op_key = -1;
+        assert!(!m.shows_event(230, 2) && m.shows_event(230, -1));
+        assert!(!win(Mode::Preview).shows_event(230, -1) && !win(Mode::Menu).shows_event(230, -1));
+        m.begin_close();
+        assert!(!m.shows_event(230, -1));
+    }
+
+    /// FUN_101f9a50 mode 4 clears +0xa44 before FUN_101fa420(1), the only save: a file edit drops the open map's
+    /// unsaved marks unless the load was refused. An event map goes at once, the menu map fades.
+    #[test]
+    fn file_edit_drops_unsaved_marks() {
+        let dir = std::env::temp_dir().join(format!("vana-mrk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = super::super::mapmark::MarkFile::path(&dir, 230, 0);
+        for (mode, kept, gone) in [(Mode::Event, false, true), (Mode::Menu, false, false), (Mode::Event, true, true)] {
+            let mut m = win(mode);
+            m.mark_dir = Some(dir.clone());
+            m.mark(0, 1.0, 1.0, "Gate", false);
+            assert_eq!(m.close_for_file(kept), gone);
+            assert_eq!((file.exists(), m.closing(), m.dirty), (kept, !gone, false));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// FUN_101fa680 / FUN_101fd680: Left / Right ask for the positions once, whatever the set; an event map's mapv3
+    /// (+0x10a) takes no keys and has no cursor, and never has set 0.
+    #[test]
+    fn asking_and_the_event_lock() {
+        let mut m = win(Mode::Menu);
+        m.key(K::ArrowRight);
+        m.key(K::ArrowLeft);
+        assert_eq!(m.outs.iter().filter(|o| **o == Out::AskParty).count(), 1);
+        assert!(m.markers_look().unwrap().cursor.is_some());
+
+        let mut m = win(Mode::Event);
+        m.set = 1;
+        m.outs.clear();
+        for k in [K::ArrowDown, K::ArrowRight, K::Enter, K::Escape] {
+            assert!(m.key(k));
+        }
+        let l = m.list.as_ref().unwrap();
+        assert_eq!((l.cursor, m.set, m.outs.len()), (1, 1, 0));
+        let look = m.markers_look().unwrap();
+        assert_eq!((look.cursor, look.sets[0]), (None, false));
     }
 }

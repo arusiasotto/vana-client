@@ -15,7 +15,7 @@ Retail limits that only existed because of 2002 hardware, like the 30 fps cap, b
 It runs on Linux (x86-64 and ARM), Windows and macOS (Apple Silicon and Intel); builds of each are on the
 [releases page](https://github.com/lenonk/vana-client/releases).
 
-If you're having trouble or just want to chat, join us on [Discord](https://discord.gg/njx79Keq).
+If you're having trouble or just want to chat, join us on [Discord](https://discord.gg/9WNtDsdw9y).
 
 ## Two interfaces
 
@@ -112,6 +112,15 @@ This unpacks the game to `~/.local/share/vana-client/game/FINAL FANTASY XI` with
 installer uses. Use `--game-dir` to put it somewhere else. An existing Windows install can also be copied there,
 or pointed at with `game_dir` in the config (see below). Started without game files, the client offers to download
 them, or to use an install already on disk with "Use existing game files...".
+
+The install also copies PlayOnline's name dictionary (`entryz.dic`, from the setup's `PlayOnlineViewer.msi`) to
+`PlayOnlineViewer/data/dic` beside the game folder, as a Windows install has it; the character creator checks new
+names against it. An install made by an older vana-client does not have it and leaves name checks to the server. To
+add it, give the same setup (or `PlayOnlineViewer.msi` itself) to:
+
+```sh
+target/release/vana-client dictionary /path/to/FFXIFullSetup_US.part1.exe
+```
 
 The installer's data is years old. To bring it up to the current retail version from the PlayOnline patch server:
 

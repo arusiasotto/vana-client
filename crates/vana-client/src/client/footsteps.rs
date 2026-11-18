@@ -94,6 +94,8 @@ pub(super) fn steps(w: &mut World, places: &HashMap<u32, Place>, points: Vec<(u6
         // +0x128 bit 0 clear (event op 0x61): none; the motion gate (+0x7d8 != the idle 'idl?', leg mode 3, or +0x128
         // bit 1 from event op 0xab 8): moving *(inf: from the movement ratio)*.
         let (off, always) = w.entities.get(&id).map_or((false, false), |e| (e.steps_off, e.steps_always));
+        // Scheduler op 0xbc's counter (+0x8ab) opens the gate too.
+        let always = always || w.actors.get(&id).is_some_and(|a| a.step_hold > 0.0);
         if off || (pl.ratio <= 1e-4 && ch.cib[0] != 3 && !always) {
             continue;
         }

@@ -7,6 +7,7 @@ use super::game_ui::GameUi;
 use super::target::{self, SubThen};
 use crate::audio::Ui;
 use crate::dat::actions::RANGES;
+use crate::dat::effect;
 use crate::dat::names::NameSource;
 use crate::render::invwin::{ActionRow, push_action_list, push_category, push_cost_box};
 use std::time::Instant;
@@ -276,9 +277,31 @@ pub(super) fn ability_recast(w: &World, timer: u16) -> f32 {
     w.ability_recast.get(&timer).map_or(0.0, |t| t.saturating_duration_since(Instant::now()).as_secs_f32())
 }
 
+/// A spell's MP cost under our effects (FUN_10101e50 with the record's type and +0x44).
+pub fn spell_mp(w: &World, s: u16) -> u16 {
+    spell_mp_known(w, s).unwrap_or(0)
+}
+
+/// `spell_mp`, None for a spell the DAT does not have.
+pub fn spell_mp_known(w: &World, s: u16) -> Option<u16> {
+    let r = w.actions.as_ref()?.spell(s)?;
+    Some(crate::dat::actions::mp_cost(r.mp, r.kind, r.flags, &w.buffs))
+}
+
+/// An ability's MP cost under our effects (FUN_10101e50 with type 99: Apogee, Manafont, Manawell).
+pub fn ability_mp(w: &World, cost: u16) -> u16 {
+    crate::dat::actions::mp_cost(cost, 99, 0, &w.buffs)
+}
+
 /// FUN_1022b330: our cast finished (0x028 category 4): the recast from the header's info, else the DAT's * 15 ticks.
+/// Under Chainspell (48) or Spontaneity (230) there is none (FUN_1022c940).
 pub fn set_recast(w: &mut World, spell: u16, info: u32) {
     let Some(r) = w.actions.as_ref().and_then(|a| a.spell(spell)) else { return };
+    if w.buffs.iter().any(|&b| b == effect::CHAINSPELL || b == effect::SPONTANEITY) {
+        w.spell_recast.remove(&spell);
+        w.spell_total.remove(&spell);
+        return;
+    }
     let secs = if info == 0 { r.recast as f32 * 15.0 / 60.0 } else { info as f32 };
     w.spell_recast.insert(spell, Instant::now() + std::time::Duration::from_secs_f32(secs));
     w.spell_total.insert(spell, secs);
@@ -626,11 +649,12 @@ pub(super) fn magic_check(w: &World, s: u16) -> Option<usize> {
         return Some(if (0x380..0x400).contains(&s) { 0xbf } else { 0x59 });
     }
     let (Some(acts), Some(st)) = (w.actions.as_ref(), w.stats.as_ref()) else { return Some(0x57) };
-    if !w.recasts_seen || !acts.can_cast(s, st.main, st.sub, 0) {
+    // FUN_101021a0: the job rule with our effects (Tabula Rasa, the addenda, Enlightenment, Elemental Seal).
+    if !w.recasts_seen || !acts.can_cast_now(s, st.main, st.sub, 0, &w.buffs) {
         return Some(0x57);
     }
     let mp = w.vitals.map_or(0, |v| v.1);
-    if acts.spell(s).is_some_and(|r| mp < r.mp as u32) {
+    if mp < spell_mp(w, s) as u32 {
         return Some(0x58);
     }
     // Blue magic: the reset lockout (0xb7), an unset spell (0xb5); Unbridled spells need Unbridled Learning (485) or
@@ -714,6 +738,11 @@ pub(super) fn ability_check(w: &World, i: u16) -> Option<usize> {
     if let Some(m) = status_check(w) {
         return Some(m);
     }
+    // Saber Dance (410) refuses the row that opens list 0xc, Fan Dance (411) list 0xb: code 0xc, 7 0xbd.
+    let has = |e: u16| w.buffs.contains(&e);
+    if (has(effect::SABER_DANCE) && a.sub == 0xc) || (has(effect::FAN_DANCE) && a.sub == 0xb) {
+        return Some(0xbd);
+    }
     let tp = w.vitals.map_or(0, |v| v.2);
     match ability_kind(a.kind) {
         // Kind 9 (Monstrosity): TP below the u16 cost, no 0x119 yet, then a level too low: code 0xd, past table
@@ -722,10 +751,12 @@ pub(super) fn ability_check(w: &World, i: u16) -> Option<usize> {
         9 if !w.recasts_seen => Some(0x5b),
         9 if w.stats.as_ref().map_or(0, |s| s.main.1) < a.level => Some(SILENT),
         2 | 3 | 5 if a.timer != 900 && ability_recast(w, a.timer) > 0.0 => Some(0x5c),
-        3 if a.tp != 255 && tp < a.tp as u32 => Some(0x5f),
+        // Trance (376) lifts the TP cost.
+        3 if a.tp != 255 && tp < a.tp as u32 && !has(effect::TRANCE) => Some(0x5f),
         4 if w.my_motion.status != 1 => Some(0x52),
         4 if tp < 1000 => Some(0x5f),
-        6 if w.vitals.is_some_and(|v| v.1 < a.cost as u32) => Some(0x58),
+        // The cost by our effects; Manafont (47) lifts it.
+        6 if !has(effect::MANAFONT) && w.vitals.is_some_and(|v| v.1 < ability_mp(w, a.cost) as u32) => Some(0x58),
         _ => None,
     }
 }
@@ -836,7 +867,9 @@ pub(super) fn enter(w: &mut World, kind: Kind) {
             let name = spell_name(w, id);
             let range = Some(RANGES[(r.range & 0xf) as usize] as f32);
             let help = 0x4f;
-            if !target::open_sub(w, r.targets as u32, SubThen::Magic(name.clone()), range, name, help) {
+            // FUN_10102430: Pianissimo and Entrust widen a self-only song / geomancy spell to the party.
+            let targets = crate::dat::actions::spell_targets(r.targets, r.kind, r.flags, &w.buffs);
+            if !target::open_sub(w, targets as u32, SubThen::Magic(name.clone()), range, name, help) {
                 refuse(w, 0x5a);
                 return;
             }
@@ -847,15 +880,16 @@ pub(super) fn enter(w: &mut World, kind: Kind) {
         }
         Kind::Ability => {
             let Some(a) = w.actions.as_ref().and_then(|x| x.abilities.get(id as usize)).cloned() else { return };
-            if a.sub != 0 {
-                let sortable = win.sort.is_some();
-                open_ability(w, a.sub as u16, sortable);
-                return;
-            }
+            // FUN_10224b70 runs before the +0xe sub-list test, so Saber / Fan Dance refuse the Waltz / Samba row.
             if let Some(m) = ability_check(w, id) {
                 if m != SILENT {
                     refuse(w, m);
                 }
+                return;
+            }
+            if a.sub != 0 {
+                let sortable = win.sort.is_some();
+                open_ability(w, a.sub as u16, sortable);
                 return;
             }
             let name = ability_name(w, id);
@@ -1486,7 +1520,7 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
     // subwindo for the cursor row: magic "MP Cost" (9 0xe6) and "Next" (9 0xe7); abilities by their kind.
     let lines: Vec<(String, String)> = match (win.kind, win.at()) {
         (Kind::Magic, Some(s)) => {
-            let mp = w.actions.as_ref().and_then(|a| a.spell(s)).map_or(0, |r| r.mp);
+            let mp = spell_mp(w, s);
             vec![
                 (gu.lobby_msg(9, 0xe6, "MP Cost"), mp.to_string()),
                 (gu.lobby_msg(9, 0xe7, "Next"), clock(spell_recast(w, s))),
@@ -1527,7 +1561,7 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
                         }
                         Vec::new()
                     }
-                    6 => vec![(gu.lobby_msg(9, 0xe6, "MP Cost"), a.cost.to_string())],
+                    6 => vec![(gu.lobby_msg(9, 0xe6, "MP Cost"), ability_mp(w, a.cost).to_string())],
                     _ => Vec::new(),
                 }
             }

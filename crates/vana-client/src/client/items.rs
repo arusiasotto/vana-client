@@ -159,7 +159,8 @@ impl Inventory {
 /// Item records by id, read once (the files are read on demand).
 pub struct ItemCache {
     names: Arc<crate::dat::names::Names>,
-    cache: RefCell<HashMap<u16, Option<Arc<Item>>>>,
+    /// The record, and the insertion that gave it its slot of the record cache (`Items::holds`).
+    cache: RefCell<HashMap<u16, (Option<Arc<Item>>, Option<u64>)>>,
     objectives: RefCell<HashMap<u16, Option<Arc<crate::dat::roe::Objective>>>>,
     categories: RefCell<HashMap<u16, Option<Arc<crate::dat::roe::Category>>>>,
     points: std::cell::OnceCell<Arc<Vec<crate::dat::tpoints::Point>>>,
@@ -178,8 +179,24 @@ impl ItemCache {
         }
     }
 
+    /// The record; retail's record cache (the auto-translate Items group's source) counts the lookup. No lock while
+    /// the id surely still holds its slot.
     pub fn item(&self, id: u16) -> Option<Arc<Item>> {
-        self.cache.borrow_mut().entry(id).or_insert_with(|| self.names.items.item(id as u32).map(Arc::new)).clone()
+        let items = &self.names.items;
+        let mut cache = self.cache.borrow_mut();
+        let (it, stamp) = cache.entry(id).or_insert_with(|| (items.peek(id as u32).map(Arc::new), None));
+        if let Some(it) = it
+            && !stamp.is_some_and(|s| items.holds(s))
+        {
+            *stamp = items.touch(id as u32, &it.name);
+        }
+        it.clone()
+    }
+
+    /// The record for a mod: no slot of the record cache is taken.
+    pub fn peek(&self, id: u16) -> Option<Arc<Item>> {
+        let items = &self.names.items;
+        self.cache.borrow_mut().entry(id).or_insert_with(|| (items.peek(id as u32).map(Arc::new), None)).0.clone()
     }
 
     /// A Records of Eminence objective record (0xe000 + n).
@@ -223,6 +240,12 @@ impl ItemCache {
     /// The teleport point table (records 0xf600..0xf613), read once.
     pub fn points(&self) -> Arc<Vec<crate::dat::tpoints::Point>> {
         self.points.get_or_init(|| Arc::new(crate::dat::tpoints::load(&self.names.items))).clone()
+    }
+
+    /// `ItemInfo::icon` for a mod: no slot of the record cache is taken.
+    fn icon_peek(&self, id: u16) -> Option<Vec<u8>> {
+        let (w, h, rgba) = self.peek(id)?.icon_rgba()?;
+        (w == 32 && h == 32).then_some(rgba)
     }
 }
 
@@ -779,10 +802,19 @@ pub fn compare(w: &World) -> Option<Option<(u16, Option<[u8; 24]>, u8)>> {
 }
 
 pub(super) fn upload_icons(gu: &mut GameUi, info: &ItemCache, ids: impl Iterator<Item = u16>) {
+    upload_with(gu, ids, |id| info.icon(id));
+}
+
+/// `upload_icons` for a mod's window: no slot of the record cache is taken.
+pub(super) fn upload_icons_peek(gu: &mut GameUi, info: &ItemCache, ids: impl Iterator<Item = u16>) {
+    upload_with(gu, ids, |id| info.icon_peek(id));
+}
+
+fn upload_with(gu: &mut GameUi, ids: impl Iterator<Item = u16>, icon: impl Fn(u16) -> Option<Vec<u8>>) {
     for id in ids {
         let name = icon_texture(id);
         if !gu.has_image(&name)
-            && let Some(rgba) = info.icon(id)
+            && let Some(rgba) = icon(id)
         {
             gu.image(&name, 32, 32, rgba);
         }
@@ -2227,6 +2259,45 @@ pub(super) fn persona(w: &World) -> Persona {
 /// The storage view's itemctrl (the quantity) has the keys.
 pub(super) fn qty_open(w: &World) -> bool {
     matches!(&w.win, Some(Win::Items { store: Some(b), .. }) if b.qty.is_some())
+}
+
+#[cfg(test)]
+mod peek_tests {
+    /// A mod's reads (`Items::peek`, `ItemCache::peek`, `names::Peek`) and message text (`Items::noun`) take no slot
+    /// of the record cache; the game's record lookups do, whichever of our caches answers them.
+    #[test]
+    fn peeks_take_no_slot() {
+        use crate::dat::items::Lang;
+        let cfg = crate::config::Config::load();
+        let Ok(index) = crate::dat::DatIndex::open(&cfg.ffxi_dir()) else { return };
+        let Ok(names) = crate::dat::names::Names::load(&index, Lang::En) else { return };
+        let names = std::sync::Arc::new(names);
+        let cache = super::ItemCache::new(names.clone());
+        let items = &names.items;
+        let ids = || items.recent().iter().map(|s| s.0).collect::<Vec<_>>();
+        assert!(items.peek(0x1010).is_some() && items.noun(0x1011).is_some() && cache.peek(0x1012).is_some());
+        // Again, now from our caches.
+        assert!(items.noun(0x1011).is_some() && cache.peek(0x1012).is_some());
+        assert_eq!(ids(), Vec::<u32>::new());
+        assert!(items.item(0x1010).is_some() && items.noun(0x1011).is_some() && cache.item(0x1012).is_some());
+        assert_eq!(ids(), vec![0x1010, 0x1012]);
+        // A read first: `ItemCache::item` counts it once.
+        assert!(cache.item(0x1014).is_some() && cache.item(0x1014).is_some());
+        assert_eq!(ids(), vec![0x1010, 0x1012, 0x1014]);
+        // text.plain's names and a mod window's icon take none either.
+        use crate::dat::names::NameSource;
+        let peek = crate::dat::names::Peek(&names);
+        assert!(peek.item_name(0x1015).is_some() && peek.item(0x1016).is_some());
+        let _ = cache.icon_peek(0x1017);
+        assert_eq!(ids().len(), 3);
+        assert_eq!(peek.item_name(0x1010), names.item_name(0x1010));
+        // Once its slot has gone to other ids, our cache's answer takes a slot again.
+        for id in 0x1100..0x1100 + crate::dat::items::RECENT as u32 {
+            items.touch(id, "x");
+        }
+        assert!(!ids().contains(&0x1014));
+        assert!(cache.item(0x1014).is_some() && ids().contains(&0x1014));
+    }
 }
 
 #[cfg(test)]

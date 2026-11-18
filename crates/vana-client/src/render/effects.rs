@@ -61,6 +61,9 @@ struct DrawU {
 /// The ground projections' images: 256x256 (FUN_10044270's DAT_1047bb88).
 const GP_SIZE: u32 = 256;
 
+/// D3DRS_ZBIAS 15 for the effect draw (FUN_10045950), as Wine's d3d8 maps it: glPolygonOffset(-15, -15).
+const ZBIAS: wgpu::DepthBiasState = wgpu::DepthBiasState { constant: -15, slope_scale: -15.0, clamp: 0.0 };
+
 /// FUN_10120730 for sprites 0..10 of "menu    dmgnum": the cell's UV rect over its texture and its size,
 /// (corner x1 - x0 - 1, corner y2 - y0 - 1) (FUN_1011fa80).
 pub fn dmgnum_glyphs(lib: &crate::dat::ui::SpriteLib, tw: f32, th: f32) -> [[f32; 4]; 22] {
@@ -564,8 +567,8 @@ impl EffectsGpu {
                     depth_write_enabled: Some(zwrite),
                     depth_compare: Some(compare),
                     stencil: Default::default(),
-                    // ZBIAS is applied in to_clip (effects.wgsl).
-                    bias: Default::default(),
+                    // The CMoDist / VuDist fan draws after pass 1 set ZBIAS 0 (RS 0x103530d0), which pass 2 keeps.
+                    bias: if vs_entry == "vs_dist" { Default::default() } else { ZBIAS },
                 }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
@@ -724,7 +727,7 @@ impl EffectsGpu {
                     depth_write_enabled: Some(zwrite),
                     depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: Default::default(),
-                    bias: Default::default(),
+                    bias: ZBIAS,
                 }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
@@ -764,7 +767,7 @@ impl EffectsGpu {
                     depth_write_enabled: Some(zwrite),
                     depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: Default::default(),
-                    bias: Default::default(),
+                    bias: ZBIAS,
                 }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
@@ -1896,6 +1899,7 @@ impl EffectsGpu {
                     drop(pass);
                     if !squeeze(encoder) {
                         pass = new_pass(encoder);
+                        bound = None;
                         continue;
                     }
                     pass = new_pass(encoder);
@@ -1917,6 +1921,7 @@ impl EffectsGpu {
                     drop(pass);
                     if !squeeze(encoder) {
                         pass = new_pass(encoder);
+                        bound = None;
                         continue;
                     }
                     pass = new_pass(encoder);
@@ -1938,6 +1943,7 @@ impl EffectsGpu {
                     drop(pass);
                     if !squeeze(encoder) {
                         pass = new_pass(encoder);
+                        bound = None;
                         continue;
                     }
                     pass = new_pass(encoder);
@@ -2513,6 +2519,16 @@ mod tests {
 
     #[test]
     fn gpu_update_matches_cpu() {
+        gpu_update_matches(332);
+    }
+
+    /// Uleguerand Range's fog (DAT 105 fog0 and others: ops 0x48, 0x5a scale by depth).
+    #[test]
+    fn gpu_update_matches_cpu_fog() {
+        gpu_update_matches(105);
+    }
+
+    fn gpu_update_matches(zone: u32) {
         let cfg = crate::config::Config::load();
         let Ok(index) = crate::dat::DatIndex::open(&cfg.ffxi_dir()) else { return };
         let Ok(dll) = std::fs::read(crate::dat::ffximain(&cfg.ffxi_dir())) else { return };
@@ -2520,7 +2536,7 @@ mod tests {
         let mut fx = Effects::new();
         fx.set_keys(Arc::new(crate::dat::zone::Keys::from_ffximain(&dll).unwrap()));
         fx.set_global(crate::fx::lib::Library::load(0, index.read(0).unwrap()).unwrap());
-        fx.load_zone(crate::fx::lib::Library::load(332, index.read(332).unwrap()).unwrap());
+        fx.load_zone(crate::fx::lib::Library::load(zone, index.read(zone).unwrap()).unwrap());
         let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb);
         let mut cpu: HashMap<u32, Elem> = HashMap::new();
         for tick in 0..40 {
@@ -2542,6 +2558,13 @@ mod tests {
                 weekday: 0,
             };
             fx.tick(&f, &crate::fx::NoActors);
+            // The sort key is the GPU's (last frame's draw): the CPU takes it before the update.
+            let pre = eg.read_elems(&gpu, fx.elems.len());
+            for (e, c) in cpu.iter_mut() {
+                if let Some(&v) = pre.get(*e as usize * w::WORDS + w::KEY_PREV) {
+                    c.0[w::KEY_PREV] = v;
+                }
+            }
             for wr in &fx.writes {
                 match wr {
                     Write::Full(e, el) => {

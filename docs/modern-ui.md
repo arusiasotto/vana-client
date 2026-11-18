@@ -429,6 +429,11 @@ Milestone 1:
   sortyn as buttons, the raise asked by the modern confirm (merityn: Escape is the error sound, as retail). Job Points'
   two pages as tabs. Live on Lnxcsfix (WAR 99 with Limit Breaker, Job Breaker and the Cipher Bracelet for the test,
   restored after): every list, Raise up to the confirm (declined) in the Mog House, an alter ego row by the mouse.
+- Trust Ascension (2026-11-15, points.rs over celestite.rs; game files from 30261102): Status's row 13 opens fe_main
+  as a column (Alter Ego Points, then the six celestite sets by role); a set shows its slots beside the celestites
+  owned in retail's colours, the cursor's item description under them. A click is the cursor and Enter, so a slot
+  then a celestite (or the other way round) sends the change; the pointer over the other list hands it the keys as
+  retail's does, unless something is picked. Not checked live: LSB does not answer c2s 0x0C6 yet.
 - Unity (2026-10-27, points.rs over unity.rs): ut_menu as a column with the accolades in the title, quest00 beside it
   (Unity Information's lines and the chat setting with a dot on the current one, or the two weeks), quest01's ranking
   of every unity under its rows; Unity Lists opens the area list's panel. Live: both pages, a week's ranking, a

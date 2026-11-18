@@ -37,6 +37,9 @@ pub struct Scan {
     pub busy: bool,
     /// Bit 4: c2s 0x0D2 sent, cleared by any s2c 0x0A0 or the map closing.
     pub party_busy: bool,
+    /// The sub-key of the map that last sent c2s 0x0D2 (+0x1c798, never cleared): s2c 0x0A0 is ignored until then,
+    /// and tested and placed by it whatever map is open.
+    pub party_key: Option<u8>,
     /// Where we stood (world x, z) when the list was asked for: the results' offsets are from there.
     pub origin: (f32, f32),
     /// When c2s 0x0F5 went, until the server confirms (it answers nothing when it refuses: out of range).

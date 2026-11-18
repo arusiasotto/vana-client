@@ -406,7 +406,8 @@ fn tag(w: &World, tag: &str, target_cmd: bool) -> Option<String> {
                 None => job(s.main)?,
             })
         }
-        "<pos>" if !w.room_flag => Some(w.hud_top.grid().to_string()).filter(|g| !g.is_empty()),
+        // Type 0xe: FUN_101f7600(1), worked out now (not the compass's cached suffix).
+        "<pos>" => Some(super::map::grid_text(w, &w.map_regions)).filter(|g| !g.is_empty()),
         // FUN_10076ff0 type 0x15: the tracked target's name from the zone NPC list.
         "<scan>" => w.scan.tracking().and_then(|t| {
             w.npc_names.iter().find(|(id, _)| (*id & 0x3ff) as u16 == t.index & 0x3ff).map(|(_, n)| n.clone())
@@ -1946,7 +1947,9 @@ fn chat(w: &mut World, cid: u16, msg: &str) -> Done {
     }
     // FUN_100e3400 builds 0x0B5 through FUN_100fc3c0's gate; a refusal skips the echo and the dispatcher prints the
     // line and the command error (FUN_10080dc0).
-    if send_it && !super::net::call_gate(&mut w.call_gate, 0x0B5, std::time::Instant::now()) {
+    if send_it
+        && !super::net::call_gate(&mut w.call_gate, super::net::C2S_CHAT, &w.net.stats, std::time::Instant::now())
+    {
         return Err(());
     }
     // The echoes (all.c 90072..90740): our name and the text as typed, in the sender's mode.
@@ -2057,7 +2060,7 @@ fn tell(w: &mut World, args: &[String], line: &str) -> Done {
     }
     let msg = tail(line, 2).trim().to_string();
     // As chat: the gate before the echo.
-    if !super::net::call_gate(&mut w.call_gate, 0x0B6, std::time::Instant::now()) {
+    if !super::net::call_gate(&mut w.call_gate, super::net::C2S_TELL, &w.net.stats, std::time::Instant::now()) {
         return Err(());
     }
     super::push_chat_from(w, format!(">>{name} : {msg}"), 4, 3, &name);
@@ -2730,7 +2733,7 @@ pub(super) fn system_line(w: &mut World, id: u16) {
         return;
     }
     let Some(bt) = w.battle.clone() else { return };
-    let ctx = crate::dat::battle::Ctx { me: w.name.clone(), ..Default::default() };
+    let ctx = crate::dat::battle::Ctx { me: w.name.clone(), names: super::combat::tables(w), ..Default::default() };
     if let Some(line) = bt.system(id, &ctx) {
         let colour = bt.colour_in(line.mode.unwrap_or(0x79), &w.game);
         for l in line.lines.into_iter().filter(|l| !l.is_empty()) {

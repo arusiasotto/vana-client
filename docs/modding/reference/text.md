@@ -168,18 +168,22 @@ text.phrase(group, id) -> string
 
 Builds the phrase with this group and phrase id as a chat line holds it. Put it in text you send or show; the chat log
 shows it as the phrase. The ids come from [`res.autotranslate`](res.md#resautotranslate) (whose entries also carry the
-same string as `phrase`).
+same string as `phrase`). With `"item"` or `"key_item"` as the group it builds an item's or a key item's name, as a
+word of the Items or Key Items group is held.
 
 **Parameters**
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `group` | `integer` | yes | The group id, 0..255. |
-| `id` | `integer` | yes | The phrase id within the group, 0..255 (0 is the group's title). |
+| `group` | `integer` or `string` | yes | The group id, 0..255, or `"item"` / `"key_item"`. |
+| `id` | `integer` | yes | The phrase id within the group, 0..255 (0 is the group's title); for `"item"` / `"key_item"` the item or key item id, 0..65535 (0 is the group's title). |
 
-**Returns** `string`: the phrase. It is built from the two numbers whether or not the dictionary has such a phrase.
+**Returns** `string`: the phrase. It is built from the two values whether or not the dictionary has such a phrase.
 
-**Errors** A `group` or `id` outside 0..255 raises an error.
+A phrase group's id `0` is the group itself, a category of the game's list and not something to send: a chat line ends
+at it. An `"item"` or `"key_item"` id `0` is that group's title, which can be sent.
+
+**Errors** A `group` or `id` outside its range raises an error.
 
 **Example**
 
@@ -187,7 +191,7 @@ same string as `phrase`).
 local hits = res.autotranslate("thank")
 local e = hits and hits[1]
 if e and e.id ~= 0 then
-  chat.add("Say it with " .. text.phrase(e.group, e.id))
+  chat.add("Say it with " .. text.phrase(e.group or e.kind, e.id))
 end
 ```
 

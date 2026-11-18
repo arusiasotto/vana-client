@@ -58,8 +58,13 @@ pub struct FxLibs {
 impl FxLibs {
     /// Off the UI thread, with the zone DAT already read.
     pub fn load(index: &Arc<DatIndex>, keys: &Arc<zone::Keys>, zone_file: &[u8]) -> Option<Self> {
+        Self::load_zone(index, keys, ZONE, zone_file)
+    }
+
+    /// As `load`, for scene `zone` (the title movies' op 0x7b zones).
+    pub fn load_zone(index: &Arc<DatIndex>, keys: &Arc<zone::Keys>, zone: u32, zone_file: &[u8]) -> Option<Self> {
         let lib = crate::fx::lib::Library::load;
-        let libs = index.read(0).and_then(|g| Ok((lib(0, g)?, lib(zone::file_id(ZONE), zone_file.to_vec())?)));
+        let libs = index.read(0).and_then(|g| Ok((lib(0, g)?, lib(zone::file_id(zone), zone_file.to_vec())?)));
         libs.map(|(global, zone)| Self { global, zone, files: (index.clone(), keys.clone()) })
             .map_err(|e| log::warn!("lobby effects: {e:#}"))
             .ok()
@@ -69,6 +74,8 @@ impl FxLibs {
 /// Voice handle bases of the two lobby scenes (the world's engine uses 0).
 pub const SELECT_VOICES: u32 = 0x0100_0000;
 pub const CREATOR_VOICES: u32 = 0x0200_0000;
+pub const TITLE_VOICES: u32 = 0x0300_0000;
+pub const NATION_VOICES: u32 = 0x0400_0000;
 
 /// The effects engine in a lobby scene (select, creator): the zone's generators and the weather 'suny' start with
 /// the zone (FUN_10242cd0, FUN_10239720), the sky's clouds among them. Its GPU side: ids are per registry.
@@ -94,6 +101,16 @@ impl LobbyFx {
 
     pub fn advance(&mut self, dt: f32) {
         self.dt += dt;
+    }
+
+    /// The scene clock (a title movie's op 0x7d), in minutes.
+    pub fn set_minute(&mut self, minute: f32) {
+        self.minute = minute;
+    }
+
+    /// A title movie's op 0x7c: that weather's generators in place of the last one's.
+    pub fn set_weather(&mut self, tag: &str) {
+        self.fx.set_weather(tag, 0.0);
     }
 
     /// Effect sounds since the last call, for the sound thread.

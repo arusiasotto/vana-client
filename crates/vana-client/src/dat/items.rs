@@ -410,6 +410,61 @@ pub struct Items {
     paths: Vec<Option<(std::path::PathBuf, usize)>>,
     /// `noun`'s answers: event and battle text ask on the UI thread.
     nouns: std::sync::Mutex<std::collections::HashMap<u32, Option<super::names::Noun>>>,
+    recent: std::sync::Mutex<Recent>,
+    /// `Recent::inserted`, read without the lock (`holds`).
+    inserted: std::sync::atomic::AtomicU64,
+}
+
+/// The item record cache (DAT_10602620, 200 records; FUN_1015b5c0 fills it round robin from slot 1), ids and names
+/// only. `held`: an id's slot and the insertion that gave it.
+#[derive(Default)]
+struct Recent {
+    slots: Vec<(u32, String)>,
+    at: usize,
+    held: std::collections::HashMap<u32, (usize, u64)>,
+    inserted: u64,
+}
+
+/// The cache's slots.
+pub const RECENT: usize = 200;
+
+/// A name as the cache holds it: strncpy(.., 0x20), cut at +0x1d2, so 30 bytes.
+fn cut(name: &str) -> String {
+    let mut out = String::new();
+    let mut n = 0;
+    for ch in name.chars() {
+        n += super::font::encode_sjis(ch.encode_utf8(&mut [0u8; 4])).len();
+        if n > 30 {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+impl Recent {
+    /// A lookup: a new id takes the next slot. The insertion that gave the id its slot; None for id 0.
+    fn touch(&mut self, id: u32, name: &str) -> Option<u64> {
+        if id == 0 {
+            return None;
+        }
+        if let Some(&(_, stamp)) = self.held.get(&id) {
+            return Some(stamp);
+        }
+        if self.slots.is_empty() {
+            self.slots = vec![(0, String::new()); RECENT];
+        }
+        self.at = (self.at + 1) % RECENT;
+        self.inserted += 1;
+        let old = std::mem::replace(&mut self.slots[self.at], (id, cut(name)));
+        self.held.remove(&old.0);
+        self.held.insert(id, (self.at, self.inserted));
+        Some(self.inserted)
+    }
+
+    fn name(&self, id: u32) -> Option<String> {
+        self.held.get(&id).map(|&(i, _)| self.slots[i].1.clone())
+    }
 }
 
 impl Items {
@@ -423,7 +478,7 @@ impl Items {
             .map(|r| index.path(r.3[lang as usize]).map(|p| (stride(&p, r.1 - r.0), p)).map(|(n, p)| (p, n)))
             .collect();
         paths.iter().any(|p| p.is_some()).then_some(()).context("no item files")?;
-        Ok(Items { lang, paths, nouns: Default::default() })
+        Ok(Items { lang, paths, nouns: Default::default(), recent: Default::default(), inserted: Default::default() })
     }
 
     pub fn lang(&self) -> Lang {
@@ -462,18 +517,73 @@ impl Items {
         Some((RANGES[i].2, r))
     }
 
+    /// FUN_1015d210: the record, which also takes a slot of the record cache.
     pub fn item(&self, id: u32) -> Option<Item> {
+        let it = self.peek(id)?;
+        self.touch(id, &it.name);
+        Some(it)
+    }
+
+    /// The record without taking a slot of the record cache (a mod's reads, our scans over every id).
+    pub fn peek(&self, id: u32) -> Option<Item> {
         let (kind, r) = self.record(id)?;
         let it = parse(&r, kind, self.lang, r.len() == 0x1400);
         (it.id == id).then_some(it)
     }
 
-    /// The item's noun for message text (`names::item_noun`; the bare name outside English), read once.
+    /// A lookup one of our caches answered, `name` the record's: the record cache counts it as retail's would. The
+    /// insertion that gave the id its slot, for `holds`.
+    pub fn touch(&self, id: u32, name: &str) -> Option<u64> {
+        if id == 0 {
+            return None;
+        }
+        let mut r = self.recent.lock().ok()?;
+        let stamp = r.touch(id, name);
+        self.inserted.store(r.inserted, std::sync::atomic::Ordering::Release);
+        stamp
+    }
+
+    /// Whether an id given its slot at insertion `stamp` still holds it: a slot is reused `RECENT` insertions later.
+    pub fn holds(&self, stamp: u64) -> bool {
+        self.inserted.load(std::sync::atomic::Ordering::Acquire) < stamp + RECENT as u64
+    }
+
+    /// The record cache's name of an item (record +0x1b4), looked up as FUN_1015d210 does.
+    pub fn cached_name(&self, id: u32) -> Option<String> {
+        if id == 0 {
+            return None;
+        }
+        if let Some(n) = self.recent.lock().ok()?.name(id) {
+            return Some(n);
+        }
+        self.item(id)?;
+        self.recent.lock().ok()?.name(id)
+    }
+
+    /// `cached_name` for a mod: no slot is taken.
+    pub fn peek_name(&self, id: u32) -> Option<String> {
+        if id == 0 {
+            return None;
+        }
+        if let Some(n) = self.recent.lock().ok()?.name(id) {
+            return Some(n);
+        }
+        self.peek(id).map(|it| cut(&it.name))
+    }
+
+    /// The record cache's filled slots in slot order: (id, name).
+    pub fn recent(&self) -> Vec<(u32, String)> {
+        self.recent.lock().map(|r| r.slots.iter().filter(|s| s.0 != 0).cloned().collect()).unwrap_or_default()
+    }
+
+    /// The item's noun for message text (`names::item_noun`; the bare name outside English), read once. No slot of
+    /// the record cache: message text reads records through the raw record pool (30261006_0 FUN_100be6a0 ->
+    /// FUN_1015b9e0).
     pub fn noun(&self, id: u32) -> Option<super::names::Noun> {
         if let Some(n) = self.nouns.lock().ok().and_then(|c| c.get(&id).cloned()) {
             return n;
         }
-        let n = self.item(id).map(|it| match self.lang {
+        let n = self.peek(id).map(|it| match self.lang {
             Lang::En => super::names::item_noun(it),
             _ => super::names::plain(it.name),
         });
@@ -491,6 +601,56 @@ impl Items {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FUN_1015b5c0: a new id takes the next slot round robin, from slot 1; a held id takes none; names stop at 30
+    /// bytes.
+    #[test]
+    fn record_cache_ring() {
+        let mut r = Recent::default();
+        assert_eq!(r.touch(5, "Five"), Some(1));
+        assert_eq!(r.touch(0, "none"), None);
+        r.touch(6, "A name that is longer than thirty bytes");
+        assert_eq!(r.touch(5, "Five"), Some(1));
+        assert_eq!(
+            (r.slots[1].clone(), r.slots[2].1.as_str()),
+            ((5, "Five".to_string()), "A name that is longer than thi")
+        );
+        assert_eq!(r.slots[0].0, 0);
+        for id in 100..100 + RECENT as u32 - 2 {
+            r.touch(id, "x");
+        }
+        // 200 ids fill the ring (slot 0 last); the next one takes slot 1 from the oldest.
+        assert_eq!((r.slots[0].0, r.slots[1].0, r.inserted), (297, 5, RECENT as u64));
+        assert_eq!(r.touch(1000, "new"), Some(RECENT as u64 + 1));
+        assert_eq!((r.slots[1].0, r.slots.iter().any(|s| s.0 == 5)), (1000, false));
+        // The slot index follows: the id pushed out is not held, so its next lookup takes a slot again.
+        assert_eq!((r.name(5), r.name(1000).as_deref(), r.held.len()), (None, Some("new"), RECENT));
+        r.touch(1000, "new");
+        assert_eq!(r.slots[2].0, 6);
+        r.touch(5, "Five");
+        assert_eq!((r.slots[2].0, r.name(5).as_deref(), r.name(6)), (5, Some("Five"), None));
+    }
+
+    /// `holds`: a stamp stays good for `RECENT` insertions; then the slot has gone to another id.
+    #[test]
+    fn stamps() {
+        let items = Items {
+            lang: Lang::En,
+            paths: Vec::new(),
+            nouns: Default::default(),
+            recent: Default::default(),
+            inserted: Default::default(),
+        };
+        let first = items.touch(7, "Seven").unwrap();
+        assert_eq!(items.touch(0, "none"), None);
+        for id in 1000..1000 + RECENT as u32 - 1 {
+            items.touch(id, "x");
+        }
+        assert!(items.holds(first) && items.recent.lock().unwrap().name(7).is_some());
+        items.touch(5000, "y");
+        assert!(!items.holds(first) && items.recent.lock().unwrap().name(7).is_none());
+        assert_eq!(items.touch(7, "Seven"), Some(RECENT as u64 + 2));
+    }
 
     /// The Primer: "Basics" (0xf620) lists 56 topics from "Movement" (0xf631: image number 1, three images).
     #[test]
@@ -551,6 +711,27 @@ mod tests {
         b[0x44] = 1;
         b[0x60] = b'c';
         assert_eq!(string_table(&b), vec![Field::Text("Ab".into()), Field::Num(1), Field::Text("c".into())]);
+    }
+
+    /// The records behind list cell kind 0x4d (30261102_0, fe_inven's rows FUN_10117e60: item 0x72f0 + n, the icon by
+    /// FUN_1015d340 and the name by cell kind 0x19): 31 celestites from 0x72f1, each with a name, an icon and the
+    /// level FUN_101181a0 compares with the main job's as the first byte of its +0x14 block.
+    #[test]
+    fn celestite_records() {
+        let Ok(index) = DatIndex::open(&crate::config::Config::load().ffxi_dir()) else { return };
+        let Ok(items) = Items::load(&index, Lang::En) else { return };
+        // Game files older than 30261102 hold empty records here.
+        if items.item(0x72f1).is_none_or(|i| i.name == ".") {
+            return;
+        }
+        let named = |id: u32| items.item(id).is_some_and(|i| i.name.starts_with("Celestite ("));
+        assert_eq!((0x72f0..0x73f0).filter(|&id| named(id)).collect::<Vec<_>>(), (0x72f1..0x7310).collect::<Vec<_>>());
+        for id in 0x72f1..0x7310 {
+            let i = items.item(id).unwrap();
+            assert_eq!((i.kind, i.icon_rgba().map(|p| (p.0, p.1))), (Some(Kind::K7000), Some((32, 32))), "{id:#x}");
+        }
+        let first = items.item(0x72f1).unwrap();
+        assert_eq!((first.name.as_str(), first.maze.map(|m| m[0])), ("Celestite (Acc.)", Some(99)));
     }
 
     #[test]

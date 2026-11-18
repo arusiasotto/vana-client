@@ -371,7 +371,7 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Option<[f32; 4]> {
             gu.text(l, x, y + 16.0 * k as f32, 0, e.tint.to_le_bytes());
         }
         match e.row {
-            Some(r) if r == h.cursor && focused => gu.cursor(x - 16.0, y),
+            Some(r) if r == h.cursor && focused => gu.faq_cursor(x - 16.0, y),
             Some(_) => _ = gu.sprite("menu    framesus", 35, x - 16.0, y + 4.0, WHITE),
             None => {}
         }

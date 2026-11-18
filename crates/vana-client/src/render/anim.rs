@@ -11,14 +11,46 @@ use std::sync::Arc;
 
 /// Bones a pose region holds (render/mod.rs MAX_BONES) and the per-animation bone table size.
 const TABLE: usize = crate::dat::animpack::TABLE;
-/// (animation, frame) pairs per pose; regions are filled by later files first, so a few suffice.
-pub const MAX_SET: usize = 8;
-/// Job header: skeleton, output, counts, blend, then the head look (weight, two bones, model-space point, bones
-/// used, point 4, limits, point 4 drop, point 3 offset), then the overlay (animation, frame, weight), then the drawn
-/// weapons' grip pairs (words 29 / 30).
+/// Queue entries per pose (motionq::Layer): up to seven regions, each with the one or two entries a blend holds
+/// (a fourth entry in a region cuts the oldest within a tick).
+pub const MAX_SET: usize = 24;
+/// Job header: skeleton, output, the layer count, the weights of the overlay regions 5 and 6, then the head look
+/// (weight, two bones, model-space point, bones used, point 4, limits, point 4 drop, point 3 offset), then the drawn
+/// weapons' grip pairs (words 29 / 30). Each layer after it is 4 words: animation, frame, weight, and its kind
+/// (0 body, 1 / 2 overlay region 5 / 6) with bit 8 on the first of a region.
 const HEAD: usize = 32;
 const JOB_WORDS: usize = HEAD + 4 * MAX_SET;
 const NO_BONE: u32 = u32::MAX;
+const UNKEYED: u32 = crate::dat::animpack::UNKEYED;
+
+/// Where a layer's animation is: the model's list, or a motion file's.
+#[derive(Clone, Copy)]
+pub enum AnimSrc<'a> {
+    Model(usize),
+    File(&'a Arc<crate::dat::motionfile::MotionFile>, usize),
+}
+
+/// One layer of a pose job (motionq::Layer).
+#[derive(Clone, Copy)]
+pub struct JobLayer<'a> {
+    pub src: AnimSrc<'a>,
+    pub frame: f32,
+    pub weight: f32,
+    pub start: bool,
+    pub over: u8,
+}
+
+/// A plain list of the model's (animation, frame) where the latest track wins, as layers, one region each,
+/// last first (the first region to write a bone keeps it).
+pub fn plain_layers<'a>(ch: &Character, to: &[(&Animation, f32)]) -> Vec<JobLayer<'a>> {
+    to.iter()
+        .rev()
+        .filter_map(|(a, frame)| {
+            let i = ch.animations.iter().position(|x| std::ptr::eq(x, *a))?;
+            Some(JobLayer { src: AnimSrc::Model(i), frame: *frame, weight: 1.0, start: true, over: 0 })
+        })
+        .collect()
+}
 
 /// A head look for the compute pass (FUN_1002a140 / FUN_1002ac60): from the body reference point 4 - point 3,
 /// the head (point 3's bone) turns toward the point as far as its tangent ellipse allows and the neck (point 7's)
@@ -35,8 +67,8 @@ pub struct HeadLook {
     pub drop: f32,
     pub limits: [[f32; 3]; 2],
 }
-/// Scratch vec4s per job: local rotation, translation and scale for the target and the blended-from pose.
-const SCRATCH: usize = TABLE * 6;
+/// Scratch vec4s per job: each bone's rotation, translation and scale.
+const SCRATCH: usize = TABLE * 3;
 
 const WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read> data: array<u32>;
@@ -135,72 +167,95 @@ fn scale_at(an: u32, tr: u32, frame: f32) -> vec3<f32> {
     return vec3<f32>(chan(an, tr + 14u, frame), chan(an, tr + 16u, frame), chan(an, tr + 18u, frame));
 }
 
-// An overlay animation's local transform of bone `b` (FUN_1001a420, regions 5 / 6): false when it keys no track for it.
-fn overlay_tf(skel: u32, b: u32, a: u32, frame: f32, q: ptr<function, vec4<f32>>, t: ptr<function, vec3<f32>>, sc: ptr<function, vec3<f32>>) -> bool {
-    let ti = data[a + 2u + b];
-    if (ti == 0u) { return false; }
-    let s = skel + 1u + b * 8u;
-    let rq = vec4<f32>(fl(s + 1u), fl(s + 2u), fl(s + 3u), fl(s + 4u));
-    let rt = vec3<f32>(fl(s + 5u), fl(s + 6u), fl(s + 7u));
-    let tr = a + 2u + 256u + (ti - 1u) * 20u;
-    *q = qmul(rot_at(a, tr, frame), rq);
-    *t = rt + vec3<f32>(chan(a, tr + 8u, frame), chan(a, tr + 10u, frame), chan(a, tr + 12u, frame));
-    *sc = scale_at(a, tr, frame);
-    return true;
+// FUN_10033220 (FUN_10019ee0): straight toward the nearer of b and -b.
+fn mixq(a: vec4<f32>, b0: vec4<f32>, s: f32) -> vec4<f32> {
+    var b = b0;
+    if (dot(a, b) < 0.0) { b = -b; }
+    return normalize(a * (1.0 - s) + b * s);
 }
 
-// Local transform of bone `b` from the rest pose and a set of (animation, frame): the latest track wins.
-fn local_tf(skel: u32, b: u32, job: u32, first: u32, count: u32, q: ptr<function, vec4<f32>>, t: ptr<function, vec3<f32>>, sc: ptr<function, vec3<f32>>) {
+// Local transform of bone `b` from the rest pose and the job's queue layers (FUN_1001a420): in a body region the
+// first layer keying the bone sets it and the later ones blend over by their weights, and a bone a region wrote is
+// closed to the regions after; an overlay region is posed apart and blended over by the region's weight.
+fn local_tf(skel: u32, b: u32, job: u32, count: u32, q: ptr<function, vec4<f32>>, t: ptr<function, vec3<f32>>, sc: ptr<function, vec3<f32>>) {
     let s = skel + 1u + b * 8u;
     let rq = vec4<f32>(fl(s + 1u), fl(s + 2u), fl(s + 3u), fl(s + 4u));
     let rt = vec3<f32>(fl(s + 5u), fl(s + 6u), fl(s + 7u));
     *q = rq;
     *t = rt;
     *sc = vec3<f32>(1.0);
-    for (var k = 0u; k < count; k = k + 1u) {
-        let a = jobs[job + first + 2u * k];
-        let frame = bitcast<f32>(jobs[job + first + 2u * k + 1u]);
-        let ti = data[a + 2u + b];
-        if (ti != 0u) {
-            let tr = a + 2u + 256u + (ti - 1u) * 20u;
-            let r = rot_at(a, tr, frame);
-            *q = qmul(r, rq);
-            *t = rt + vec3<f32>(chan(a, tr + 8u, frame), chan(a, tr + 10u, frame), chan(a, tr + 12u, frame));
-            *sc = scale_at(a, tr, frame);
+    var taken = false;
+    var written = false;
+    var kind = 0u;
+    var oq = rq;
+    var ot = rt;
+    var os = vec3<f32>(1.0);
+    for (var k = 0u; k <= count; k = k + 1u) {
+        let at = job + HEADu + 4u * k;
+        var mt = 0x100u;
+        if (k < count) { mt = jobs[at + 3u]; }
+        if ((mt & 0x100u) != 0u) {
+            if (written) {
+                if (kind == 0u) {
+                    taken = true;
+                } else {
+                    let w = jf(job + 2u + kind);
+                    *q = mixq(*q, oq, w);
+                    *t = mix(*t, ot, w);
+                    *sc = mix(*sc, os, w);
+                }
+            }
+            written = false;
+            kind = mt & 0xffu;
         }
+        if (k == count) { break; }
+        let a = jobs[at];
+        let ti = data[a + 2u + b];
+        if (ti == 0u || (kind == 0u && taken)) { continue; }
+        let w = jf(at + 2u);
+        var nq = rq;
+        var nt = rt;
+        var ns = vec3<f32>(1.0);
+        if (ti == UNKEYEDu) {
+            // Named but not keyed: back toward the rest pose over an older layer of its body region.
+            if (kind != 0u || !written) { continue; }
+        } else {
+            let frame = jf(at + 1u);
+            let tr = a + 2u + 256u + (ti - 1u) * 20u;
+            nq = qmul(rot_at(a, tr, frame), rq);
+            nt = rt + vec3<f32>(chan(a, tr + 8u, frame), chan(a, tr + 10u, frame), chan(a, tr + 12u, frame));
+            ns = scale_at(a, tr, frame);
+        }
+        if (kind == 0u) {
+            if (written) { *q = mixq(*q, nq, w); *t = mix(*t, nt, w); *sc = mix(*sc, ns, w); }
+            else { *q = nq; *t = nt; *sc = ns; }
+        } else {
+            if (written) { oq = mixq(oq, nq, w); ot = mix(ot, nt, w); os = mix(os, ns, w); }
+            else { oq = nq; ot = nt; os = ns; }
+        }
+        written = true;
     }
 }
 
-// FUN_100339b0: bone b from its parent p, both poses; the child's translation scaled by the parent's accumulated
-// scale, in the parent's frame.
-fn chain(sc: u32, b: u32, p: u32, n_from: u32) {
-    for (var k = 0u; k < 6u; k = k + 3u) {
-        if (k == 3u && n_from == 0u) { break; }
-        let pq = scratch[sc + 6u * p + k];
-        let pt = scratch[sc + 6u * p + k + 1u].xyz;
-        let ps = scratch[sc + 6u * p + k + 2u].xyz;
-        let lq = scratch[sc + 6u * b + k];
-        let lt = scratch[sc + 6u * b + k + 1u].xyz;
-        let ls = scratch[sc + 6u * b + k + 2u].xyz;
-        scratch[sc + 6u * b + k] = qmul(pq, lq);
-        scratch[sc + 6u * b + k + 1u] = vec4<f32>(pt + qrot(pq, ps * lt), 0.0);
-        scratch[sc + 6u * b + k + 2u] = vec4<f32>(ps * ls, 0.0);
-    }
+// FUN_100339b0: bone b from its parent p; the child's translation scaled by the parent's accumulated scale, in the
+// parent's frame.
+fn chain(sc: u32, b: u32, p: u32) {
+    let pq = scratch[sc + 3u * p];
+    let pt = scratch[sc + 3u * p + 1u].xyz;
+    let ps = scratch[sc + 3u * p + 2u].xyz;
+    let lq = scratch[sc + 3u * b];
+    let lt = scratch[sc + 3u * b + 1u].xyz;
+    let ls = scratch[sc + 3u * b + 2u].xyz;
+    scratch[sc + 3u * b] = qmul(pq, lq);
+    scratch[sc + 3u * b + 1u] = vec4<f32>(pt + qrot(pq, ps * lt), 0.0);
+    scratch[sc + 3u * b + 2u] = vec4<f32>(ps * ls, 0.0);
 }
 
-// Bone b's output: the target pose, or the cross-fade from the other.
-fn emit(sc: u32, b: u32, out: u32, n_from: u32, blend: f32) {
-    var q = scratch[sc + 6u * b];
-    var t = scratch[sc + 6u * b + 1u].xyz;
-    var s = scratch[sc + 6u * b + 2u].xyz;
-    if (n_from > 0u) {
-        q = slerp(scratch[sc + 6u * b + 3u], q, blend);
-        t = mix(scratch[sc + 6u * b + 4u].xyz, t, blend);
-        s = mix(scratch[sc + 6u * b + 5u].xyz, s, blend);
-    }
-    pose[out + 3u * b] = q;
-    pose[out + 3u * b + 1u] = vec4<f32>(t, 0.0);
-    pose[out + 3u * b + 2u] = vec4<f32>(s, 0.0);
+// Bone b's output.
+fn emit(sc: u32, b: u32, out: u32) {
+    pose[out + 3u * b] = scratch[sc + 3u * b];
+    pose[out + 3u * b + 1u] = vec4<f32>(scratch[sc + 3u * b + 1u].xyz, 0.0);
+    pose[out + 3u * b + 2u] = vec4<f32>(scratch[sc + 3u * b + 2u].xyz, 0.0);
 }
 
 @compute @workgroup_size(64)
@@ -209,8 +264,6 @@ fn pose_actors(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_i
     let skel = jobs[job];
     let out = jobs[job + 1u];
     let n_to = jobs[job + 2u];
-    let n_from = jobs[job + 3u];
-    let blend = bitcast<f32>(jobs[job + 4u]);
     let look_w = bitcast<f32>(jobs[job + 5u]);
     let look_a = jobs[job + 6u];
     let look_b = jobs[job + 7u];
@@ -224,31 +277,15 @@ fn pose_actors(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_i
     var q7 = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     let n = data[skel];
     let sc = wg.x * SCRATCHu;
-    let ov_a = jobs[job + 26u];
-    let ov_f = jf(job + 27u);
-    let ov_w = jf(job + 28u);
-    // Scratch per bone: (q, t, s) of the target pose at 0..2, of the blended-from pose at 3..5.
+    // Scratch per bone: (q, t, s) of the pose.
     for (var b = lid; b < n; b = b + 64u) {
         var q: vec4<f32>;
         var t: vec3<f32>;
         var s: vec3<f32>;
-        // The overlay over both poses: its keyed bones' locals go toward its pose by the weight.
-        var oq: vec4<f32>;
-        var ot: vec3<f32>;
-        var os: vec3<f32>;
-        let over = ov_a != 0u && ov_w > 0.0 && overlay_tf(skel, b, ov_a, ov_f, &oq, &ot, &os);
-        local_tf(skel, b, job, HEADu, n_to, &q, &t, &s);
-        if (over) { q = slerp(q, oq, ov_w); t = mix(t, ot, ov_w); s = mix(s, os, ov_w); }
-        scratch[sc + 6u * b] = q;
-        scratch[sc + 6u * b + 1u] = vec4<f32>(t, 0.0);
-        scratch[sc + 6u * b + 2u] = vec4<f32>(s, 0.0);
-        if (n_from > 0u) {
-            local_tf(skel, b, job, HEADu + 2u * MAX_SETu, n_from, &q, &t, &s);
-            if (over) { q = slerp(q, oq, ov_w); t = mix(t, ot, ov_w); s = mix(s, os, ov_w); }
-            scratch[sc + 6u * b + 3u] = q;
-            scratch[sc + 6u * b + 4u] = vec4<f32>(t, 0.0);
-            scratch[sc + 6u * b + 5u] = vec4<f32>(s, 0.0);
-        }
+        local_tf(skel, b, job, n_to, &q, &t, &s);
+        scratch[sc + 3u * b] = q;
+        scratch[sc + 3u * b + 1u] = vec4<f32>(t, 0.0);
+        scratch[sc + 3u * b + 2u] = vec4<f32>(s, 0.0);
     }
     storageBarrier();
     workgroupBarrier();
@@ -259,42 +296,38 @@ fn pose_actors(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_i
         if (grips[i] == NO_BONEu) { continue; }
         let c = grips[i] & 0xffffu;
         let g = grips[i] >> 16u;
-        for (var k = 0u; k < 6u; k = k + 3u) {
-            scratch[sc + 6u * g + k + 2u] = vec4<f32>(scratch[sc + 6u * g + k + 2u].xyz * scratch[sc + 6u * c + k + 2u].xyz, 0.0);
-        }
+        scratch[sc + 3u * g + 2u] = vec4<f32>(scratch[sc + 3u * g + 2u].xyz * scratch[sc + 3u * c + 2u].xyz, 0.0);
     }
-    // Parents precede children: chain in place, both poses. A carry bone's subtree waits for pass 1 (flag in .w).
+    // Parents precede children: chain in place. A carry bone's subtree waits for pass 1 (flag in .w).
     for (var b = 0u; b < n; b = b + 1u) {
         if (b == 0u) {
             // Bone 0's translation through RotY(3 pi / 2) (FUN_10033800).
-            for (var k = 0u; k < 6u; k = k + 3u) {
-                let lt = scratch[sc + k + 1u].xyz;
-                scratch[sc + k + 1u] = vec4<f32>(-lt.z, lt.y, lt.x, 0.0);
-            }
+            let lt = scratch[sc + 1u].xyz;
+            scratch[sc + 1u] = vec4<f32>(-lt.z, lt.y, lt.x, 0.0);
         } else {
             let p = data[skel + 1u + b * 8u];
-            let held = scratch[sc + 6u * p + 1u].w == 1.0 || (grips[0] != NO_BONEu && p == (grips[0] & 0xffffu)) || (grips[1] != NO_BONEu && p == (grips[1] & 0xffffu));
+            let held = scratch[sc + 3u * p + 1u].w == 1.0 || (grips[0] != NO_BONEu && p == (grips[0] & 0xffffu)) || (grips[1] != NO_BONEu && p == (grips[1] & 0xffffu));
             if (held) {
-                scratch[sc + 6u * b + 1u].w = 1.0;
+                scratch[sc + 3u * b + 1u].w = 1.0;
                 continue;
             }
-            chain(sc, b, p, n_from);
+            chain(sc, b, p);
         }
         // Head look (FUN_1002ac60), worked out at the lower of the two bones from the target pose: the head's
         // world place from the neck (its parent) and its local, point 4 for the body's reference direction.
         if (look_w > 0.0 && b == lo && data[skel + 1u + look_a * 8u] == look_b) {
-            let nq = scratch[sc + 6u * b];
-            let nt = scratch[sc + 6u * b + 1u].xyz;
-            let ns = scratch[sc + 6u * b + 2u].xyz;
-            let hq = qmul(nq, scratch[sc + 6u * look_a]);
-            let ht = nt + qrot(nq, ns * scratch[sc + 6u * look_a + 1u].xyz);
-            let hs = ns * scratch[sc + 6u * look_a + 2u].xyz;
+            let nq = scratch[sc + 3u * b];
+            let nt = scratch[sc + 3u * b + 1u].xyz;
+            let ns = scratch[sc + 3u * b + 2u].xyz;
+            let hq = qmul(nq, scratch[sc + 3u * look_a]);
+            let ht = nt + qrot(nq, ns * scratch[sc + 3u * look_a + 1u].xyz);
+            let hs = ns * scratch[sc + 3u * look_a + 2u].xyz;
             let p3 = ht + qrot(hq, hs * p3_off);
             var p4: vec3<f32>;
             if (p4_bone == look_a) {
                 p4 = ht + qrot(hq, hs * p4_off);
             } else {
-                p4 = scratch[sc + 6u * p4_bone + 1u].xyz + qrot(scratch[sc + 6u * p4_bone], scratch[sc + 6u * p4_bone + 2u].xyz * p4_off);
+                p4 = scratch[sc + 3u * p4_bone + 1u].xyz + qrot(scratch[sc + 3u * p4_bone], scratch[sc + 3u * p4_bone + 2u].xyz * p4_off);
             }
             p4.y = p4.y - jf(job + 22u);
             let d = normalize(p4 - p3);
@@ -312,29 +345,24 @@ fn pose_actors(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_i
         // The neck turns by its share; the head by both, about its pivot (bone locals turned against the neck's
         // pre-look rotation, FUN_1002ac60's second loop).
         if (look_w > 0.0 && (b == look_a || b == look_b)) {
-            for (var k = 0u; k < 6u; k = k + 3u) {
-                if (k == 3u && n_from == 0u) { break; }
-                let r = select(qmul(qmul(q7, q3), qconj(q7)), q7, b == look_b);
-                scratch[sc + 6u * b + k] = normalize(qmul(r, scratch[sc + 6u * b + k]));
-            }
+            let r = select(qmul(qmul(q7, q3), qconj(q7)), q7, b == look_b);
+            scratch[sc + 3u * b] = normalize(qmul(r, scratch[sc + 3u * b]));
         }
-        emit(sc, b, out, n_from, blend);
+        emit(sc, b, out);
     }
     // Pass 1: each carry bone on its grip (its scale kept), then the held subtrees in order.
     for (var i = 0u; i < 2u; i = i + 1u) {
         if (grips[i] == NO_BONEu) { continue; }
         let c = grips[i] & 0xffffu;
         let g = grips[i] >> 16u;
-        for (var k = 0u; k < 6u; k = k + 3u) {
-            scratch[sc + 6u * c + k] = scratch[sc + 6u * g + k];
-            scratch[sc + 6u * c + k + 1u] = vec4<f32>(scratch[sc + 6u * g + k + 1u].xyz, 0.0);
-        }
-        emit(sc, c, out, n_from, blend);
+        scratch[sc + 3u * c] = scratch[sc + 3u * g];
+        scratch[sc + 3u * c + 1u] = vec4<f32>(scratch[sc + 3u * g + 1u].xyz, 0.0);
+        emit(sc, c, out);
     }
     for (var b = 1u; b < n; b = b + 1u) {
-        if (scratch[sc + 6u * b + 1u].w == 1.0) {
-            chain(sc, b, data[skel + 1u + b * 8u], n_from);
-            emit(sc, b, out, n_from, blend);
+        if (scratch[sc + 3u * b + 1u].w == 1.0) {
+            chain(sc, b, data[skel + 1u + b * 8u]);
+            emit(sc, b, out);
         }
     }
 }
@@ -365,7 +393,7 @@ pub fn pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::BindGrou
         let src = WGSL
             .replace("JOB_WORDSu", &format!("{JOB_WORDS}u"))
             .replace("SCRATCHu", &format!("{SCRATCH}u"))
-            .replace("MAX_SETu", &format!("{MAX_SET}u"))
+            .replace("UNKEYEDu", &format!("{UNKEYED}u"))
             .replace("HEADu", &format!("{HEAD}u"))
             .replace("NO_BONEu", &format!("{NO_BONE}u"));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -485,18 +513,15 @@ impl GpuAnim {
         self.jobs.clear();
     }
 
-    /// Queues one actor: its model, the motion files on it, the pose (and the one it blends from at `t`),
-    /// written to pose vec4 index `out`. Animations are found in the model or its files by address.
+    /// Queues one actor: its model and the layers of its motion queues (motionq::Queues::layers order, with the
+    /// overlay regions' weights), written to pose vec4 index `out`.
     pub fn job(
         &mut self,
         ch: &Arc<Character>,
-        extra: &[Arc<crate::dat::motionfile::MotionFile>],
-        to: &[(&Animation, f32)],
-        from: &[(&Animation, f32)],
-        t: f32,
+        layers: &[JobLayer],
+        over: [f32; 2],
         out: u32,
         look: Option<HeadLook>,
-        overlay: Option<(&Animation, f32, f32)>,
         grips: &[(u16, u16)],
     ) {
         let (Some(skel), _) =
@@ -504,26 +529,23 @@ impl GpuAnim {
         else {
             return;
         };
-        let mut lookup = |a: &Animation| -> Option<u32> {
-            let find = |list: &[Animation]| list.iter().position(|x| std::ptr::eq(x, a));
-            if let Some(i) = find(&ch.animations) {
-                return self.sources[&(Arc::as_ptr(ch) as usize)].2.get(i).copied();
-            }
-            for f in extra {
-                if let Some(i) = find(&f.animations) {
+        let mut lookup = |src: AnimSrc| -> Option<u32> {
+            match src {
+                AnimSrc::Model(i) => self.sources[&(Arc::as_ptr(ch) as usize)].2.get(i).copied(),
+                AnimSrc::File(f, i) => {
                     let key = Arc::as_ptr(f) as usize;
                     self.source(key, f.clone(), None, &f.animations, f.packed.as_deref());
                     // A motion file whose words are not up yet sits this frame out.
                     let e = &self.sources[&key];
-                    return if e.3 as usize <= self.uploaded { e.2.get(i).copied() } else { None };
+                    if e.3 as usize <= self.uploaded { e.2.get(i).copied() } else { None }
                 }
             }
-            None
         };
         let mut words = vec![0u32; JOB_WORDS];
         words[0] = skel;
         words[1] = out;
-        words[4] = t.to_bits();
+        words[3] = over[0].to_bits();
+        words[4] = over[1].to_bits();
         words[6] = NO_BONE;
         words[7] = NO_BONE;
         // Drawn weapons' (carry, grip) pairs (FUN_10029320), carry | grip << 16.
@@ -545,27 +567,24 @@ impl GpuAnim {
             words[22] = l.drop.to_bits();
             words[23..26].copy_from_slice(&l.p3.to_array().map(f32::to_bits));
         }
-        if let Some((a, frame, weight)) = overlay
-            && let Some(off) = lookup(a)
-        {
-            words[26] = off;
-            words[27] = frame.to_bits();
-            words[28] = weight.to_bits();
-        }
-        for (set, list, count_at) in [(HEAD, to, 2usize), (HEAD + 2 * MAX_SET, from, 3)] {
-            let mut k = 0;
-            for (a, frame) in list.iter() {
-                if k == MAX_SET {
-                    break;
-                }
-                if let Some(off) = lookup(a) {
-                    words[set + 2 * k] = off;
-                    words[set + 2 * k + 1] = frame.to_bits();
-                    k += 1;
-                }
+        // A layer that sits out (its file not up yet) hands its region's opening on to the next one of the region.
+        let mut k = 0;
+        let mut open = false;
+        for l in layers {
+            open |= l.start;
+            if k == MAX_SET {
+                break;
             }
-            words[count_at] = k as u32;
+            if let Some(off) = lookup(l.src) {
+                let at = HEAD + 4 * k;
+                words[at] = off;
+                words[at + 1] = l.frame.to_bits();
+                words[at + 2] = l.weight.to_bits();
+                words[at + 3] = l.over as u32 | (std::mem::take(&mut open) as u32) << 8;
+                k += 1;
+            }
         }
+        words[2] = k as u32;
         self.jobs.extend(words);
     }
 
@@ -734,7 +753,7 @@ mod tests {
         let n = ch.skeleton.bones.len().min(TABLE - 1);
         let mut ga = GpuAnim::new(gpu);
         ga.begin();
-        ga.job(ch, &[], to, &[], 0.0, 0, look, None, &[]);
+        ga.job(ch, &plain_layers(ch, to), [0.0; 2], 0, look, &[]);
         let size = (n * 48) as u64;
         let out = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -799,6 +818,9 @@ mod tests {
         }
     }
 
+    /// The compute pass against the CPU poser: `to` alone (the latest track wins), and, with `from`, a queue mid
+    /// blend: per region `from`'s chunk under `to`'s at weight 0.3, and `to`'s first chunk again as an overlay
+    /// region at weight 0.4.
     fn check(
         gpu: &Gpu,
         ch: &Arc<Character>,
@@ -806,18 +828,49 @@ mod tests {
         from: &[(&Animation, f32)],
         grips: &[(u16, u16)],
     ) {
-        for (f, t) in [(from, 0.3f32), (&[][..], 0.0)] {
-            if f.is_empty() && t != 0.0 {
-                continue;
+        use crate::dat::character::PoseLayer;
+        let index_of = |a: &Animation| ch.animations.iter().position(|x| std::ptr::eq(x, a)).unwrap();
+        let region = |a: &Animation| a.name.as_bytes()[3];
+        let mut sets: Vec<(Vec<PoseLayer>, [f32; 2])> = Vec::new();
+        sets.push((
+            to.iter()
+                .rev()
+                .map(|&(anim, frame)| PoseLayer { anim, frame, weight: 1.0, start: true, over: 0 })
+                .collect(),
+            [0.0; 2],
+        ));
+        if !from.is_empty() {
+            let mut v = Vec::new();
+            for r in (b'0'..=b'4').rev() {
+                let mut start = true;
+                for (list, weight) in [(from, 1.0), (to, 0.3)] {
+                    for &(anim, frame) in list.iter().filter(|(a, _)| region(a) == r) {
+                        v.push(PoseLayer { anim, frame, weight, start: std::mem::take(&mut start), over: 0 });
+                    }
+                }
             }
-            let cpu = if f.is_empty() {
-                crate::dat::character::pose_held(&ch.skeleton, to, grips)
-            } else {
-                crate::render::character::pose_blend(ch, f, to, t, grips)
-            };
+            v.push(PoseLayer { anim: to[0].0, frame: to[0].1 + 2.0, weight: 1.0, start: true, over: 2 });
+            sets.push((v, [0.0, 0.4]));
+        }
+        for (layers, over) in sets {
+            let cpu = crate::dat::character::pose_layers(&ch.skeleton, &layers, over, grips);
+            if over == [0.0; 2] {
+                let plain = crate::dat::character::pose_held(&ch.skeleton, to, grips);
+                assert!(cpu.iter().zip(&plain).all(|(a, b)| (a.t - b.t).length() < 1e-5), "plain layers");
+            }
+            let job: Vec<JobLayer> = layers
+                .iter()
+                .map(|l| JobLayer {
+                    src: AnimSrc::Model(index_of(l.anim)),
+                    frame: l.frame,
+                    weight: l.weight,
+                    start: l.start,
+                    over: l.over,
+                })
+                .collect();
             let mut ga = GpuAnim::new(gpu);
             ga.begin();
-            ga.job(ch, &[], to, f, t, 0, None, None, grips);
+            ga.job(ch, &job, over, 0, None, grips);
             let n = cpu.len().min(TABLE - 1);
             let size = (n * 48) as u64;
             let out = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -849,7 +902,7 @@ mod tests {
                 let ds = (glam::Vec3::from_slice(&g[8..11]) - b.s).length();
                 worst = worst.max(dq).max(dp).max(ds);
             }
-            assert!(worst < 1e-3, "blend {t}: worst difference {worst}");
+            assert!(worst < 1e-3, "{} layers, overlay {over:?}: worst difference {worst}", layers.len());
         }
     }
 }

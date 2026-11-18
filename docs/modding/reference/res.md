@@ -515,7 +515,7 @@ sorted, each text once. With no `word` it lists every group's title; a `word` th
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `word` | `string` | no | The start of the words to look for. Ignored when `group` is given. |
-| `group` | `integer` | no | A group id (from [`res.autotranslate_groups`](#resautotranslate_groups)): list that group's entries. |
+| `group` | `integer` or `string` | no | A group to list the entries of: a group id (an entry's `group`, or from [`res.autotranslate_groups`](#resautotranslate_groups)), or `"item"` / `"key_item"` for the Items / Key Items group. |
 
 **Returns** `table[]?`: a list of entries, or `nil` while the dictionary has not loaded. An unknown `group` gives an
 empty list.
@@ -523,11 +523,18 @@ empty list.
 | Field | Type | Description |
 | --- | --- | --- |
 | `text` | `string` | The entry's text. |
-| `group` | `integer` | Its group id. |
-| `id` | `integer` | Its phrase id within the group; `0` for a group's title. |
-| `phrase` | `string` | The phrase as a chat line holds it: put it in chat text (for example with `chat.add`). |
+| `kind` | `string` | `"phrase"` for a phrase of the dictionary; `"item"` or `"key_item"` for a word of the Items or Key Items group. |
+| `group` | `integer?` | A phrase's group id; `nil` for an item or key item. |
+| `id` | `integer` | A phrase's id within its group, or the item or key item id; `0` for a group's title. |
+| `phrase` | `string` | The entry as a chat line holds it: put it in chat text (for example with `chat.add`). |
 
-**Errors** "game state is not available here" in the lobby or inside a filter.
+The Items and Key Items groups are not in the dictionary file: the game builds them each time the category list
+opens (Tab on an empty chat line), from the items it looked up lately and the key items you hold. Until then, and
+while they would be empty, they are not there. Their entries have no `group`: pass `e.group or e.kind` to list an
+entry's group or to [`text.phrase`](text.md#textphrase).
+
+**Errors** "game state is not available here" in the lobby or inside a filter. A `group` that is neither a number
+0..255 nor `"item"` / `"key_item"` raises an error.
 
 **Example**
 
@@ -555,7 +562,8 @@ The groups (categories) of the auto-translate dictionary.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `group` | `integer` | The group id (for `res.autotranslate` and `text.phrase`). |
+| `kind` | `string` | `"phrase"` for a group of the dictionary; `"item"` or `"key_item"` for the Items or Key Items group, which follow the dictionary's once the game has built them (see [`res.autotranslate`](#resautotranslate)). |
+| `group` | `integer?` | The group id (for `res.autotranslate` and `text.phrase`); `nil` for the Items and Key Items groups (pass their `kind`). |
 | `title` | `string` | The group's title. |
 | `count` | `integer` | How many phrases it has. |
 
@@ -565,7 +573,7 @@ The groups (categories) of the auto-translate dictionary.
 
 ```lua
 for _, g in ipairs(res.autotranslate_groups() or {}) do
-  print(g.group, g.title, g.count .. " phrases")
+  print(g.group or g.kind, g.title, g.count .. " phrases")
 end
 ```
 

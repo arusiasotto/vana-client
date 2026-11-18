@@ -35,6 +35,11 @@ pub struct Mesh {
     /// DistModel's ranges (FUN_10040670 untextured): the textured runs, then the tail only with header byte 5, one
     /// triangle in when there are no texture groups and the format is 5..7 (FUN_1003fcb0).
     pub dist: Vec<std::ops::Range<u32>>,
+    /// The bounding radius ops 0x2e / 0x48 add (FUN_10041a40): a D3m's header word >> 4 (FUN_1003fcd0), an MMB's half
+    /// box diagonal (its scene node +0xd4, FUN_1016fcd0).
+    pub radius: f32,
+    /// An MMB's header box (min, max), for FUN_10183760's cull.
+    pub bbox: [[f32; 3]; 2],
 }
 
 /// A D3a sprite animation (chunk 0x21, FUN_1003d870; MODLOG "Effect generators"): frames of quads as triangle lists,
@@ -258,6 +263,14 @@ impl Library {
         &self.file[self.tree.nodes[node].data.clone()]
     }
 
+    /// A folder's chunks in the file: from its own header to the end of its last descendant.
+    pub fn folder_range(&self, node: usize) -> std::ops::Range<usize> {
+        fn end(t: &Tree, n: usize) -> usize {
+            t.nodes[n].children.iter().map(|&c| end(t, c)).fold(t.nodes[n].data.end, usize::max)
+        }
+        self.tree.nodes[node].data.start.saturating_sub(16)..end(&self.tree, node).min(self.file.len())
+    }
+
     /// Parses the mesh at `node` (a D3m, or an MMB with the zone keys) once; textures stay names until the
     /// registry resolves them.
     pub fn mesh(&mut self, node: usize, keys: &zone::Keys) -> Option<&mut Mesh> {
@@ -269,7 +282,14 @@ impl Library {
                     zone::decode_mmb(keys, &mut d);
                     // Type 2 (48-byte vertices) draws nothing on the effect path (its VB stays empty).
                     if d.get(4) == Some(&2) {
-                        Ok(Mesh { verts: Vec::new(), groups: Vec::new(), mmb: true, dist: Vec::new() })
+                        Ok(Mesh {
+                            verts: Vec::new(),
+                            groups: Vec::new(),
+                            mmb: true,
+                            dist: Vec::new(),
+                            radius: 0.0,
+                            bbox: [[0.0; 3]; 2],
+                        })
                     } else {
                         zone::parse_mmb(&d).map(|m| from_mmb(&m))
                     }
@@ -486,7 +506,7 @@ fn from_d3m(m: &D3m) -> Mesh {
             })
             .filter(|r| !r.is_empty())
             .collect();
-    Mesh { verts, groups, mmb: false, dist }
+    Mesh { verts, groups, mmb: false, dist, radius: m.radius, bbox: [[0.0; 3]; 2] }
 }
 
 /// The MMB node of FUN_10168eb0: every model de-indexed into a triangle list with its texture.
@@ -506,7 +526,8 @@ fn from_mmb(m: &zone::Mmb) -> Mesh {
             groups.push(MeshGroup { name: Some(model.texture.clone()), texture: None, range: start..end });
         }
     }
-    Mesh { verts, groups, mmb: true, dist: Vec::new() }
+    let d = glam::Vec3::from(m.max) - glam::Vec3::from(m.min);
+    Mesh { verts, groups, mmb: true, dist: Vec::new(), radius: d.length() * 0.5, bbox: [m.min, m.max] }
 }
 
 /// Strip to list, dropping the degenerate triangles that join strips (as render/mod.rs does for scenery).

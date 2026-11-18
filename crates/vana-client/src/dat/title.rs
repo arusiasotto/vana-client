@@ -57,12 +57,18 @@ pub enum Op {
         wait: u16,
         ticks: u16,
     },
-    // Their names are read through Debug (eventdump).
-    Call(#[allow(dead_code)] String),
+    /// 0x0e: the feedback blur toward ARGB @8 and zoom f32 @0xc over `ticks`.
+    Blur {
+        rgba: [u8; 4],
+        zoom: f32,
+        wait: u16,
+        ticks: u16,
+    },
+    Call(String),
+    // Its name is read through Debug (eventdump).
     Spawn(#[allow(dead_code)] String),
     /// 0x3d (or 0xaf with an expansion bit): run one random entry up to the closing 0x3e.
     Random {
-        #[allow(dead_code)] // read through Debug (eventdump)
         expansion: Option<u32>,
     },
     EndRandom,
@@ -107,6 +113,7 @@ pub fn parse_ops(pay: &[u8]) -> Vec<Op> {
             (0x04, Some(a)) => Op::Camera { path: tag(&a), wait, ticks },
             (0x0f, Some(a)) => Op::Fade { rgba: a, wait, ticks },
             (0x10, _) => Op::Crossfade { wait, ticks },
+            (0x0e, Some(a)) if b.len() >= 16 => Op::Blur { rgba: a, zoom: f32_at(b, 12), wait, ticks },
             (0x3b, Some(a)) => Op::Call(tag(&a)),
             (0x73, Some(a)) => Op::Spawn(tag(&a)),
             (0x3d, _) => Op::Random { expansion: None },
@@ -176,6 +183,35 @@ impl Title {
 
     pub fn path(&self, name: &str) -> Result<&CameraPath> {
         self.paths.iter().find(|p| p.name == name).with_context(|| format!("no camera path {name}"))
+    }
+
+    /// One pass of `loop` (file 23, which `main` spawns looping): each 0x3d / 0xaf block runs one of its 0x3b calls
+    /// at random (FUN_1006bf60); 0xaf's only when its bit @8 is in `enabled` (DAT_10456a28 +0x14 and +0x10: the
+    /// account's content and the installed ROMs).
+    pub fn playlist(&self, enabled: u32, mut rnd: impl FnMut(u32) -> u32) -> Vec<String> {
+        let Ok(ops) = self.scheduler("loop") else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut block: Option<(bool, Vec<String>)> = None;
+        for op in ops {
+            match op {
+                Op::Random { expansion } => {
+                    block = Some((expansion.is_none_or(|b| b < 32 && enabled >> b & 1 != 0), Vec::new()))
+                }
+                Op::EndRandom => {
+                    if let Some((true, names)) = block.take()
+                        && !names.is_empty()
+                    {
+                        out.push(names[rnd(names.len() as u32) as usize].clone());
+                    }
+                }
+                Op::Call(n) => match block.as_mut() {
+                    Some((_, names)) => names.push(n.clone()),
+                    None => out.push(n.clone()),
+                },
+                _ => {}
+            }
+        }
+        out
     }
 
     pub fn scheduler(&self, name: &str) -> Result<&[Op]> {
@@ -375,6 +411,19 @@ mod tests {
         let slow = keyed.iter().find(|p| p.ease == u32::from_le_bytes(*b"y110")).expect("a y110 path");
         let u = path_u(slow, 0.3);
         assert!(u < 0.1, "u {u}");
+    }
+
+    /// File 23's loop: one of mov1..mov8, then one movie per expansion block its bit enables (0xaf).
+    #[test]
+    fn loop_playlist() {
+        let Ok(index) = crate::dat::DatIndex::open(&crate::config::Config::load().ffxi_dir()) else { return };
+        let Ok(file) = index.read(TITLE_FILE) else { return };
+        let t = Title::parse(&file).unwrap();
+        let base = t.playlist(1, |_| 0);
+        assert_eq!(base, vec!["mov1".to_string()]);
+        let all = t.playlist(u32::MAX, |n| n - 1);
+        assert_eq!(all.len(), 4, "{all:?}");
+        assert!(all[0].starts_with("mov") && all[1..].iter().all(|m| m.starts_with("ex")), "{all:?}");
     }
 
     /// A camera path whose keys overrun its chunk is skipped; the next path still loads.

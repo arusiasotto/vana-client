@@ -762,13 +762,13 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Option<[f32; 4]> {
             if editing {
                 let t = String::from_utf8_lossy(f.field.as_deref().unwrap_or_default()).into_owned();
                 gu.text_fit(&format!("{t}{}", super::macroedit::caret(w)), vx, vy, vw, WHITE);
-                gu.cursor(vx, vy);
+                gu.faq_cursor(vx, vy);
             } else {
                 gu.text(&value_text(gu, v, vw), vx, vy, 0, WHITE.to_le_bytes());
             }
         }
         if on && !editing {
-            gu.cursor(x, y);
+            gu.faq_cursor(x, y);
         } else if e.bullet && shown(y, 16.0) {
             gu.sprite("menu    framesus", 35, x - INDENT, y + 4.0, WHITE);
         }

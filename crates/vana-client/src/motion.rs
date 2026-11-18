@@ -97,16 +97,6 @@ pub fn choose(names: &MotionNames, status: u8, ratio: f32) -> (&'static str, f32
     }
 }
 
-/// FUN_1001ad00 (batch 5 item 9): the ticks a new motion starts at in a region that already held one: the old entry's
-/// fraction of its cycle (`at` its position and `old_len` its length, both in frames / speed), pushed on by `blend` ticks
-/// at the new `rate`. Retail's lengths and positions are in frames / speed; our tick is twice that unit.
-pub fn cycle_sync(at: f32, old_len: f32, frames: f32, speed: f32, rate: f32, blend: f32) -> f32 {
-    let new_len = frames / speed;
-    let k = 1.0 / old_len;
-    let b = if blend > 0.0 { blend } else { 1.0 };
-    2.0 * ((at * k * new_len + k * new_len * speed * 0.5 * rate * b) % new_len)
-}
-
 /// First person's tank turn (FUN_100a6240, 0x100a7381): heading (our yaw, forward = (sin, 0, cos)) += 2 x X x ticks x
 /// 0.01745, X the stick's normalised and tiered side (FUN_100a78d0), wrapped to +-pi. Stick right turns right.
 pub fn tank_turn(heading: f32, x: f32, mag: f32, tier: f32, ticks: f32) -> f32 {
@@ -215,16 +205,6 @@ mod tests {
         // Wrapped to +-pi.
         let w = super::tank_turn(std::f32::consts::PI - 0.01, 1.0, 1.0, 1.0, 1.0);
         assert!(w < 0.0 && w > -std::f32::consts::PI);
-    }
-
-    /// FUN_1001ad00: half way through a 40-frame cycle at speed 1 (20 in frames / speed, 40 of our ticks), a 20-frame
-    /// cycle at speed 2 starts half way through its cycle (5 of its 10 frames / speed) plus 16 ticks at rate 1 (4 more).
-    #[test]
-    fn cycle_sync_keeps_the_fraction() {
-        let t = super::cycle_sync(20.0, 40.0, 20.0, 2.0, 1.0, 16.0);
-        assert!((t - 18.0).abs() < 1e-4, "{t}");
-        // No blend counts as one tick.
-        assert!((super::cycle_sync(0.0, 40.0, 20.0, 2.0, 1.0, 0.0) - 2.0 * 0.25).abs() < 1e-4);
     }
 
     #[test]

@@ -260,6 +260,11 @@ pub trait Texts: Send + Sync {
     fn grammar(&self, _kind: u8, _id: u32) -> Option<Vec<u8>> {
         None
     }
+    /// Grammar 0x81 / 0x83 (FUN_1022f330 / FUN_1022ec10): entry `entry` of quest area / mission log `table`, its
+    /// name as the file holds it.
+    fn journal(&self, _quest: bool, _table: u8, _entry: usize) -> Option<Vec<u8>> {
+        None
+    }
     /// Message group 0xf entry k (FUN_10152ef0(0xf, k)): the compass words for `1d`.
     fn compass(&self, _k: usize) -> Option<Vec<u8>> {
         None
@@ -421,7 +426,6 @@ fn grammar_expand(kind: u8, args: &[u8], ctx: &Ctx, lines: &mut [Vec<u8>], pendi
 }
 
 /// A grammar block from 0x80 (FUN_100bdc50): the text it appends, and for 0x85 the [a/b] pick of the group after it.
-/// 0x81 / 0x83 (names through FUN_1022f330 / FUN_1022ec10) are in no dialogue file and not kept.
 fn grammar_high(kind: u8, args: &[u8], ctx: &Ctx) -> (Vec<u8>, Option<usize>) {
     // FUN_100bdbe0: a slot form (0x40) takes one byte and is not filled here; the rest take 4, 0x?2 a packed index.
     let index = |b: &[u8]| -> (Option<usize>, usize) {
@@ -441,6 +445,28 @@ fn grammar_high(kind: u8, args: &[u8], ctx: &Ctx) -> (Vec<u8>, Option<usize>) {
     // The op 0xc3 slot that num[index] names; the index must be below 8, the slot is not checked in retail.
     let slot = || first.filter(|&i| i < 8).and_then(|i| ctx.slots.get(usize::try_from(num(Some(i))?).ok()?));
     match kind {
+        // A quest (0x81) or mission (0x83) name: FUN_100bdb80's table byte, then entry num[n]. The mission names lose
+        // their leading '_'s (FUN_1022ec10, logs below 0xf only), the quest names one leading '+' (FUN_1022f330).
+        0x81 | 0x83 => {
+            let (table, tlen) = match args {
+                [b0, ..] if b0 & 0x40 != 0 => (None, 1),
+                [b0, b1, b2, ..] if b0 & 0x3f == 1 => (Some(((b1 & 0x7f) ^ (b2 << 7)) as u8), 3),
+                _ => (Some(0xff), 3),
+            };
+            let entry = num(index(args.get(tlen..).unwrap_or_default()).0).and_then(|v| usize::try_from(v as u16).ok());
+            let quest = kind == 0x81;
+            let name = table
+                .filter(|&t| quest || t < 0xf)
+                .zip(entry)
+                .and_then(|(t, e)| ctx.texts.as_deref()?.journal(quest, t, e))
+                .unwrap_or_default();
+            let skip = if quest {
+                (name.first() == Some(&b'+')) as usize
+            } else {
+                name.iter().take_while(|&&b| b == b'_').count()
+            };
+            (name[skip..].to_vec(), None)
+        }
         // Two words of file 55473 (FUN_100bd9d0, num[] as i16), joined by a space.
         0x82 => {
             let second = index(args.get(len..).unwrap_or_default()).0;

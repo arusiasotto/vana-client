@@ -103,10 +103,11 @@ impl Fishing {
 }
 
 /// c2s 0x110 (FUN_10088380): UniqueNo, para, ActIndex, mode, 0, para2.
-/// FUN_10088380: false when FUN_100fc3c0's 1 s gate refuses it; the controller then stays and tries again next frame.
+/// FUN_10088380: false when FUN_100fc3c0 refuses it (its 1 s gate or a full queue); the controller then stays and
+/// tries again next frame.
 fn send(w: &mut World, para: i32, mode: u8, para2: u32) -> bool {
-    if !super::net::call_gate(&mut w.call_gate, 0x110, std::time::Instant::now()) {
-        log::trace!("fishing: c2s 0x110 mode {mode} refused by the 1 s gate, tried again next frame");
+    if !super::net::call_gate(&mut w.call_gate, super::net::C2S_FISHING, &w.net.stats, std::time::Instant::now()) {
+        log::trace!("fishing: c2s 0x110 mode {mode} refused by FUN_100fc3c0, tried again next frame");
         return false;
     }
     let mut body = w.my_id.to_le_bytes().to_vec();
@@ -115,7 +116,7 @@ fn send(w: &mut World, para: i32, mode: u8, para2: u32) -> bool {
     body.extend([mode, 0]);
     body.extend(para2.to_le_bytes());
     log::info!("fishing: c2s 0x110 mode {mode} para {para} para2 {para2}");
-    let _ = w.net.commands.send(NetCommand::Packet { id: 0x110, body });
+    let _ = w.net.commands.send(NetCommand::Packet { id: super::net::C2S_FISHING, body });
     true
 }
 

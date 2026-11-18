@@ -814,6 +814,8 @@ pub struct ZoneScene {
     pub paths: [Option<Vec<u8>>; 4],
     /// The MZB's camera lists by offset (camera_lists), as indices into `placements`.
     pub camera_lists: std::collections::HashMap<u32, Vec<u32>>,
+    /// The first placement of the lists' MZB: a list leaves the placements before it (a voyage's world) alone.
+    pub list_base: u32,
     /// The animated meshes' curves per weather tag (sway_curves).
     pub sway: SwayCurves,
     /// The zone's bump maps (config 0017, dat/bump.rs), put in by the loader when bump mapping is on.
@@ -890,6 +892,7 @@ pub fn load_scene(keys: &Keys, file: &[u8]) -> Result<ZoneScene> {
         light_keys: Vec::new(),
         paths: Default::default(),
         camera_lists: Default::default(),
+        list_base: 0,
         sway: sway_curves(file),
         bumps: Vec::new(),
     };
@@ -902,6 +905,7 @@ pub fn load_scene(keys: &Keys, file: &[u8]) -> Result<ZoneScene> {
                 decode_mzb(keys, &mut data).and_then(|_| parse_mzb(&mut data)).map(|p| {
                     // As the collision, the last MZB's.
                     let base = scene.placements.len() as u32;
+                    scene.list_base = base;
                     scene.camera_lists = camera_lists(&data)
                         .into_iter()
                         .map(|(at, l)| (at, l.into_iter().map(|i| i + base).collect()))

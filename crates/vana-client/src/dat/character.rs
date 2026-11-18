@@ -557,6 +557,10 @@ pub struct Animation {
     pub speed: f32,
     /// Shared: every look of a race clones its race's motions (`race_file`).
     pub tracks: std::sync::Arc<[Track]>,
+    /// Bones whose track has rot index bit 31 in a region 1..6 chunk: the chunk names the bone but keys nothing for
+    /// it. Alone it leaves the bone to a lower region (FUN_10019b30); over an older entry of its region that
+    /// wrote the bone it blends it back to the rest pose by its weight (FUN_10019ee0, regions 1..4).
+    pub unkeyed: std::sync::Arc<[u16]>,
 }
 
 impl Track {
@@ -589,6 +593,7 @@ pub fn parse_animation(name: String, d: &[u8]) -> Result<Animation> {
     let frames = if d[1] == 0 { keys - 1 } else { keys };
     let legs = name.as_bytes().get(3) == Some(&b'0');
     let mut tracks = Vec::with_capacity(count);
+    let mut unkeyed = Vec::new();
     for t in 0..count {
         let o = 10 + t * 84;
         let channels = |idx_at: usize, val_at: usize, n: usize| -> Result<Vec<Channel>> {
@@ -608,6 +613,7 @@ pub fn parse_animation(name: String, d: &[u8]) -> Result<Animation> {
                 .collect()
         };
         if i32_at(d, o + 4) < 0 && !legs {
+            unkeyed.extend(u16::try_from(i32_at(d, o)).ok());
             continue;
         }
         let rot: [Channel; 4] = channels(o + 4, o + 20, 4)?.try_into().unwrap();
@@ -615,7 +621,7 @@ pub fn parse_animation(name: String, d: &[u8]) -> Result<Animation> {
         let scale: [Channel; 3] = channels(o + 60, o + 72, 3)?.try_into().unwrap();
         tracks.push(Track { bone: i32_at(d, o) as usize, rot, trans, scale });
     }
-    Ok(Animation { name, frames, speed, tracks: tracks.into() })
+    Ok(Animation { name, frames, speed, tracks: tracks.into(), unkeyed: unkeyed.into() })
 }
 
 /// Bone 0's translation (rest + motion) through RotY(3 pi / 2) as FUN_10033800 does: (x, y, z) -> (-z, y, x).
@@ -639,10 +645,6 @@ impl BoneXf {
     pub fn at(&self, off: Vec3) -> Vec3 {
         self.t + self.q * (self.s * off)
     }
-
-    pub fn lerp(&self, to: &Self, k: f32) -> Self {
-        Self { q: self.q.slerp(to.q, k), t: self.t.lerp(to.t, k), s: self.s.lerp(to.s, k) }
-    }
 }
 
 /// Model-space bone transforms for a pose (FUN_10033800, FUN_100339b0): a child's translation is scaled by its
@@ -654,7 +656,6 @@ pub fn pose(skel: &Skeleton, anims: &[(&Animation, f32)]) -> Vec<BoneXf> {
 /// `pose` with drawn weapons held (FUN_10029320 / FUN_100339b0 pass 1): each (carry, grip) pair's carry bone takes
 /// the grip bone's rotation and translation, and the carry bone's descendants chain from it.
 pub fn pose_held(skel: &Skeleton, anims: &[(&Animation, f32)], grips: &[(u16, u16)]) -> Vec<BoneXf> {
-    let n = skel.bones.len();
     let mut local: Vec<(Quat, Vec3, Vec3)> = skel.bones.iter().map(|b| (b.rot, b.pos, Vec3::ONE)).collect();
     for (anim, frame) in anims {
         for t in anim.tracks.iter() {
@@ -665,6 +666,84 @@ pub fn pose_held(skel: &Skeleton, anims: &[(&Animation, f32)], grips: &[(u16, u1
             local[t.bone] = (r * b.rot, b.pos + tr, s);
         }
     }
+    chain_held(skel, local, grips)
+}
+
+/// One queued motion chunk as the poser takes it (motionq::Layer with its animation): `start` opens a region, `over`
+/// is 0 for the body regions and 1 / 2 for the overlay regions 5 / 6.
+#[derive(Clone, Copy)]
+pub struct PoseLayer<'a> {
+    pub anim: &'a Animation,
+    pub frame: f32,
+    pub weight: f32,
+    pub start: bool,
+    pub over: u8,
+}
+
+/// FUN_10033220 and the linear blends beside it (FUN_10019ee0): the rotation goes straight toward the nearer of
+/// q and -q, translation and scale linearly.
+fn mix(a: (Quat, Vec3, Vec3), b: (Quat, Vec3, Vec3), w: f32) -> (Quat, Vec3, Vec3) {
+    let q = if a.0.dot(b.0) < 0.0 { -b.0 } else { b.0 };
+    ((a.0 * (1.0 - w) + q * w).normalize(), a.1.lerp(b.1, w), a.2.lerp(b.2, w))
+}
+
+/// The pose of a model's motion queues (FUN_1001a420): `layers` in motionq::Queues::layers order. In a body region
+/// the first chunk to key a bone sets it and the later ones blend over by their weights; a bone a region wrote is
+/// closed to the regions after it. An overlay region is posed apart and blended over the body by its weight
+/// (`over`, regions 5 and 6).
+pub fn pose_layers(skel: &Skeleton, layers: &[PoseLayer], over: [f32; 2], grips: &[(u16, u16)]) -> Vec<BoneXf> {
+    let n = skel.bones.len();
+    let rest = |b: usize| (skel.bones[b].rot, skel.bones[b].pos, Vec3::ONE);
+    let mut local: Vec<(Quat, Vec3, Vec3)> = (0..n).map(rest).collect();
+    let mut taken = vec![false; n];
+    let mut k = 0;
+    while k < layers.len() {
+        let end = layers[k + 1..].iter().position(|l| l.start).map_or(layers.len(), |p| k + 1 + p);
+        let group = &layers[k..end];
+        let kind = group[0].over;
+        let mut wrote: Vec<Option<(Quat, Vec3, Vec3)>> = vec![None; n];
+        for l in group {
+            for t in l.anim.tracks.iter() {
+                if t.bone >= n || (kind == 0 && taken[t.bone]) {
+                    continue;
+                }
+                let b = &skel.bones[t.bone];
+                let (r, tr, s) = t.sample(l.frame);
+                let v = (r * b.rot, b.pos + tr, s);
+                wrote[t.bone] = Some(match wrote[t.bone] {
+                    Some(old) => mix(old, v, l.weight),
+                    None => v,
+                });
+            }
+            if kind == 0 {
+                for &b in l.anim.unkeyed.iter() {
+                    let b = b as usize;
+                    if b < n
+                        && !taken[b]
+                        && let Some(old) = wrote[b]
+                    {
+                        wrote[b] = Some(mix(old, rest(b), l.weight));
+                    }
+                }
+            }
+        }
+        for (b, w) in wrote.into_iter().enumerate() {
+            let Some(w) = w else { continue };
+            if kind == 0 {
+                local[b] = w;
+                taken[b] = true;
+            } else {
+                local[b] = mix(local[b], w, over[kind as usize - 1]);
+            }
+        }
+        k = end;
+    }
+    chain_held(skel, local, grips)
+}
+
+/// Model-space transforms from the bones' locals, drawn weapons held (see `pose_held`).
+fn chain_held(skel: &Skeleton, mut local: Vec<(Quat, Vec3, Vec3)>, grips: &[(u16, u16)]) -> Vec<BoneXf> {
+    let n = skel.bones.len();
     let grips: Vec<(usize, usize)> =
         grips.iter().map(|&(c, g)| (c as usize, g as usize)).filter(|&(c, g)| c > 0 && c < n && g < n).collect();
     // Pass 0's set-up: the grip's local scale takes the carry's; the carry's subtree waits for pass 1.
@@ -1269,6 +1348,21 @@ mod tests {
             assert_eq!(bone, 0, "file {file}");
             assert!((t.y + h).abs() < 1e-3 && t.x.abs() < 1e-3, "file {file}: {t}");
         }
+    }
+
+    /// The effect sizes (FUN_100d08e0 / 09b0 / 0a80) are box 0's extents over 1.7 / 1.9 / 1.9: about 1 for a Hume.
+    #[test]
+    fn effect_sizes_near_one_for_a_hume() {
+        let Ok(index) = crate::dat::DatIndex::open(&crate::config::Config::load().ffxi_dir()) else { return };
+        for file in [7072u32, 16600, 19776, 26352] {
+            let Ok(d) = index.read(file) else { return };
+            let skel = super::load_file(&d).unwrap().skeleton.unwrap();
+            let [b0, b1, b2, b3, b4, b5] = skel.boxes[0];
+            println!("file {file}: {:.2} {:.2} {:.2}", (b2 - b3) / 1.7, (b1 - b0) / 1.9, (b4 - b5) / 1.9);
+        }
+        let skel = super::load_file(&index.read(7072).unwrap()).unwrap().skeleton.unwrap();
+        let [b0, b1, b2, b3, ..] = skel.boxes[0];
+        assert!(((b2 - b3) / 1.7 - 1.0).abs() < 0.3 && ((b1 - b0) / 1.9 - 1.0).abs() < 0.3, "{:?}", skel.boxes[0]);
     }
 
     /// First person's eye (FUN_10020ba0): attach point 12 sits at head height in every PC's rest pose.

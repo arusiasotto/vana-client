@@ -117,7 +117,13 @@ pub fn request(c: &Cred, cmd: u8, sub: u8, body: &[u8]) -> Result<(u8, Vec<u8>)>
     open[4] = 1;
     s.write_all(&open)?;
     let mut ans = [0u8; 0x18];
-    s.read_exact(&mut ans).context("xi_profile closed the connection (refused the credentials?)")?;
+    // A close here is xi_profile's answer to the open (the credentials), not a dropped link.
+    if let Err(e) = s.read_exact(&mut ans) {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+            bail!("xi_profile closed the connection at the open (refused the credentials?)");
+        }
+        return Err(anyhow::Error::new(e).context("no answer to the open"));
+    }
     if ans[0] != 0x81 || ans[1] != 0 {
         bail!("xi_profile open answer {:#x} error {}", ans[0], ans[1]);
     }
@@ -369,7 +375,10 @@ pub struct MsgHeader {
     pub to: u64,
     /// One of the sender's character names (LSB checks it).
     pub sender: String,
-    pub title: String,
+    /// The list title: `header_title` of the data, 15 bytes of Shift-JIS (polcore FUN_100150e0).
+    pub title: Vec<u8>,
+    /// The title did not fit its 15 bytes (+0x42 bit 12).
+    pub title_cut: bool,
     pub seq: u32,
     /// sqGetCalendarTime *(inf: unix seconds)*.
     pub date: u32,
@@ -386,15 +395,16 @@ impl MsgHeader {
         for (d, c) in b[0x10..0x1f].iter_mut().zip(self.sender.bytes()) {
             *d = c;
         }
-        for (d, c) in b[0x20..0x2f].iter_mut().zip(self.title.bytes()) {
-            *d = c;
+        for (d, c) in b[0x20..0x2f].iter_mut().zip(&self.title) {
+            *d = *c;
         }
         b[0x30..0x34].copy_from_slice(&self.seq.to_le_bytes());
         b[0x34..0x38].copy_from_slice(&self.date.to_le_bytes());
         b[0x38..0x3c].copy_from_slice(&self.length.to_le_bytes());
         let bits = ((self.kind as u16 & 0x1f) << 7) | 1 << 15;
         b[0x3e..0x40].copy_from_slice(&bits.to_le_bytes());
-        b[0x42..0x44].copy_from_slice(&((self.no_reply as u16) << 9).to_le_bytes());
+        let flags = (self.no_reply as u16) << 9 | (self.title_cut as u16) << 12;
+        b[0x42..0x44].copy_from_slice(&flags.to_le_bytes());
         b
     }
 
@@ -406,7 +416,8 @@ impl MsgHeader {
             from: u64::from_le_bytes(b[..8].try_into().unwrap()) ^ POL_MASK,
             to: u64::from_le_bytes(b[8..16].try_into().unwrap()) ^ POL_MASK,
             sender: name16(&b[0x10..0x20]),
-            title: name16(&b[0x20..0x30]),
+            title: b[0x20..0x30].split(|&c| c == 0).next().unwrap_or_default().to_vec(),
+            title_cut: b[0x43] & 0x10 != 0,
             seq: u32at(0x30),
             date: u32at(0x34),
             length: u32at(0x38),
@@ -426,19 +437,95 @@ impl MsgHeader {
     }
 }
 
-/// A message's data. polcore's encoding (slots 0x110 / 0x10f) is not known; ours is the title (<= 50) and the text
-/// (<= 300) as Shift-JIS, each ending in NUL *(ours, not retail's: retail clients' messages will not read right)*.
+/// polcore's separator between a message's title and its text.
+pub const BODY_SEP: u8 = 7;
+
+/// Bytes of Shift-JIS up to a NUL, at most `max`, never half a two-byte character (the copy loops of FFXiMain's
+/// FUN_100f2a10 / FUN_100f2ad0: a byte with the top bit set goes with the one after it or not at all).
+pub fn sjis_cut(s: &[u8], max: usize) -> &[u8] {
+    let mut n = 0;
+    while n < s.len() && s[n] != 0 {
+        let step = if s[n] & 0x80 != 0 { 2 } else { 1 };
+        if n + step > max || (step == 2 && s.get(n + 1).is_none_or(|&c| c == 0)) {
+            break;
+        }
+        n += step;
+    }
+    &s[..n]
+}
+
+/// FUN_100f2a10(title, n): the title FFXiMain hands to polcore. With n = 0x32 (plain messages, replies, declines) at
+/// most 50 bytes; with a smaller n (0x10: friend requests and accepts) exactly n bytes, the title over n spaces.
+pub fn body_title(title: &[u8], n: usize) -> Vec<u8> {
+    if n >= 0x32 {
+        return sjis_cut(title, 0x32).to_vec();
+    }
+    let mut b = vec![b' '; n];
+    let t = sjis_cut(title, n);
+    b[..t.len()].copy_from_slice(t);
+    b
+}
+
+/// A message's data as polcore writes it (table +0x440, FUN_10015260): the title (up to a NUL, at most 0x80 bytes),
+/// 0x07, the text (up to a NUL, at most 0xfff bytes), NUL; an attachment would follow. FFXiMain's text is at most 300
+/// bytes (FUN_100f2ad0).
 pub fn encode_body(title: &[u8], text: &[u8]) -> Vec<u8> {
-    let mut b = title[..title.len().min(50)].to_vec();
-    b.push(0);
-    b.extend_from_slice(&text[..text.len().min(300)]);
+    let part = |s: &[u8], max: usize| s.iter().copied().take_while(|&c| c != 0).take(max).collect::<Vec<u8>>();
+    let mut b = part(title, 0x80);
+    b.push(BODY_SEP);
+    b.extend(part(sjis_cut(text, 300), 0xfff));
     b.push(0);
     b
 }
 
-pub fn decode_body(b: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    let mut parts = b.split(|&c| c == 0);
-    (parts.next().unwrap_or_default().to_vec(), parts.next().unwrap_or_default().to_vec())
+/// polcore's reader (table +0x43c, FUN_10015400): the title ends at 0x07 (at most 0x7f bytes), the text at the NUL
+/// after it; data with no 0x07 in reach, nothing after it or no NUL fails (FFXiMain's reader then reports error
+/// 0x10). Ours also reads the data this client wrote before 2026-11-11 (title NUL text NUL, no 0x07 anywhere).
+pub fn decode_body(b: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    if !b.contains(&BODY_SEP) {
+        let mut parts = b.split(|&c| c == 0);
+        return Some((parts.next()?.to_vec(), parts.next().unwrap_or_default().to_vec()));
+    }
+    let end = b.iter().take(0x7f).position(|&c| c == BODY_SEP).unwrap_or(b.len().min(0x7f));
+    let rest = b.get(end + 1..).filter(|r| !r.is_empty())?;
+    let len = rest.iter().take(0xfff).position(|&c| c == 0)?;
+    Some((b[..end].to_vec(), rest[..len].to_vec()))
+}
+
+/// FUN_100f4ff0(out, 0x20, data): the header's title is the start of the data itself, title and text run together:
+/// every run of bytes at or under a space (the 0x07 too) becomes one space, at most 31 bytes. polcore's header
+/// builder (table +0x438, FUN_100150e0) keeps 15 of them, drops half a two-byte character at the end, and flags a
+/// title that lost bytes. Returns (title, cut).
+pub fn header_title(data: &[u8]) -> (Vec<u8>, bool) {
+    let mut out = Vec::new();
+    let (mut i, mut run) = (0, false);
+    while i < data.len() && data[i] != 0 && out.len() + 1 < 0x20 {
+        let c = data[i];
+        if c & 0x80 != 0 && out.len() + 2 < 0x20 {
+            out.extend_from_slice(&[c, data.get(i + 1).copied().unwrap_or(0)]);
+            (i, run) = (i + 2, false);
+        } else if c & 0x80 == 0 && c > b' ' {
+            out.push(c);
+            (i, run) = (i + 1, false);
+        } else {
+            if !run {
+                out.push(b' ');
+            }
+            (i, run) = (i + 1, true);
+        }
+    }
+    let full = out.iter().position(|&c| c == 0).unwrap_or(out.len());
+    let kept = sjis_cut(&out[..full], 15).len();
+    out.truncate(kept);
+    (out, kept < full)
+}
+
+/// A notice's Status as polcore stores it in the friend entry's bits 13..15 (FUN_10017560, 0x1001762e: `dec eax; and
+/// eax, 7`, then anything from 5 up is 0): 1 offline -> 0, 2 online -> 1, 3 away -> 2, 4 and 5 -> 3 and 4, 0 and 6
+/// up -> 0.
+pub fn entry_status(notice: u8) -> u8 {
+    let v = notice.wrapping_sub(1) & 7;
+    if v >= 5 { 0 } else { v }
 }
 
 /// Posts a message: its header names the file, the data follows.
@@ -451,12 +538,12 @@ pub fn send_message(c: &Cred, h: &MsgHeader, data: &[u8]) -> Result<()> {
 pub enum Irc {
     /// The profile-available notice: signed on.
     SignedOn,
-    /// A friend's status (Status - 1: 0 offline, 1 online, 2 away), where we list them, the character they play, and
-    /// the notice's age (only newer ones apply).
+    /// A friend's status notice: where we list them, the status block when it applies (`entry_status`, playing),
+    /// the character primitive when one follows, and the notice's age (only newer ones apply).
     Status {
         account: u64,
         list_index: u8,
-        status: u8,
+        status: Option<(u8, bool)>,
         char_id: Option<u32>,
         age: u64,
     },
@@ -548,7 +635,32 @@ fn irc_line(s: &mut tls::TlsStream, text: &str, tx: &mpsc::Sender<Irc>) -> Resul
     Ok(())
 }
 
-/// A notice's payload (3.4.3): the 0x48-byte header in 96 characters, then a status notice's extended block.
+/// The status block of a notice (header +0x10..), as polcore's notice handler applies it (the function at
+/// 0x100160a0.. passes it to FUN_1001c9b0 only with extension flag 1; FUN_10017560 returns before the status when
+/// the connected byte is not 0, 1 or 2): the entry status and the playing bit (+0x12 bit 0).
+fn status_block(h: &[u8], ext_flags: u8) -> Option<(u8, bool)> {
+    (ext_flags & 1 != 0 && h[0x10] <= 2).then(|| (entry_status(h[0x11]), h[0x12] & 1 != 0))
+}
+
+/// The friend list's size in polcore (200 entries at DAT_10109288): a notice for a higher index changes nothing.
+const LIST_SIZE: u8 = 200;
+
+/// The extension's character primitive: its offset (after the 8-byte flags block, flag 2's 16 bytes and flag 4's 8)
+/// when the notice carries one the entry takes, flags 1 and 8 together (FUN_1001c9b0 stores it inside the status
+/// block's branch: 0x1001c9f6 `je 0x1001ca7f` jumps over both).
+fn primitive_at(flags: u8) -> Option<usize> {
+    (flags & 9 == 9).then(|| 8 + if flags & 2 != 0 { 16 } else { 0 } + if flags & 4 != 0 { 8 } else { 0 })
+}
+
+/// A notice's payload (3.4.3): the 0x48-byte header in 96 characters, then a status notice's extended block. The
+/// type-31 paths of polcore's handler (FUN_100160c0, header +0x19 / +0x1a / +0x1b):
+/// - +0x1b set: the legacy block. The sign-on is +0x10 == 1 with +0x18 and +0x1c both 0xff (LSB's profile-available
+///   notice); else the header's own status block applies to entry +0x1c (FUN_1001c970, newer only), no extension
+///   read.
+/// - +0x1a set: a message notice for the viewer (its title and text to callback 1); not a friend's status.
+/// - +0x19 bit 0 with +0x1a and +0x1b clear and a length under 0x158: the extension. Its flag 2 hands the notice to
+///   FUN_100200a0 (a 16-byte block for something other than the list) and the entry is not touched; otherwise the
+///   status block with flag 1 and the character with flags 1 and 8 (FUN_1001c9b0).
 fn notice(payload: &str) -> Option<Irc> {
     let h = b64_decode(payload.get(..96)?)?;
     if h.len() < 0x48 {
@@ -559,20 +671,33 @@ fn notice(payload: &str) -> Option<Irc> {
     if ty != 31 {
         return polpro.then_some(Irc::Mail);
     }
-    if h[0x10] == 1 {
-        return Some(Irc::SignedOn);
-    }
     let account = u64::from_le_bytes(h[..8].try_into().unwrap()) ^ POL_MASK;
+    let (list_index, age) = (h[0x1c], u64::from_le_bytes(h[0x30..0x38].try_into().unwrap()));
+    if h[0x1b] != 0 {
+        if h[0x10] == 1 && h[0x18] == 0xff && h[0x1c] == 0xff {
+            return Some(Irc::SignedOn);
+        }
+        return (list_index < LIST_SIZE).then(|| Irc::Status {
+            account,
+            list_index,
+            status: status_block(&h, 1),
+            char_id: None,
+            age,
+        });
+    }
+    let length = u32::from_le_bytes(h[0x38..0x3c].try_into().unwrap());
+    if h[0x1a] != 0 || h[0x19] & 1 == 0 || length >= 0x158 || list_index >= LIST_SIZE {
+        return None;
+    }
     let ext = b64_decode(&payload[96..]).unwrap_or_default();
-    let char_id = (ext.first().is_some_and(|f| f & 8 != 0) && ext.len() >= 0x18)
-        .then(|| u64::from_le_bytes(ext[0x10..0x18].try_into().unwrap()) as u32);
-    Some(Irc::Status {
-        account,
-        list_index: h[0x1c],
-        status: h[0x11].saturating_sub(1),
-        char_id,
-        age: u64::from_le_bytes(h[0x30..0x38].try_into().unwrap()),
-    })
+    let flags = ext.first().copied().unwrap_or(0);
+    if flags & 2 != 0 {
+        return None;
+    }
+    let char_id = primitive_at(flags)
+        .and_then(|at| ext.get(at + 8..at + 0x10))
+        .map(|id| u64::from_le_bytes(id.try_into().unwrap()) as u32);
+    Some(Irc::Status { account, list_index, status: status_block(&h, flags), char_id, age })
 }
 
 #[cfg(test)]
@@ -645,7 +770,8 @@ mod tests {
             from: 1000,
             to: 1003,
             sender: "Lnxcsfix".into(),
-            title: "Hi".into(),
+            title: b"Hi".to_vec(),
+            title_cut: false,
             seq: 7,
             date: 1_800_000_000,
             length: 12,
@@ -656,7 +782,99 @@ mod tests {
         assert_eq!(MsgHeader::from_name(&h.file_name()), Some(h.clone()));
         // A server's name with more after the header would be a path out of the mail folder.
         assert_eq!(MsgHeader::from_name(&format!("{}\\..\\..\\x.bat", h.file_name())), None);
-        assert_eq!(decode_body(&encode_body(b"T", b"text")), (b"T".to_vec(), b"text".to_vec()));
+    }
+
+    /// polcore's data layout (FUN_10015260 / FUN_10015400) and FFXiMain's title and text limits.
+    #[test]
+    fn message_body() {
+        assert_eq!(encode_body(b"T", b"text"), b"T\x07text\0");
+        assert_eq!(decode_body(b"T\x07text\0"), Some((b"T".to_vec(), b"text".to_vec())));
+        // An attachment after the NUL is not text.
+        assert_eq!(decode_body(b"T\x07text\0\x01\x02"), Some((b"T".to_vec(), b"text".to_vec())));
+        // Nothing after the title, or no NUL: polcore's reader fails.
+        assert_eq!(decode_body(b"T\x07"), None);
+        assert_eq!(decode_body(b"T\x07text"), None);
+        // What this client wrote before.
+        assert_eq!(decode_body(b"T\0text\0"), Some((b"T".to_vec(), b"text".to_vec())));
+        // Requests and accepts: 16 bytes exactly (the English title loses its "!").
+        assert_eq!(body_title(b"Let's be friends!", 0x10), b"Let's be friends");
+        assert_eq!(body_title(b"Deleted", 0x10), b"Deleted         ");
+        // Half a two-byte character is never kept.
+        assert_eq!(sjis_cut(&[0x97, 0x46, 0x92, 0x42], 3), &[0x97, 0x46]);
+        assert_eq!(sjis_cut(&[0x97, 0x46, 0x92], 4), &[0x97, 0x46]);
+        assert_eq!(encode_body(b"T", &[b'a'; 400]).len(), 2 + 300 + 1);
+    }
+
+    /// The header's title is cut from the data (FUN_100f4ff0, then FUN_100150e0's 15 bytes).
+    #[test]
+    fn title_from_data() {
+        assert_eq!(header_title(b"Let's be friends\x07Bob\0"), (b"Let's be friend".to_vec(), true));
+        assert_eq!(header_title(b"Message\x07hi  there\0"), (b"Message hi ther".to_vec(), true));
+        assert_eq!(header_title(b"Hi\x07yo\0"), (b"Hi yo".to_vec(), false));
+        assert_eq!(header_title(b""), (Vec::new(), false));
+        // 14 bytes, then a two-byte character that does not fit the 15.
+        let mut d = b"abcdefghijklmn".to_vec();
+        d.extend_from_slice(&[0x97, 0x46, 0]);
+        assert_eq!(header_title(&d), (b"abcdefghijklmn".to_vec(), true));
+    }
+
+    /// polcore's Status -> entry status (FUN_10017560) and the gates on the block.
+    #[test]
+    fn notice_status() {
+        let got: Vec<u8> = (0..=9).map(entry_status).collect();
+        assert_eq!(got, [0, 0, 1, 2, 3, 4, 0, 0, 0, 0]);
+        let mut h = [0u8; 0x48];
+        (h[0x10], h[0x11], h[0x12]) = (2, 3, 1);
+        assert_eq!(status_block(&h, 1), Some((2, true)));
+        assert_eq!(status_block(&h, 8), None);
+        h[0x10] = 3;
+        assert_eq!(status_block(&h, 1), None);
+    }
+
+    /// The handler's paths (FUN_100160c0) on LSB's two notices and the variants no server of ours sends.
+    #[test]
+    fn notice_paths() {
+        let head = |f: &dyn Fn(&mut [u8; 0x48])| {
+            let mut h = [0u8; 0x48];
+            h[0x3e..0x40].copy_from_slice(&(31u16 << 7).to_le_bytes());
+            h[0x42] = 1;
+            f(&mut h);
+            b64(&h, true)
+        };
+        let ext = |b: &[u8]| b64(b, false);
+        let status = |n: &str| match notice(n) {
+            Some(Irc::Status { list_index, status, char_id, .. }) => Some((list_index, status, char_id)),
+            _ => None,
+        };
+        // LSB's profile-available notice.
+        let sign_on = head(&|h| (h[0x10], h[0x18], h[0x1b], h[0x1c]) = (1, 0xff, 1, 0xff));
+        assert!(matches!(notice(&sign_on), Some(Irc::SignedOn)));
+        // A friend's "connected 1" is a status, not the sign-on.
+        let connected1 = head(&|h| (h[0x10], h[0x11], h[0x19], h[0x1c]) = (1, 2, 1, 4));
+        assert_eq!(status(&(connected1 + &ext(&[1, 0, 0, 0, 0, 0, 0, 0]))), Some((4, Some((1, false)), None)));
+        // The legacy block applies the header's status without an extension.
+        let legacy = head(&|h| (h[0x10], h[0x11], h[0x1b], h[0x1c]) = (2, 3, 1, 7));
+        assert_eq!(status(&legacy), Some((7, Some((2, false)), None)));
+        // LSB's playing friend: flags 1 | 8, the id at 0x10; with flag 4 the id moves to 0x18.
+        let playing = head(&|h| (h[0x10], h[0x11], h[0x12], h[0x19], h[0x1c]) = (2, 2, 1, 1, 3));
+        let mut e = vec![9u8, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        e.extend_from_slice(&0x1234u64.to_le_bytes());
+        assert_eq!(status(&(playing.clone() + &ext(&e))), Some((3, Some((1, true)), Some(0x1234))));
+        let mut e4 = vec![13u8, 0, 0, 0, 0, 0, 0, 0];
+        e4.extend_from_slice(&[0; 8]);
+        e4.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]);
+        e4.extend_from_slice(&0x5678u64.to_le_bytes());
+        assert_eq!(status(&(playing.clone() + &ext(&e4))), Some((3, Some((1, true)), Some(0x5678))));
+        // Flag 8 without flag 1: neither status nor character, only the age.
+        e[0] = 8;
+        assert_eq!(status(&(playing.clone() + &ext(&e))), Some((3, None, None)));
+        // Flag 2 goes elsewhere; +0x1a or a clear +0x19 bit 0 is no status notice.
+        e[0] = 3;
+        assert_eq!(status(&(playing + &ext(&e))), None);
+        assert!(notice(&head(&|h| (h[0x19], h[0x1a]) = (1, 1))).is_none());
+        assert!(notice(&head(&|h| h[0x1c] = 3)).is_none());
+        // An index past polcore's 200 entries.
+        assert!(notice(&head(&|h| (h[0x1b], h[0x1c]) = (1, 200))).is_none());
     }
 
     #[test]

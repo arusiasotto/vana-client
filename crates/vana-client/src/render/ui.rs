@@ -59,6 +59,9 @@ impl Blend {
     }
 }
 
+/// A vertex depth meaning "no depth test, not dimmed by the 2D level".
+const LEVEL_FREE: f32 = -2.0;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct UiVertex {
@@ -576,6 +579,12 @@ impl UiBatch {
         self.depth = depth;
     }
 
+    /// Quads pushed from now on are not dimmed by the 2D layer's level (the credits roll draws its own colours);
+    /// they take no depth test. Off again with `set_depth(None)`.
+    pub fn set_unleveled(&mut self) {
+        self.depth = Some(LEVEL_FREE);
+    }
+
     /// Clips the quads pushed from now on to (x, y, w, h); None = the whole target.
     pub fn set_clip(&mut self, clip: Option<[f32; 4]>) {
         self.clip = clip;
@@ -960,7 +969,7 @@ struct VOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32>, @l
 }
 @fragment fn fs(i: VOut) -> @location(0) vec4<f32> {
     // Depth-tested quads (name plates) hide behind nearer scenery; the scene may be drawn at another size.
-    if i.depth >= 0.0 {
+    if i.depth >= 0.0 && i.depth < 2.0 {
         let dims = vec2<f32>(textureDimensions(scene_depth));
         let t = vec2<i32>(clamp(i.clip.xy / u.dst.xy * dims, vec2<f32>(0.0), dims - 1.0));
         if i.depth > textureLoad(scene_depth, t, 0) {
@@ -968,7 +977,9 @@ struct VOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32>, @l
         }
     }
     // u.screen.z: the 2D layer's colour (lobby 'sfin' / 'sfot', scheduler op 0x51), 1 = as drawn.
-    let c = clamp(textureSample(tex, samp, i.uv) * i.color, vec4<f32>(0.0), vec4<f32>(1.0)) * u.screen.z;
+    // Depth -2 (UiBatch::set_unleveled): not dimmed.
+    let level = select(u.screen.z, 1.0, i.depth < -1.5);
+    let c = clamp(textureSample(tex, samp, i.uv) * i.color, vec4<f32>(0.0), vec4<f32>(1.0)) * level;
     // The UI runs with ALPHATESTENABLE, ALPHAFUNC GREATER, ALPHAREF 0 (FUN_10159ae0).
     if c.a <= 0.0 {
         discard;

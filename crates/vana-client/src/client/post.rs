@@ -274,8 +274,14 @@ pub(super) fn log_group9(w: &mut World, id: usize, mode: u8) {
 /// A file 7031 line with work {slot + 1 or slot, ...} and the string parameter (FUN_100a1ab0).
 pub(super) fn system_line(w: &mut World, id: u16, work: [i32; 5], text: String) {
     let Some(bt) = w.battle.clone() else { return };
-    let ctx =
-        crate::dat::battle::Ctx { me: w.name.clone(), work, strings: [text, String::new()], ..Default::default() };
+    let names = super::combat::tables(w);
+    let ctx = crate::dat::battle::Ctx {
+        me: w.name.clone(),
+        work,
+        strings: [text, String::new()],
+        names,
+        ..Default::default()
+    };
     if let Some(line) = bt.system(id, &ctx) {
         let colour = bt.colour_in(line.mode.unwrap_or(0), &w.game);
         for l in line.lines.into_iter().filter(|l| !l.is_empty()) {
@@ -338,13 +344,7 @@ fn may_open(w: &mut World) -> bool {
     if active(w) {
         return false;
     }
-    if w.win.is_some()
-        || w.map.is_some()
-        || w.config.is_some()
-        || w.mogdoor.is_some()
-        || w.magic.is_some()
-        || w.ability.is_some()
-    {
+    if blocked(w) {
         super::textcmd::refuse(w, 0x45);
         return false;
     }
@@ -353,6 +353,20 @@ fn may_open(w: &mut World) -> bool {
         return false;
     }
     true
+}
+
+fn blocked(w: &World) -> bool {
+    w.win.is_some()
+        || w.map.is_some()
+        || w.config.is_some()
+        || w.mogdoor.is_some()
+        || w.magic.is_some()
+        || w.ability.is_some()
+}
+
+/// FUN_1012f100(0) without its messages (event op 0xb2 1 waits on it): the send UI idle, no blocking window, not healing.
+pub fn can_open(w: &World) -> bool {
+    !active(w) && !blocked(w) && !matches!(w.my_motion.status, 0x21 | 7)
 }
 
 // --- The receive UI ---

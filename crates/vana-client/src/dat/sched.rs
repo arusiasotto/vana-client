@@ -96,7 +96,9 @@ pub fn length(data: &[u8]) -> u32 {
 
 /// A motion a scheduler plays (op 0x05 -> FUN_100cb8e0): name with the region '?' stripped ("at0?" ->
 /// "at0"), the tick it starts, f32 speed @0x10, the play length u16 @6, the play count byte @0x1e & 0x7f
-/// (0 = loop until replaced; motion player +0x2c) and the blend-in ticks u16 @0x18.
+/// (0 = loop until replaced; motion player +0x2c) and the blend-in ticks u16 @0x18. `out` is u16 @0x1c, the queue
+/// entry's out length (+0x20: the blend back to the status motion once a counted one ends); `half` the top nibble of
+/// byte @0x1f: 1 plays the first half of the frames, 2 starts at the second half (0x1005ccb2).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Motion {
     pub name: String,
@@ -105,6 +107,19 @@ pub struct Motion {
     pub ticks: u16,
     pub count: u8,
     pub blend: u16,
+    pub out: u16,
+    pub half: u8,
+}
+
+impl Motion {
+    /// The start and end frames op 0x05 queues a chunk of `frames` with (0 = from the start / to the chunk's end).
+    pub fn span(half: u8, frames: f32) -> (f32, f32) {
+        match half {
+            1 => (0.0, (frames + 1.0) * 0.5 - 1.0),
+            2 => ((frames + 1.0) * 0.5, 0.0),
+            _ => (0.0, 0.0),
+        }
+    }
 }
 
 /// What a scheduler does that combat shows: its motions and when sub-scheduler `hit` (op 0x03) runs.
@@ -113,9 +128,10 @@ pub struct Plan {
     pub motions: Vec<Motion>,
     pub hit_at: Option<u32>,
     pub length: u32,
-    /// Op 0x28 (FUN_100c6b70 + FUN_100cb8e0): from here the status motion is chosen again, a 10-tick blend
-    /// *(inf: back to the stance)*.
+    /// Op 0x28 (FUN_100c6b70 + FUN_100cb8e0): from here the status motion is chosen again.
     pub stance_at: Option<u32>,
+    /// Op 0x28's blend-in, its f32 @8 (0x1005b112 -> FUN_100cd920 arg 5).
+    pub stance_blend: Option<f32>,
     /// When the holds end, from the start: op 0x59 on the attacker (FUN_10062650, about 30 ticks past the hit: no
     /// reactions, server status changes wait) and op 0x20 on the target (FUN_100601f0, hit + 4); u16 @6 each.
     pub attacker_hold: Option<u32>,
@@ -139,11 +155,16 @@ pub fn plan(data: &[u8], hit: &[&str]) -> Plan {
                         ticks: u16_at(6),
                         count,
                         blend: u16_at(0x18),
+                        out: u16_at(0x1c),
+                        half: op.raw.get(0x1f).map_or(0, |b| b >> 4),
                     });
                 }
             }
             0x03 if op.name().is_some_and(|n| hit.contains(&n)) && p.hit_at.is_none() => p.hit_at = Some(t),
-            0x28 => p.stance_at = Some(t),
+            0x28 => {
+                p.stance_at = Some(t);
+                p.stance_blend = op.raw.get(8..12).map(|b| f32::from_le_bytes(b.try_into().unwrap()));
+            }
             0x59 | 0x20 => {
                 let end = t + op.raw.get(6..8).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u32);
                 let slot = if op.code == 0x59 { &mut p.attacker_hold } else { &mut p.target_hold };
@@ -180,7 +201,8 @@ pub fn matching<'a>(names: impl Iterator<Item = &'a str>, pattern: &str) -> Vec<
 mod tests {
     use super::*;
 
-    /// Model 0 (file 1300) "ati0": motion at0? for 80 ticks; "dada" (the hit) runs after 24 + 12 ticks.
+    /// Model 0 (file 1300) "ati0": motion at0? for 80 ticks, blend-in 10 and out 20 (u16 @0x18 / @0x1c: 0a 00, 14 00);
+    /// "dada" (the hit) runs after 24 + 12 ticks.
     #[test]
     fn mob_attack_plan() {
         let cfg = crate::config::Config::load();
@@ -189,7 +211,10 @@ mod tests {
         let chunks = crate::dat::chunks(&file).unwrap();
         let get = |n: &str| chunks.iter().find(|c| c.kind == 7 && c.name() == n).unwrap().data;
         let p = plan(get("ati0"), &["dada"]);
-        assert_eq!(p.motions, vec![Motion { name: "at0".into(), at: 0, speed: 1.0, ticks: 80, count: 1, blend: 10 }]);
+        assert_eq!(
+            p.motions,
+            vec![Motion { name: "at0".into(), at: 0, speed: 1.0, ticks: 80, count: 1, blend: 10, out: 20, half: 0 }]
+        );
         assert_eq!((p.hit_at, p.length), (Some(36), 80));
         assert_eq!(p.target_hold, Some(40));
         let d = plan(get("dead"), &[]);

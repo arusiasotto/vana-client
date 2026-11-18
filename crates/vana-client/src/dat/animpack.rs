@@ -15,13 +15,21 @@ pub struct Packed {
     pub key: u64,
 }
 
-/// One animation: frames, track count, bone -> track + 1 table, then 10 channels of (key count or 0,
-/// constant bits or key offset from the animation start) per track, keys after.
+/// A bone the animation names without keying it (Animation::unkeyed) in the bone table.
+pub const UNKEYED: u32 = u32::MAX;
+
+/// One animation: frames, track count, bone -> track + 1 table (UNKEYED for a bone named but not keyed), then 10
+/// channels of (key count or 0, constant bits or key offset from the animation start) per track, keys after.
 fn pack_one(a: &Animation, out: &mut Vec<u32>) {
     let start = out.len();
     out.push(a.frames as u32);
     out.push(a.tracks.len() as u32);
     out.extend(std::iter::repeat_n(0u32, TABLE));
+    for &b in a.unkeyed.iter() {
+        if (b as usize) < TABLE {
+            out[start + 2 + b as usize] = UNKEYED;
+        }
+    }
     for (i, t) in a.tracks.iter().enumerate() {
         if t.bone < TABLE {
             out[start + 2 + t.bone] = i as u32 + 1;

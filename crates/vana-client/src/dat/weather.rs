@@ -47,6 +47,30 @@ fn c(b: &[u8], o: usize) -> [u8; 4] {
 }
 
 impl Env {
+    /// DAT_1065ca58 as FUN_1018b170 fills it, FUN_101880c0's payload for an env without a weather object: grey
+    /// light and fog (0x80), fog 80..100, a black clear colour, draw distance 100, no dome.
+    pub fn retail_default() -> Self {
+        let g = Group {
+            sun: [0x80; 4],
+            moon: [0x80; 4],
+            ambient: [0x80; 4],
+            fog: [0x80; 4],
+            fog_end: 100.0,
+            fog_start: 80.0,
+            light_scale: 1.0,
+        };
+        Self {
+            actor: g,
+            bg: g,
+            clear: [0, 0, 0, 0x80],
+            unk50: 80.0,
+            unk54: 80.0,
+            draw_dist: 100.0,
+            bytes5c: [1, 1, 0],
+            ..Default::default()
+        }
+    }
+
     pub fn parse(b: &[u8]) -> Option<Self> {
         if b.len() < 0xac {
             return None;
@@ -146,6 +170,8 @@ type Keys = BTreeMap<String, Vec<(u32, Env)>>;
 pub struct ZoneWeather {
     pub keys: Keys,
     pub areas: std::collections::HashMap<u32, ZoneWeather>,
+    /// The first weather folder in file order: FUN_1018a7a0's last resort when neither the weather nor `suny` is there.
+    pub first: Option<String>,
 }
 
 fn key_minutes(name: &str) -> Option<u32> {
@@ -158,8 +184,16 @@ fn key_minutes(name: &str) -> Option<u32> {
 }
 
 impl ZoneWeather {
+    /// A scene with no weather data: retail's default env at every hour and weather, no areas.
+    pub fn retail_default() -> Self {
+        let keys = BTreeMap::from([("suny".to_string(), vec![(0, Env::retail_default())])]);
+        Self { keys, areas: Default::default(), first: Some("suny".into()) }
+    }
+
     pub fn parse(file: &[u8]) -> Result<Self> {
         let mut keys: Keys = BTreeMap::new();
+        let mut first: Option<String> = None;
+        let mut area_first: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
         let mut areas: std::collections::HashMap<u32, Keys> = std::collections::HashMap::new();
         let mut stack: Vec<(String, u32)> = Vec::new();
         for ch in super::chunks(file)? {
@@ -172,12 +206,17 @@ impl ZoneWeather {
                     let n = stack.len();
                     let (Some(m), Some(e)) = (key_minutes(&ch.name()), Env::parse(ch.data)) else { continue };
                     let tag = || stack[n - 1].0.clone();
-                    if n == 4 && stack[2].0 == "weat" && stack[1].0 != "weat" {
+                    // <zone>/<area>/weat/<tag> is an area's; <zone>/data/weat/<tag> (event scenes such as 516 / 517)
+                    // is the scene's own.
+                    if n == 4 && stack[2].0 == "weat" && stack[1].0 != "weat" && stack[1].0 != "data" {
+                        area_first.entry(stack[1].1).or_insert_with(tag);
                         areas.entry(stack[1].1).or_default().entry(tag()).or_default().push((m, e));
                     } else if n >= 2 && stack[n - 2].0 == "weat" {
                         // Only direct children of weat/<tag>, not sub-folders such as "indo".
+                        first.get_or_insert_with(tag);
                         keys.entry(tag()).or_default().push((m, e));
                     } else if n == 3 && WEATHER_TAGS.contains(&stack[2].0.as_str()) {
+                        area_first.entry(stack[1].1).or_insert_with(tag);
                         areas.entry(stack[1].1).or_default().entry(tag()).or_default().push((m, e));
                     }
                 }
@@ -190,14 +229,21 @@ impl ZoneWeather {
             }
             k
         };
-        let areas =
-            areas.into_iter().map(|(id, k)| (id, Self { keys: sorted(k), areas: Default::default() })).collect();
-        Ok(Self { keys: sorted(keys), areas })
+        let areas = areas
+            .into_iter()
+            .map(|(id, k)| (id, Self { keys: sorted(k), areas: Default::default(), first: area_first.remove(&id) }))
+            .collect();
+        Ok(Self { keys: sorted(keys), areas, first })
     }
 
     /// Env at `minute` of the day for `weather`, falling back to "suny" (FUN_10183780).
     pub fn at(&self, weather: &str, minute: f32) -> Option<Env> {
-        let keys = self.keys.get(weather).or_else(|| self.keys.get("suny"))?;
+        // FUN_1018a7a0: the weather's folder, else `suny`, else the first one the file has.
+        let keys = self
+            .keys
+            .get(weather)
+            .or_else(|| self.keys.get("suny"))
+            .or_else(|| self.first.as_ref().and_then(|f| self.keys.get(f)))?;
         if keys.is_empty() {
             return None;
         }
@@ -454,6 +500,23 @@ mod tests {
     use glam::Vec3;
 
     use super::{EasedLight, LightEase, ZoneWeather, sun_moon};
+
+    /// Event scene 516 (file 616) keeps its envs under data/weat with only rain / thdr: they are the scene's own, and
+    /// sunny weather falls back to the first folder (rain). A scene with no weather data takes the default env.
+    #[test]
+    fn event_scene_weather() {
+        let Ok(index) = crate::dat::DatIndex::open(&crate::config::Config::load().ffxi_dir()) else { return };
+        let Ok(b) = index.read(616) else { return };
+        let w = ZoneWeather::parse(&b).unwrap();
+        assert!(w.areas.is_empty());
+        assert!(w.keys.contains_key("rain") && w.keys.contains_key("thdr"));
+        assert_eq!(w.first.as_deref(), Some("rain"));
+        let rain = w.at("rain", 720.0).unwrap();
+        let sunny = w.at("suny", 720.0).unwrap();
+        assert_eq!(sunny.bg.fog_end, rain.bg.fog_end);
+        let d = ZoneWeather::retail_default().at("snow", 0.0).unwrap();
+        assert_eq!((d.bg.sun, d.bg.fog_end, d.draw_dist), ([0x80; 4], 100.0, 100.0));
+    }
 
     /// FUN_10187720's step: 0.1 of the way; a large remaining turn fades the colour x 0.7.
     #[test]

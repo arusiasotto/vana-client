@@ -332,43 +332,34 @@ fn cancel_held(w: &mut World, l: &mut Layout) {
     w.sounds.push(Ui::Cancel as u32);
 }
 
-/// FUN_101ce360: the held piece's arrows and turns (context 0x42); Enter / Escape come through `key`.
+/// FUN_101cf930 (30261102_0; FUN_101ce360 before): the held piece's arrows and turns (context 0x42); Enter / Escape come through `key`. Every arrow
+/// that is down steps once; only when the last of them moved nothing are the turn keys read.
 fn held_keys(w: &mut World, l: &mut Layout, input: &mut Input) {
     let grid = l.grid(w);
     let Some(mut h) = l.held.take() else { return };
     let (eye, look) = (w.cam.eye, w.cam.look);
     let ctrl = w.game.get(0xc1);
-    let mut moved = None;
+    let mut moved = false;
     for (id, dir) in [(0x34, 3), (0x33, 1), (0x31, 0), (0x32, 2)] {
         if input.test(id, mode::REPEAT) {
-            moved = Some(step(&grid, &mut h.piece.piece, l.floor, remap(dir, ctrl, eye, look)));
+            let m = step(&grid, &mut h.piece.piece, l.floor, remap(dir, ctrl, eye, look));
+            moved = m.is_some();
+            if let Some((dx, dz)) = m {
+                for t in h.tops.iter_mut() {
+                    (t.piece.x, t.piece.z) = (t.piece.x + dx as i8, t.piece.z + dz as i8);
+                }
+            }
         }
     }
-    if let Some(m) = moved {
-        if let Some((dx, dz)) = m {
-            for t in h.tops.iter_mut() {
-                (t.piece.x, t.piece.z) = (t.piece.x + dx as i8, t.piece.z + dz as i8);
-            }
-            w.sounds.push(8058);
-        }
+    if moved {
+        w.sounds.push(8058);
         l.held = Some(h);
         return;
     }
-    let by = if input.test(0x8d, mode::PRESS) {
-        -1
-    } else if input.test(0x8e, mode::PRESS) {
-        1
-    } else {
-        0
-    };
-    if by != 0 {
-        let (dx, dz) = rotate(&grid, &mut h.piece.piece, l.floor, by);
-        if !h.piece.piece.furn.wall() {
-            for t in h.tops.iter_mut() {
-                (t.piece.x, t.piece.z) = (t.piece.x + dx as i8, t.piece.z + dz as i8);
-            }
-            w.sounds.push(8059);
-        }
+    // Both in one frame undo each other (0x8d first, then 0x8e).
+    let by = input.test(0x8e, mode::PRESS) as i8 - input.test(0x8d, mode::PRESS) as i8;
+    if by != 0 && rotate(&grid, &mut h.piece.piece, &mut h.tops, l.floor, by) {
+        w.sounds.push(8059);
     }
     l.held = Some(h);
 }
@@ -1503,21 +1494,33 @@ pub fn step(grid: &Grid, p: &mut Piece, floor: u8, dir: u8) -> Option<(i32, i32)
     shift(grid, p, floor, dx, dz).then(|| ((p.x - ox) as i32, (p.z - oz) as i32))
 }
 
-/// Num- (0x8d, -1) / 0x8e (+1): a floor piece turns about its centre (integer halves) and is clamped; a wall piece's
-/// rotation changes but nothing else (retail quirk). Returns the shift for the pieces on it.
-pub fn rotate(grid: &Grid, p: &mut Piece, floor: u8, by: i8) -> (i32, i32) {
-    let (w0, d0) = p.furn.footprint(p.rot);
-    p.rot = (p.rot as i8 + by).rem_euclid(4) as u8;
+/// Num- (0x8d, -1) / 0x8e (+1) in FUN_101cf930 (30261102_0 addresses here): a wall piece does not turn
+/// (FUN_101d01b0; false). A floor piece turns in place (FUN_101cf520), its first cell kept: retail's re-centring
+/// reads both footprints after the turn, so FUN_101ce720 gets (0, 0) and only clamps it to the floor's bounds. When
+/// stackable (FUN_101d01d0) it takes the level of the cells now under it. The pieces on it turn about it
+/// (FUN_101ce8a0: always by -1, whichever way it turned; column = its width now - their depth before - their row
+/// offset, row = their column offset) and then move with the clamp (FUN_101ce860), keeping their levels.
+pub fn rotate(grid: &Grid, p: &mut Piece, tops: &mut [Placed], floor: u8, by: i8) -> bool {
     if p.furn.wall() {
-        return (0, 0);
+        return false;
     }
-    let (w1, d1) = p.furn.footprint(p.rot);
+    p.rot = (p.rot as i8 + by).rem_euclid(4) as u8;
+    let w1 = p.furn.footprint(p.rot).0;
+    for t in tops.iter_mut().map(|t| &mut t.piece) {
+        let (rx, rz) = (t.x - p.x, t.z - p.z);
+        let depth = t.furn.footprint(t.rot).1 as i8;
+        t.rot = (t.rot + 3) % 4;
+        (t.x, t.z) = (p.x + w1 as i8 - rz - depth, p.z + rx);
+    }
     let (ox, oz) = (p.x, p.z);
-    shift(grid, p, floor, w0 as i32 / 2 - w1 as i32 / 2, d0 as i32 / 2 - d1 as i32 / 2);
-    if !p.stackable() {
-        p.level = 0;
+    shift(grid, p, floor, 0, 0);
+    for t in tops.iter_mut().map(|t| &mut t.piece) {
+        (t.x, t.z) = (t.x + p.x - ox, t.z + p.z - oz);
     }
-    ((p.x - ox) as i32, (p.z - oz) as i32)
+    if p.stackable() {
+        p.level = level_over(grid, p);
+    }
+    true
 }
 
 /// FUN_101cd3b0: a new piece's start: wall slot 0 (its turn); else (9, 12), or the selected floor piece's place,
@@ -1716,8 +1719,8 @@ mod tests {
     fn rotate_and_walls() {
         let g = Grid::new(1);
         let mut bed = piece(0, [4, 6], 70, 1, 2, 2);
-        rotate(&g, &mut bed, 1, -1);
-        assert_eq!((bed.rot, bed.x, bed.z), (3, 1, 3));
+        assert!(rotate(&g, &mut bed, &mut [], 1, -1));
+        assert_eq!((bed.rot, bed.x, bed.z), (3, 2, 2));
         let mut flag = piece(1, [1, 1], 60, 2, 3, 0);
         assert!(step(&g, &mut flag, 0, 1).is_some());
         assert_eq!((flag.x, flag.rot), (0, 1));
@@ -1728,7 +1731,36 @@ mod tests {
         assert_eq!((flag.x, flag.rot), (87, 2));
     }
 
-    /// The live test room: the bed held, moved right and up and turned, must fit beside the desk, pot, lamp and flag.
+    /// A wall piece does not turn; the pieces on a desk turn about it by -1 whichever way it turns; a stackable
+    /// piece takes the level under its turned footprint when the turn does not move it.
+    #[test]
+    fn turns() {
+        let g = Grid::new(1);
+        let mut flag = piece(1, [1, 1], 60, 2, 3, 0);
+        assert!(!rotate(&g, &mut flag, &mut [], 1, -1));
+        assert_eq!(flag.rot, 0);
+        for by in [-1, 1] {
+            let mut desk = piece(2, [2, 3], 70, 1, 5, 20);
+            let top = |slot, size, x, z| Placed { piece: Piece { level: 7, ..piece(4, size, 0, slot, x, z) }, item: 0 };
+            let mut tops = [top(2, [1, 1], 6, 22), top(3, [1, 2], 5, 20)];
+            assert!(rotate(&g, &mut desk, &mut tops, 1, by));
+            assert_eq!((desk.x, desk.z, desk.rot), (5, 20, by.rem_euclid(4) as u8));
+            let at = |t: &Placed| (t.piece.x, t.piece.z, t.piece.rot, t.piece.level);
+            assert_eq!((at(&tops[0]), at(&tops[1])), ((5, 21, 3, 7), (6, 20, 3, 7)));
+        }
+        // Out over the 2F edge the turned desk is clamped, and the pieces on it go with it.
+        let mut desk = piece(2, [2, 4], 70, 1, 18, 10);
+        let mut tops = [Placed { piece: piece(4, [1, 1], 0, 2, 19, 13), item: 0 }];
+        rotate(&g, &mut desk, &mut tops, 1, 1);
+        assert_eq!((desk.x, desk.z, tops[0].piece.x, tops[0].piece.z), (16, 10, 16, 11));
+        let mut g = Grid::new(1);
+        assert!(g.occupy(&piece(2, [2, 3], 70, 1, 5, 20)));
+        let mut tray = piece(4, [2, 3], 10, 2, 3, 20);
+        rotate(&g, &mut tray, &mut [], 1, -1);
+        assert_eq!((tray.x, tray.z, tray.level), (3, 20, 7));
+    }
+
+    /// The live test room: the bed held, moved up twice and turned, must fit beside the desk, pot, lamp and flag.
     #[test]
     fn live_room() {
         let Ok(index) = crate::dat::DatIndex::open(&crate::config::Config::load().ffxi_dir()) else { return };
@@ -1745,9 +1777,9 @@ mod tests {
         }
         let mut bed = mk(1, 2, 0, 0, 0, 0);
         assert!(g.fits(&bed));
-        step(&g, &mut bed, 0, 1);
         step(&g, &mut bed, 0, 0);
-        rotate(&g, &mut bed, 0, -1);
+        step(&g, &mut bed, 0, 0);
+        rotate(&g, &mut bed, &mut [], 0, -1);
         assert_eq!((bed.x, bed.z, bed.rot), (0, 2, 3));
         assert!(g.fits(&bed), "{bed:?}");
     }

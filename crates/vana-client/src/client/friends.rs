@@ -5,7 +5,8 @@
 use super::World;
 use crate::net::profile::{self, Cred, FriendInfo, Irc, IrcLink};
 use crate::net::search::Record;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 /// One friend or block-list entry (sqPolFriend and FFXiMain's part of it, 2.2).
@@ -19,10 +20,15 @@ pub struct Friend {
     /// What we call them (the handle name of the entry).
     pub name: String,
     pub pending: bool,
-    /// From the notices: 0 offline, 1 online, 2 away; the character they play; the newest notice's age.
+    /// From the notices: 0 offline, 1 online, 2 away (polcore's entry bits 13..15, `profile::entry_status`); the
+    /// character they play; the newest notice's age.
     pub status: u8,
     pub char_id: Option<u32>,
     pub age: u64,
+    /// The entry's playing bit (16) and the last character primitive a notice carried (polcore keeps one per
+    /// character slot; ours the last): `char_id` is that character while playing.
+    playing: bool,
+    last_char: Option<u32>,
     /// The playing character's search record (+0xb0) and whether it is current (+0xfc bit 0).
     pub record: Option<Record>,
     pub fresh: bool,
@@ -84,6 +90,18 @@ pub struct Friends {
     started: bool,
     /// The in-game ChangeMyStatus went (after the map session exists, so friends see the character).
     announced: bool,
+    /// The loads of `start` are out: our status is not known yet.
+    loading: bool,
+    /// The status job runs (its busy byte, job +1): a change asked meanwhile is dropped (FUN_100f7bd0).
+    status_job: bool,
+    /// A change asked before the session could send it (not signed on, the loads not in, or our slot unknown): sent
+    /// once it can, so a later LoadMyStatus does not undo it.
+    pending: Option<u8>,
+    /// Set when this session's Friends goes (a logout): status jobs still trying stop, so an old change cannot land
+    /// after the next login has loaded its own status.
+    stop: StopOnDrop,
+    /// What the last zone-in still owes our status, held until the loads are in.
+    zone_owed: Option<ZoneStatus>,
     retry_at: Option<Instant>,
     /// The friends' characters asked of xi_search (2.3): the queries out, the chunks left of a round, the next round.
     lookups: Vec<(mpsc::Receiver<anyhow::Result<crate::net::search::Reply>>, Vec<u32>)>,
@@ -103,9 +121,114 @@ pub struct Friends {
     fetching: bool,
 }
 
+/// What an s2c 0x00A does to our open status (FUN_100fae40 by LoginState, `net::pol_return`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ZoneStatus {
+    /// A plain zone-in (LoginState 1, 2, 0, 6 and up): Away goes back to Online.
+    Reset,
+    /// The game came back from the PlayOnline viewer (3, 4, 5; FUN_100daf30 state 4): the status is read again.
+    Reread,
+}
+
+/// A plain zone-in's rule: only Away (1) is reset, to Online (0), and the away flag is cleared with it; Online and
+/// Invisible (4) stay and nothing is sent (0x100faf3c / 0x100faf9b: `cmp eax, 1`).
+pub fn zone_reset(status: u8) -> Option<u8> {
+    (status == 1).then_some(0)
+}
+
+/// The open statuses one change of ours sends, in order. Retail's status job (FUN_100f1a10) sends the object's
+/// current block, and FUN_100f7bd0 writes only the pending block: the first request repeats the status in force, its
+/// answer (FUN_100f7b00) copies the pending block over and leaves the job busy, and the second request carries the
+/// new status.
+pub fn change_sends(current: u8, new: u8) -> [u8; 2] {
+    [current, new]
+}
+
+/// What `set_status` does with a change (FUN_100f7bd0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Change {
+    /// Nothing: the status is already in force, or the status job runs.
+    Drop,
+    /// No PlayOnline session at all (no xi_profile): only kept, as polcore's object would keep it.
+    Keep,
+    /// The session is not ready to send: held until it is.
+    Hold,
+    /// ChangeMyStatus with these open statuses, in order.
+    Send([u8; 2]),
+}
+
+/// The change decision: `ready` is signed on, loaded and our slot known.
+pub fn change(open: u8, current: u8, job_busy: bool, has_cred: bool, ready: bool) -> Change {
+    match () {
+        _ if job_busy => Change::Drop,
+        _ if !has_cred => {
+            if open == current {
+                Change::Drop
+            } else {
+                Change::Keep
+            }
+        }
+        _ if !ready => Change::Hold,
+        _ if open == current => Change::Drop,
+        _ => Change::Send(change_sends(current, open)),
+    }
+}
+
+/// When a zone-in's owed status step may run: at once without xi_profile, else not while the loads are out, nor
+/// between them and the sign-on.
+pub fn settle_ready(has_cred: bool, loading: bool, loaded: bool, signed_on: bool) -> bool {
+    !has_cred || (!loading && (!loaded || signed_on))
+}
+
+/// Tries of a request in one run of the job (FUN_100f12a0: 0x32). Kept for the log only: the next run starts at
+/// once, so the run boundary changes nothing.
+pub const STATUS_TRIES: u32 = 0x32;
+
+/// The job runner (FUN_100f12a0) runs once a game frame, 1/30 s.
+pub const RETRY_DELAY: Duration = Duration::from_nanos(1_000_000_000 / 30);
+
+/// A failure worth another try: the connection or its I/O (a timeout, a reset, a stream closed mid-request), not an
+/// answer from xi_profile (retail retries only results above -0x800, not refusals). xi_profile closing the link at
+/// the open and a failed TLS handshake are its answers (`profile::request`, `tls::HandshakeFailed`), so they are
+/// final.
+pub fn transient(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<std::io::Error>())
+}
+
+/// One ChangeMyStatus, tried again on a connection failure. Retail's job runner (FUN_100f12a0) tries a failed
+/// request again each frame, up to 0x32 times for results above -0x800, and as the answer (FUN_100f7b00) leaves the
+/// job busy the whole job runs again after that, without end. Ours does the same for `transient` errors until `stop`
+/// is set (the session's end, which ends retail's jobs too).
+fn change_retried(c: &Cred, stop: &AtomicBool, slot: Option<u8>, open: Option<u8>) -> anyhow::Result<()> {
+    let mut n = 0u32;
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            anyhow::bail!("the session ended");
+        }
+        match profile::change_my_status(c, slot, open) {
+            Err(e) if transient(&e) => {
+                n += 1;
+                log::debug!("friends: ChangeMyStatus try {n} (run {}): {e:#}", n.div_ceil(STATUS_TRIES));
+                std::thread::sleep(RETRY_DELAY);
+            }
+            r => return r,
+        }
+    }
+}
+
 impl Friends {
     pub fn new(cred: Option<Cred>) -> Self {
         Self { cred, ..Default::default() }
+    }
+}
+
+/// A stop flag the status jobs share, set when its owner (Friends) is dropped.
+#[derive(Default)]
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
     }
 }
 
@@ -124,7 +247,7 @@ pub fn start(w: &mut World) {
     if f.started || f.cred.is_none() {
         return;
     }
-    f.started = true;
+    (f.started, f.loading) = (true, true);
     f.irc = f.cred.clone().map(profile::irc);
     spawn(w, |c| {
         Done::Loaded((|| {
@@ -142,13 +265,91 @@ fn slot(w: &World) -> Option<u8> {
     w.friends.chars.iter().find(|c| c.1 == w.my_id).map(|c| c.0)
 }
 
-/// FUN_100f7a90 (/online 0, /away 1, /hide 4, olstat): ChangeMyStatus when it differs; it is ours once answered.
+/// Signed on, loaded and our slot known: a ChangeMyStatus can say which character is in game.
+fn ready(w: &World) -> bool {
+    w.friends.signed_on && w.friends.loaded && slot(w).is_some()
+}
+
+/// Our status as it will be: a held change, else the one in force.
+fn effective_status(f: &Friends) -> u8 {
+    f.pending.unwrap_or(f.my_status)
+}
+
+/// FUN_100f7bd0 (/online 0, /away 1, /hide 4, olstat, the zone-in): ChangeMyStatus when it differs and the status
+/// job is idle; it is ours once answered. See `change`: without xi_profile the status is only kept; before the
+/// session can send (sign-on, the loads, our slot; or within 30 s of an IRC drop) it is held and sent by `poll`.
 pub fn set_status(w: &mut World, open: u8) {
-    if open == w.friends.my_status || !w.friends.signed_on {
+    let ready = ready(w);
+    let f = &mut w.friends;
+    match change(open, f.my_status, f.status_job, f.cred.is_some(), ready) {
+        Change::Drop => {}
+        Change::Keep => f.my_status = open,
+        Change::Hold => f.pending = Some(open),
+        Change::Send(sends) => {
+            (f.status_job, f.pending) = (true, None);
+            let (s, stop) = (slot(w), w.friends.stop.0.clone());
+            spawn(w, move |c| {
+                Done::Status(sends.iter().try_for_each(|&o| change_retried(c, &stop, s, Some(o))), Some(open))
+            });
+        }
+    }
+}
+
+/// s2c 0x00A (FUN_100fae40, connection state 2, so every zone-in): what it owes our status, settled by `poll` once
+/// the status is known.
+pub fn zone_in(w: &mut World, pol_return: bool) {
+    w.friends.zone_owed = Some(if pol_return { ZoneStatus::Reread } else { ZoneStatus::Reset });
+    settle(w);
+}
+
+/// The zone-in's status step. Retail has polcore's status in hand before the game starts; ours waits for
+/// LoadMyStatus and the sign-on.
+/// - Reset (0x100faf3c / 0x100faf9b): Away -> FUN_100f7bd0(0) and c2s 0x0DC away off (FUN_100e4710(1, 0)), the
+///   packet even when the status job is busy and the change is dropped.
+/// - Reread (FUN_100daf30 state 4, after the viewer gave the game back; ours has no viewer, so at once):
+///   FUN_100f7aa0 reads polcore's status again into both blocks and sends it once, then FUN_100e4710(1, status ==
+///   Away) sets or clears the away flag to match.
+fn settle(w: &mut World) {
+    let f = &w.friends;
+    let Some(owed) = f.zone_owed.filter(|_| settle_ready(f.cred.is_some(), f.loading, f.loaded, f.signed_on)) else {
+        return;
+    };
+    // FUN_100f7aa0 runs on the status job: wait for a change in flight.
+    if owed == ZoneStatus::Reread && f.status_job {
         return;
     }
-    let s = slot(w);
-    spawn(w, move |c| Done::Status(profile::change_my_status(c, s, Some(open)), Some(open)));
+    w.friends.zone_owed = None;
+    match owed {
+        ZoneStatus::Reset => {
+            if let Some(open) = zone_reset(effective_status(&w.friends)) {
+                set_status(w, open);
+                super::textcmd::config_flag(w, 1, false);
+            }
+        }
+        // No session to read from or send to (no xi_profile, a failed load, our slot unknown): the flag follows the
+        // status we have.
+        ZoneStatus::Reread if !ready(w) => {
+            super::textcmd::config_flag(w, 1, effective_status(&w.friends) == 1);
+        }
+        ZoneStatus::Reread => {
+            let (s, stop) = (slot(w), w.friends.stop.0.clone());
+            (w.friends.status_job, w.friends.pending) = (true, None);
+            spawn(w, move |c| {
+                let read = profile::load_my_status(c).and_then(|st| {
+                    change_retried(c, &stop, s, Some(st))?;
+                    Ok(st)
+                });
+                Done::Then(Box::new(move |w| {
+                    w.friends.status_job = false;
+                    match read {
+                        Ok(st) => w.friends.my_status = st,
+                        Err(e) => log::warn!("friends: reading our status again: {e:#}"),
+                    }
+                    super::textcmd::config_flag(w, 1, w.friends.my_status == 1);
+                }))
+            });
+        }
+    }
 }
 
 /// Each frame: the jobs' answers and the IRC session's notices.
@@ -175,16 +376,23 @@ pub fn poll(w: &mut World) {
                 );
                 f.my_status = l.status;
                 f.list = l.list.iter().map(Friend::from_info).collect();
-                (f.handle, f.chars, f.loaded) = (Some(l.handle), l.chars, true);
+                (f.handle, f.chars, f.loaded, f.loading) = (Some(l.handle), l.chars, true, false);
             }
-            Done::Loaded(Err(e)) => log::warn!("friends: loading: {e:#}"),
-            Done::Status(Ok(()), open) => {
-                if let Some(o) = open {
-                    w.friends.my_status = o;
+            Done::Loaded(Err(e)) => {
+                w.friends.loading = false;
+                log::warn!("friends: loading: {e:#}");
+            }
+            Done::Status(r, open) => {
+                if open.is_some() {
+                    w.friends.status_job = false;
                 }
-                log::info!("friends: ChangeMyStatus {open:?} applied");
+                match (r, open) {
+                    (Ok(()), Some(o)) => w.friends.my_status = o,
+                    (Ok(()), None) => {}
+                    (Err(e), _) => log::warn!("friends: ChangeMyStatus: {e:#}"),
+                }
+                log::info!("friends: ChangeMyStatus {open:?} answered, status {}", w.friends.my_status);
             }
-            Done::Status(Err(e), _) => log::warn!("friends: ChangeMyStatus: {e:#}"),
             Done::Then(f) => f(w),
         }
     }
@@ -215,6 +423,12 @@ pub fn poll(w: &mut World) {
         start(w);
     }
     refresh(w);
+    // A change held until the session could send it.
+    if w.friends.pending.is_some() && ready(w) && !w.friends.status_job {
+        let p = w.friends.pending.take().unwrap_or_default();
+        set_status(w, p);
+    }
+    settle(w);
     // This character is now the active one, once signed on and in a zone.
     let f = &w.friends;
     if f.signed_on && f.loaded && !f.announced && w.zone.is_some() {
@@ -224,20 +438,29 @@ pub fn poll(w: &mut World) {
     }
 }
 
-/// A friend's status notice (3.4.3): applied to the entry at its list index when newer than the last.
-fn notice(w: &mut World, account: u64, index: u8, status: u8, char_id: Option<u32>, age: u64) {
+/// A friend's status notice (3.4.3), as polcore's handler applies it (the function at 0x100160a0.., FUN_1001c9b0):
+/// to the entry at its list index, only when newer than the last applied (an equal age is dropped too); the status
+/// block only when the notice says it applies, the character only when a primitive follows.
+fn notice(w: &mut World, account: u64, index: u8, status: Option<(u8, bool)>, char_id: Option<u32>, age: u64) {
     let Some(f) = w.friends.list.iter_mut().find(|f| !f.black && f.index == index && f.account == account) else {
         log::info!("friends: status of account {account} (index {index}) for no entry");
         return;
     };
-    if age < f.age {
+    if age <= f.age {
         return;
     }
-    if f.char_id != char_id {
-        (f.record, f.fresh) = (None, false);
+    f.age = age;
+    if let Some((st, playing)) = status {
+        (f.status, f.playing) = (st, playing);
     }
-    (f.status, f.char_id, f.age) = (status, char_id, age);
-    log::info!("friends: {} is {status} ({char_id:?})", f.name);
+    if char_id.is_some() {
+        f.last_char = char_id;
+    }
+    let now = f.last_char.filter(|_| f.playing);
+    if f.char_id != now {
+        (f.char_id, f.record, f.fresh) = (now, None, false);
+    }
+    log::info!("friends: {} is {} ({:?})", f.name, f.status, f.char_id);
 }
 
 /// FUN_100e63e0 / FUN_100e6650: the playing friends' characters from xi_search, 20 ids a query (wire type 1); a round
@@ -427,6 +650,7 @@ fn apply_list(w: &mut World, list: Vec<FriendInfo>) {
             if let Some(o) = old.iter().find(|o| o.black == f.black && o.account == f.account) {
                 (f.status, f.char_id, f.age, f.record, f.fresh) =
                     (o.status, o.char_id, o.age, o.record.clone(), o.fresh);
+                (f.playing, f.last_char) = (o.playing, o.last_char);
             }
             f
         })
@@ -470,17 +694,34 @@ pub fn send(w: &mut World, op: Op, text: Vec<u8>) {
         Op::Accept { to, .. } => (*to, profile::FRIEND_ACCEPTED),
         Op::Decline { to } => (*to, profile::FRIEND_DECLINED),
     };
-    let t = title(w, kind, matches!(op, Op::Reply { .. }));
+    let t = crate::dat::font::encode_sjis(&title(w, kind, matches!(op, Op::Reply { .. })));
+    // FUN_100f3190's title lengths: 0x10 for a request (FUN_100f3ba0) and an accept (FUN_100f39a0), else 0x32. A
+    // request's text is their character's name; an accept's is empty (the typed name only names the entry); a
+    // decline's is msgline's buffer, which nothing typed into.
     let body = match &op {
-        Op::Request { char_name, .. } => profile::encode_body(t.as_bytes(), char_name.as_bytes()),
-        _ => profile::encode_body(t.as_bytes(), &text),
+        Op::Request { char_name, .. } => {
+            profile::encode_body(&profile::body_title(&t, 0x10), &crate::dat::font::encode_sjis(char_name))
+        }
+        Op::Accept { .. } => profile::encode_body(&profile::body_title(&t, 0x10), &[]),
+        _ => profile::encode_body(&profile::body_title(&t, 0x32), &text),
     };
+    // The header's title comes from the data (FUN_100f4ff0), but an accept or a decline answers with the request's
+    // own header turned round (polcore table +0x490, FUN_10015050), title kept.
+    let (head_title, title_cut) = matches!(op, Op::Accept { .. } | Op::Decline { .. })
+        .then(|| {
+            let m = w.friends.mail.iter().rev();
+            let mut m = m.filter(|m| m.header.from == to && m.header.kind == profile::FRIEND_REQUEST);
+            m.next().map(|m| (m.header.title.clone(), m.header.title_cut))
+        })
+        .flatten()
+        .unwrap_or_else(|| profile::header_title(&body));
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
     let header = profile::MsgHeader {
         from: me,
         to,
         sender: w.name.clone(),
-        title: t.chars().take(15).collect(),
+        title: head_title,
+        title_cut,
         seq: nanos,
         date: now_unix(),
         length: body.len() as u32,
@@ -593,4 +834,73 @@ pub fn befriend(w: &mut World, char_id: u32, char_name: String, from_command: bo
             }
         }))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A plain zone-in resets only Away (FUN_100fae40: `cmp eax, 1` on FUN_100f7bc0's status); Online and Invisible
+    /// stay, and so does anything polcore might hold besides.
+    #[test]
+    fn zone_in_resets_only_away() {
+        assert_eq!(zone_reset(1), Some(0));
+        for s in [0, 2, 3, 4, 5] {
+            assert_eq!(zone_reset(s), None, "status {s}");
+        }
+    }
+
+    /// The status job sends the block in force first, then the pending one (FUN_100f1a10 / FUN_100f7b00).
+    #[test]
+    fn a_change_repeats_the_old_status_first() {
+        assert_eq!(change_sends(1, 0), [1, 0]);
+        assert_eq!(change_sends(0, 4), [0, 4]);
+    }
+
+    /// FUN_100f7bd0's gate, and ours around it: a busy job drops, no xi_profile keeps, a session not ready holds
+    /// (even the status in force, so a held change can be taken back), a ready one sends only a difference.
+    #[test]
+    fn change_decision() {
+        use Change::*;
+        assert_eq!(change(1, 0, true, true, true), Drop);
+        assert_eq!(change(1, 0, true, false, false), Drop);
+        assert_eq!(change(1, 0, false, false, false), Keep);
+        assert_eq!(change(0, 0, false, false, false), Drop);
+        assert_eq!(change(1, 0, false, true, false), Hold);
+        assert_eq!(change(0, 0, false, true, false), Hold);
+        assert_eq!(change(0, 0, false, true, true), Drop);
+        assert_eq!(change(4, 1, false, true, true), Send([1, 4]));
+    }
+
+    /// The zone-in's step waits while the loads are out and between them and the sign-on; it runs at once without
+    /// xi_profile, and after a failed load.
+    #[test]
+    fn settle_gate() {
+        assert!(settle_ready(false, false, false, false));
+        assert!(!settle_ready(true, true, false, false));
+        assert!(!settle_ready(true, true, false, true));
+        assert!(!settle_ready(true, false, true, false));
+        assert!(settle_ready(true, false, true, true));
+        assert!(settle_ready(true, false, false, false));
+    }
+
+    /// Only a connection failure is tried again; an answer from xi_profile is final.
+    #[test]
+    fn retries_only_io() {
+        let io = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::TimedOut)).context("no answer");
+        assert!(transient(&io));
+        assert!(!transient(&anyhow::anyhow!("ChangeMyStatus: xi_profile error 0x1")));
+        let tls = std::io::Error::from(std::io::ErrorKind::InvalidData);
+        assert!(!transient(&anyhow::Error::from(crate::net::tls::HandshakeFailed(tls)).context("connecting")));
+    }
+
+    /// A stopped session sends nothing more.
+    #[test]
+    fn dropped_friends_stop_their_jobs() {
+        let f = Friends::new(None);
+        let stop = f.stop.0.clone();
+        assert!(!stop.load(Ordering::Relaxed));
+        drop(f);
+        assert!(stop.load(Ordering::Relaxed));
+    }
 }

@@ -82,7 +82,7 @@ pub fn run(zone: u32, hour: f32, pos: [f32; 3], out_dir: &std::path::Path) -> Re
             .map(|(level, a)| render::Refract { level, r: render::Refract::tf_alpha(a) })
             .filter(|r| r.r > 0.0);
         r.begin_poses();
-        r.pose_actor_gpu(&mut actor, &ch, &[], &idle, &[], 1.0, model, None, None, &[]);
+        r.pose_actor_gpu(&mut actor, &ch, &crate::render::anim::plain_layers(&ch, &idle), [0.0; 2], model, None, &[]);
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         r.upload_poses(&gpu, &mut enc);
         r.render(&gpu, &mut enc, &view, &depth, &camera, w as f32 / h as f32, &[&actor]);

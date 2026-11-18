@@ -522,7 +522,7 @@ pub fn from_names(pick: Pick, n: &crate::dat::names::Names) -> Option<Choices> {
     };
     Some(match pick {
         Pick::Zone => (0..0x300).filter_map(|i| keep(i, n.place(i))).collect(),
-        Pick::Item => (1..0x10000).filter_map(|i| keep(i, n.items.item(i).map(|it| it.name))).collect(),
+        Pick::Item => (1..0x10000).filter_map(|i| keep(i, n.items.peek(i).map(|it| it.name))).collect(),
         Pick::Spell => (1..0x400).filter_map(|i| keep(i, n.spell(i))).collect(),
         Pick::KeyItem => {
             n.key_item_list().into_iter().filter(|(id, _)| *id != 0).filter_map(|(id, s)| keep(id, Some(s))).collect()

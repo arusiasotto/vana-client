@@ -91,6 +91,17 @@ mod tests {
         assert!(s.placements.iter().all(|p| !p.world) && s.paths.iter().all(|p| p.is_none()));
     }
 
+    /// Zone 46's camera lists are the ship MZB's: list_base is the world's placement count, and no list names a
+    /// world placement (render::set_camera_list draws those whole).
+    #[test]
+    fn lists_hold_only_the_ship() {
+        let Some(s) = scene(crate::dat::zone::file_id(46)) else { return };
+        let world = s.placements.iter().filter(|p| p.world).count() as u32;
+        assert_eq!(s.list_base, world);
+        assert!(!s.camera_lists.is_empty());
+        assert!(s.camera_lists.values().flatten().all(|&p| p >= world));
+    }
+
     /// The route picks `c00N`, else `c000` (zone 220 has only that).
     #[test]
     fn route_fallback() {

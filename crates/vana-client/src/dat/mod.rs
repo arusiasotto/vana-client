@@ -89,6 +89,11 @@ impl DatIndex {
         Ok(index)
     }
 
+    /// The folder that holds "FINAL FANTASY XI" (the PlayOnline Viewer's files sit beside it).
+    pub fn game_dir(&self) -> &Path {
+        self.root.parent().unwrap_or(&self.root)
+    }
+
     /// A game-root file (cursors and the like), from the highest-priority mod that has one.
     pub fn root_file(&self, name: &str) -> PathBuf {
         self.overlays.as_ref().and_then(|o| o.root_file(name)).unwrap_or_else(|| self.root.join(name))
@@ -195,6 +200,7 @@ pub mod collision;
 pub mod cursor;
 pub mod dancer;
 pub mod dialog;
+pub mod effect;
 pub mod event;
 pub mod event_ops;
 pub mod font;

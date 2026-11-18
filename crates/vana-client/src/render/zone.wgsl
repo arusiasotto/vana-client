@@ -764,16 +764,19 @@ fn fs_bump(in: VertexOut) -> @location(0) vec4<f32> {
 // zone, or by the area they stand in (the actor update FUN_1018b9a0 and draw FUN_1018b9e0 / FUN_1018ba20 with vtable
 // +0x188's area).
 fn lit_actor(in: VertexOut, t: vec4<f32>) -> vec4<f32> {
-    var sun = u.actor_sun.xyz;
-    var color = u.actor_color.rgb;
-    var ambient = u.actor_ambient.rgb;
+    // Area 0x10000: model +0xa8 set (event op 0x59 7 / 8), the scenery's lights (FUN_1018b9a0 mode 0).
+    let bg = (in.area & 0x10000u) != 0u;
+    let slot = in.area & 0xffffu;
+    var sun = select(u.actor_sun.xyz, u.sun.xyz, bg);
+    var color = select(u.actor_color.rgb, u.sun_color.rgb, bg);
+    var ambient = select(u.actor_ambient.rgb, u.ambient.rgb, bg);
     var fog_color = u.fog_color.rgb;
     var fog = u.fog.xy;
-    if (in.area != 0u && areas[in.area].sun.w > 0.5) {
-        let a = areas[in.area];
-        sun = a.actor_sun.xyz;
-        color = a.actor_color.rgb;
-        ambient = a.actor_ambient.rgb;
+    if (slot != 0u && areas[slot].sun.w > 0.5) {
+        let a = areas[slot];
+        sun = select(a.actor_sun.xyz, a.sun.xyz, bg);
+        color = select(a.actor_color.rgb, a.sun_color.rgb, bg);
+        ambient = select(a.actor_ambient.rgb, a.ambient.rgb, bg);
         fog_color = a.fog_color.rgb;
         fog = a.fog.xy;
     }

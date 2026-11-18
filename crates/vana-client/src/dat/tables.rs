@@ -679,6 +679,9 @@ mod tests {
         // (30261102_0 changed colour code 9, which the full-table signature then missed)
         let colours = super::code_colours(&dll).unwrap();
         assert_eq!((colours[0], colours[2], colours[8]), (0, 0x4040_c000, 0x8080_4020));
+        // code 9: none through 30261006_0, half-bright grey from 30261102_0; 0xa..0x10 have none in either
+        assert!(matches!(colours[9], 0 | 0x6040_4040), "{:#x}", colours[9]);
+        assert_eq!(colours[10..], [0; 7]);
         assert_eq!(super::call_sounds(&dll).unwrap()[0].0, "<call>");
         assert!(!super::text_help(&dll).unwrap().is_empty());
         assert_eq!(super::knockback(&dll).unwrap()[0], [0.0; 3]);

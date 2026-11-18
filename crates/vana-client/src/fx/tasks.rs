@@ -393,6 +393,11 @@ impl Effects {
         }
     }
 
+    /// FUN_10085450(0): a casting effect still stored for the actor ends (its "st??" runs).
+    pub fn end_cast(&mut self, caster: u32) {
+        self.cast_state(caster, 0);
+    }
+
     /// FUN_10083d60(caster, arg): a stored cast 4cc runs as "st??" (ends the casting effect); +0xa0 = arg either way
     /// (asm 0x10083d83; the decompile's 0 is a stack misread), 0 clearing it.
     fn cast_state(&mut self, caster: u32, arg: u32) {
@@ -619,6 +624,32 @@ impl Effects {
         }
         for x in self.insts.iter_mut().flatten() {
             x.actors.iter_mut().for_each(&clear);
+        }
+    }
+
+    /// A skill file its last actor let go (FUN_100d44b0 -> the list entry's FUN_1001b7d0 -> FUN_10073b20): its resource
+    /// tree is deleted, and with it every live clone of its generators (an endless one a missed stop left running,
+    /// Nightmare Scythe's `g000`) and every task on its schedulers.
+    pub fn release_file(&mut self, file: u32) {
+        let Some(l) = self.reg.lib_of(file) else { return };
+        for t in self.tasks.iter_mut() {
+            if t.as_ref().is_some_and(|t| t.res.0 == l) {
+                *t = None;
+            }
+        }
+        for i in 0..self.insts.len() {
+            if self.insts[i].as_ref().is_some_and(|x| x.src.0 == l) {
+                self.kill(i);
+            }
+        }
+    }
+
+    /// Vtable +0x298(name, 0, 0) (FUN_100cee40 -> FUN_10056c70): a scheduler on an actor with no second actor, as
+    /// the entity's machine starts `bntg` and `klbt` (FUN_1008b460).
+    pub fn on_scheduler_alone(&mut self, actor: u32, name: u32) {
+        self.on_scheduler(actor, actor, name);
+        if let Some(p) = self.pending.last_mut() {
+            p.a2 = Who::None;
         }
     }
 
@@ -1307,6 +1338,23 @@ impl Effects {
             }
             // Case 0xa9 / 0xaa (FUN_1005fa20): a rotation drive on actor1 / actor2 from its drawn rotation, a child of
             // this task.
+            // Case 0x62 (0x10058..): actor1 turns toward actor2 at f32 @8 degrees a frame for dur x speed ticks.
+            0x62 => {
+                let (Some(a), Some(b)) = (t.a1.id(), t.a2.id()) else { return Flow::Next };
+                let (Some(pa), Some(pb)) = (actors.matrix(a), actors.matrix(b)) else { return Flow::Next };
+                let rot = actors.rotation(a).unwrap_or(Vec3::ZERO);
+                let ticks = op.dur.max(0) as f32 * t.speed;
+                self.face_drives.retain(|d| d.actor != a);
+                self.face_drives.push(drive::FaceDrive::new(
+                    a,
+                    pa.w_axis.truncate(),
+                    pb.w_axis.truncate(),
+                    rot,
+                    f32::from_bits(op.u32_at(8)),
+                    ticks,
+                ));
+                Flow::Next
+            }
             0xa9 | 0xaa => {
                 let on = if op.code == 0xa9 { t.a1 } else { t.a2 };
                 let Some(id) = on.id() else { return Flow::Next };
@@ -1438,10 +1486,20 @@ impl Effects {
                 }
             }
             // Swing pick (FUN_100d4600, combat chose it) and the counter swing: call-and-wait, parent back 10 sooner.
-            // Op 0x5c: the counter swing, `cni0` standing, `cnf0` moving (ours moves forward only), and no wait.
+            // Op 0x5c: the counter swing, no wait: `cni0` standing; moving (status not 2 / 7) by the move quarter
+            // (+0x598, FUN_1005e5e0): 2 `cnr0`, 3 `cnb0`, 4 `cnl0`, else `cnf0`.
             0x5c => {
                 let Some(id) = t.a1.id() else { return Flow::Next };
-                let name = if actors.moving(id) { *b"cnf0" } else { *b"cni0" };
+                let name = if !actors.moving(id) || matches!(actors.status(id), 2 | 7) {
+                    *b"cni0"
+                } else {
+                    match actors.move_quarter(id) {
+                        2 => *b"cnr0",
+                        3 => *b"cnb0",
+                        4 => *b"cnl0",
+                        _ => *b"cnf0",
+                    }
+                };
                 match self.find_on_actor(id, u32::from_le_bytes(name), actors, Parts::Last, true) {
                     Ok(Some(r)) => {
                         self.spawn_task(r, t.a1, t.a2, t.action.clone(), t.speed, None);
@@ -1621,7 +1679,11 @@ impl Effects {
             }
             // FUN_10057000 case 0x60: the named SeSep played as the stream (FUN_100360e0, DAT_10450fe8), which the
             // event volume op leaves alone unless its mask has 8 (the opening narration's music).
+            // The stream it starts is op 0xa6's (DAT_1046391c); a failed lookup forgets it (LAB_1005b862).
             0x60 => {
+                for s in self.sounds.iter_mut() {
+                    s.cur_stream = false;
+                }
                 if let Some(r) = scope(self, 0x3d)
                     && let Some((se, loops)) = super::sound::sesep(self.reg.libs[r.0].data(r.1))
                 {
@@ -1629,6 +1691,7 @@ impl Effects {
                     let mut s = super::sound::Sound::new(se, loops);
                     s.res = r;
                     s.stream = true;
+                    s.cur_stream = true;
                     self.sounds.push(s);
                 }
                 Flow::Next
@@ -1637,6 +1700,9 @@ impl Effects {
             // u32 @0x20 (0..7, DAT_10469394); 0x8b stops that slot's sound (FUN_10035d70).
             0x8a => {
                 let n = op.u32_at(0x20);
+                for s in self.sounds.iter_mut() {
+                    s.cur_stream = false;
+                }
                 if n < 8
                     && let Some(r) = scope(self, 0x3d)
                     && let Some((se, loops)) = super::sound::sesep(self.reg.libs[r.0].data(r.1))
@@ -1647,8 +1713,19 @@ impl Effects {
                     let mut s = super::sound::Sound::new(se, loops);
                     s.res = r;
                     s.stream = true;
+                    s.cur_stream = true;
                     s.slot = Some(n as u8);
                     self.sounds.push(s);
+                }
+                Flow::Next
+            }
+            // Case 0x1005ba2b, FUN_10035e30: with a current stream, a kind-8 fade task from 1.0 to f32 @8 over int @0xc
+            // ticks (not x speed); a new one first lands the running one, which forgets the stream.
+            0xa6 => {
+                if self.sounds.iter().any(|s| s.cur_stream) {
+                    self.land_stream_fade();
+                    let ticks = op.u32_at(0xc) as i32 as f32;
+                    self.stream_fade = Some((f32::from_bits(op.u32_at(8)), ticks, ticks));
                 }
                 Flow::Next
             }
@@ -1688,17 +1765,32 @@ impl Effects {
                 });
                 Flow::Next
             }
-            // One of the ops up to 0x3e at random (FUN_1006afb0).
+            // One of the ops up to 0x3e at random (FUN_1006afb0), run in its place: its result is the block's (a
+            // call-and-wait suspends the task after the 0x3e), and the wait taken is the 0x3e's, not the 0x3d's.
             0x3d => {
                 let end = (t.ip + 1..t.ops.len()).find(|&k| t.ops[k].code == 0x3e).unwrap_or(t.ops.len());
                 let n = end - t.ip - 1;
-                if n > 0 {
+                let flow = if n > 0 {
                     let k = t.ip + 1 + self.rng.un(n as u32) as usize;
                     let chosen = t.ops[k].clone();
-                    self.run_op(me, t, &chosen, actors);
+                    self.run_op(me, t, &chosen, actors)
+                } else {
+                    Flow::Next
+                };
+                if matches!(flow, Flow::Retry | Flow::End) {
+                    return flow;
                 }
-                t.ip = end + 1;
-                Flow::Jump
+                if let Some(e) = t.ops.get(end) {
+                    t.countdown += (e.wait as f32 - op.wait as f32) * t.speed;
+                }
+                t.ip = end;
+                match flow {
+                    Flow::Wait => Flow::Wait,
+                    _ => {
+                        t.ip = end + 1;
+                        Flow::Jump
+                    }
+                }
             }
             0x6b => {
                 self.stack_op(t, op, actors);
@@ -1719,11 +1811,15 @@ impl Effects {
                     // A motion in the scheduler's file plays from there: that file goes on the actor first.
                     let (lib, raw) = (t.res.0, op.name().to_le_bytes());
                     let has = |n: u32| self.reg.libs[lib].find(t.res.1, kind::MOTION, n).is_some();
-                    let in_file = if raw[3] == b'?' {
-                        (b'0'..=b'6').any(|d| has(u32::from_le_bytes([raw[0], raw[1], raw[2], d])))
-                    } else {
-                        has(op.name())
-                    };
+                    // FUN_10083220: `ded?` / `cor?` skip the scope unless entity +0x13c bit 18 (op 0xbe, which the data
+                    // only ever clears).
+                    let scoped = !matches!(&raw[..3], b"ded" | b"cor");
+                    let in_file = scoped
+                        && if raw[3] == b'?' {
+                            (b'0'..=b'6').any(|d| has(u32::from_le_bytes([raw[0], raw[1], raw[2], d])))
+                        } else {
+                            has(op.name())
+                        };
                     let file = self.reg.libs[lib].file_id;
                     let owned = self.owned_motions.iter().any(|&(o, a, f)| o == t.uid && a == id && f == file);
                     // A file the actor already has (its model, a skill file) plays as it is.
@@ -1748,6 +1844,8 @@ impl Effects {
                         ticks: (op.dur.max(0) as f32 * t.speed).round() as u16,
                         count,
                         blend: op.u16_at(0x18),
+                        out: op.u16_at(0x1c),
+                        half: op.raw.get(0x1f).map_or(0, |b| b >> 4),
                     };
                     self.motions.push((id, Some(m)));
                 }
@@ -1755,12 +1853,14 @@ impl Effects {
             }
             // Asm 1005b759 / 1005b789 / 1005b7b9: actor1 through its dolls (FUN_100617c0), vtable +0xb0 / +0xb8 / +0xc0 with
             // byte @8: its target arrow (+0x8a6), name plate (+0x8a7) and +0x8a8 attach points (`init` of about 40 models).
-            0x9e | 0x9f | 0xad => {
+            // 0xbd (vt+0xc8, FUN_100a4b20): +0x8a9, the game camera's look point (FUN_1001ee60).
+            0x9e | 0x9f | 0xad | 0xbd => {
                 if let Some(id) = self.doll_of(t.a1).id() {
                     let which = match op.code {
                         0x9e => 0,
                         0x9f => 1,
-                        _ => 2,
+                        0xad => 2,
+                        _ => 3,
                     };
                     self.anchor_points.push((id, which, op.raw.get(8).copied().unwrap_or(2)));
                 }
@@ -1800,17 +1900,30 @@ impl Effects {
                 }
                 Flow::Next
             }
-            // FUN_1005f6c0 channel 0: the real actor's model colour toward ARGB u32 @8 over dur x speed ticks (0x2a
-            // actor2; 0xa0 actor1, landing on its target even when cut short).
-            0x29 | 0x2a | 0xa0 => {
-                if let Some(id) = self.doll_of(if op.code == 0x2a { t.a2 } else { t.a1 }).id() {
-                    self.color_drive(id, t.uid, op.u32_at(8), op.dur.max(0) as f32 * t.speed, op.code == 0xa0);
+            // FUN_1005f6c0 channel 0: the real actor's model colour toward ARGB u32 @8 over dur x speed ticks (0x2a /
+            // 0xa1 actor2; 0xa0 / 0xa1 land on their target even when cut short).
+            0x29 | 0x2a | 0xa0 | 0xa1 => {
+                let who = if matches!(op.code, 0x2a | 0xa1) { t.a2 } else { t.a1 };
+                if let Some(id) = self.doll_of(who).id() {
+                    let land = matches!(op.code, 0xa0 | 0xa1);
+                    self.color_drive(id, t.uid, op.u32_at(8), op.dur.max(0) as f32 * t.speed, land);
                 }
                 Flow::Next
             }
             0x28 if t.motions => {
                 if let Some(id) = self.doll_of(t.a1).id() {
-                    self.motions.push((id, None));
+                    // An empty name: the status motion, blended in over the op's f32 @8 (0x1005b12e).
+                    let m = crate::dat::sched::Motion {
+                        name: String::new(),
+                        at: 0,
+                        speed: 1.0,
+                        ticks: 0,
+                        count: 0,
+                        blend: f32::from_bits(op.u32_at(8)).round().clamp(0.0, 65535.0) as u16,
+                        out: 1,
+                        half: 0,
+                    };
+                    self.motions.push((id, Some(m)));
                 }
                 Flow::Next
             }
@@ -2026,6 +2139,56 @@ impl Effects {
                 Flow::Next
             }
             // 0x1005b14c -> FUN_1005f450: actor1's head-look off for dur x speed ticks (or until it moves); no wait.
+            // FUN_100a4a70 through vt+0x324: +0x83e + slot (u32 @8, above 1 -> 0) = on (0xa7) / off (0xa8); 0x9b holds it on
+            // for dur x speed (FUN_10061e00).
+            0xa7 | 0xa8 | 0x9b => {
+                if let Some(id) = self.doll_of(t.a1).id() {
+                    let slot = if op.u32_at(8) > 1 { 0 } else { op.u32_at(8) as usize };
+                    let ticks = if op.code == 0x9b { op.dur.max(0) as f32 * t.speed } else { 0.0 };
+                    self.draw_overrides.push((id, slot, op.code != 0xa8, ticks));
+                }
+                Flow::Next
+            }
+            // FUN_1018bc40 on the weather manager's +0x1c8 (wrapped to 360 days) / +0x1cc = i16 @8.
+            0xc0 => {
+                self.zone_clock = Some(op.u32_at(8) % 0x6f3c_9000);
+                Flow::Next
+            }
+            0xc3 => {
+                self.zone_yaw = op.u16_at(8) as i16;
+                Flow::Next
+            }
+            0xc1 => {
+                if let Some(id) = self.doll_of(t.a1).id() {
+                    self.bg_lits.push((id, op.u32_at(8) != 0));
+                }
+                Flow::Next
+            }
+            0xb9 => {
+                if let Some(id) = self.doll_of(t.a1).id() {
+                    self.camera_rigs.push((id, op.u32_at(8) != 0));
+                }
+                Flow::Next
+            }
+            0xb6 => {
+                if let Some(id) = self.doll_of(t.a1).id() {
+                    self.weapon_shows.push((id, op.u32_at(8) & 1 != 0));
+                }
+                Flow::Next
+            }
+            0xbc => {
+                if let Some(id) = self.doll_of(t.a1).id() {
+                    self.step_holds.push((id, op.dur.max(0) as f32 * t.speed));
+                }
+                Flow::Next
+            }
+            // FUN_100d5430 on a CXiSkeletonActor: +0x840 bit 23 = u32 @8 != 0.
+            0xba => {
+                if let Some(id) = self.doll_of(t.a1).id() {
+                    self.motion_locks.push((id, op.u32_at(8) != 0));
+                }
+                Flow::Next
+            }
             0x89 => {
                 if let Some(id) = self.doll_of(t.a1).id() {
                     self.look_holds.push((id, (op.dur as f32 * t.speed).trunc()));
@@ -2060,6 +2223,22 @@ impl Effects {
                         ticks: op.dur.max(1) as f32 * t.speed,
                         who: [t.a1, t.a2],
                     });
+                }
+                Flow::Next
+            }
+            0x7c => {
+                self.env_ops.push(super::EnvOp::Weather { tag: op.u32_at(8), blend: op.u16_at(6) as i16 });
+                Flow::Next
+            }
+            0x7d => {
+                self.env_ops.push(super::EnvOp::Clock(op.u32_at(8)));
+                Flow::Next
+            }
+            0x7e => {
+                if let Some(r) = scope(self, 0x2f)
+                    && let Some(e) = crate::dat::weather::Env::parse(self.reg.libs[r.0].data(r.1))
+                {
+                    self.env_ops.push(super::EnvOp::Static(e));
                 }
                 Flow::Next
             }
@@ -2105,8 +2284,7 @@ impl Effects {
                 Flow::Next
             }
             // FUN_10053a00 / FUN_10052a50: every instance of generator A (4cc @8) on the pair ends, each live element of
-            // it bursting generator B (4cc @0x10) once where it is (FUN_10052930). A static A morphing in place and a
-            // lone B emission when no A runs are not done.
+            // it bursting generator B (4cc @0x10) once where it is (FUN_10052930); an unattached static A morphs in place.
             0x3f => {
                 let (Some(ga), Some(gb)) = (
                     scope(self, kind::GENERATOR),
@@ -2137,7 +2315,8 @@ impl Effects {
                     return Flow::Next;
                 }
                 // Else a new clone C of B, linked to the task's pair when B is attached (asm 0x10059f98..0x1005a027):
-                // A's clones on the pair burst into it; with none, a static B's lone emission goes with C at once.
+                // A's clones on the pair burst into it; with none, C is deleted at once (FUN_100543a0 at 0x1005a026; a
+                // static B's one emission goes with it).
                 let Some(c) = self.start(gb, Owner::Task(t.uid)) else { return Flow::Next };
                 let b_attached = self.is_attached(gb);
                 if let Some(x) = self.insts[c].as_mut() {
@@ -2157,7 +2336,7 @@ impl Effects {
                     if let Some(x) = self.insts[c].as_mut() {
                         x.stopping = true;
                     }
-                } else if self.is_static(gb) {
+                } else {
                     self.kill(c);
                 }
                 Flow::Next
@@ -2414,6 +2593,10 @@ impl Effects {
                             8 => 8.0,
                             v => (v & 3) as f64,
                         },
+                        // 0x3d: actor1 a pet, trust or charmed monster (FUN_10062900): no casting circle (file 0 nrm0).
+                        (0x3d, _) => t.a1.id().is_some_and(|id| actors.pet_like(id)) as u8 as f64,
+                        // 0x3e: actor1's entity +0x12c bit 22 (FUN_10062900).
+                        (0x3e, _) => t.a1.id().is_some_and(|id| actors.trust_mark(id)) as u8 as f64,
                         // 0x3b: actor1's off-hand flag (FUN_10062900 at 0x1006297f, through vt+0x254).
                         (0x3b, _) => t.a1.id().is_some_and(|id| actors.off_hand(id)) as u8 as f64,
                         (k, _) => t.action.as_ref().map_or(0, |a| a.borrow().var(k, t.a1.id())) as f64,
@@ -2579,7 +2762,7 @@ impl Effects {
     /// goes first, so a backward drive never reaches its end snap; each sets its actor's pose for the client.
     pub(super) fn step_drives(&mut self, f: &Frame, actors: &dyn Actors) {
         self.actor_poses.clear();
-        if self.drives.is_empty() && self.rot_drives.is_empty() {
+        if self.drives.is_empty() && self.rot_drives.is_empty() && self.face_drives.is_empty() {
             return;
         }
         let live: std::collections::HashSet<u64> = self.tasks.iter().flatten().map(|t| t.uid).collect();
@@ -2604,6 +2787,13 @@ impl Effects {
             merge(poses.entry(d.actor).or_default(), p);
             if more {
                 self.rot_drives.push(d);
+            }
+        }
+        for mut d in std::mem::take(&mut self.face_drives) {
+            let (p, more) = d.step(f.dt);
+            merge(poses.entry(d.actor).or_default(), p);
+            if more {
+                self.face_drives.push(d);
             }
         }
         self.actor_poses = poses;
@@ -2654,8 +2844,9 @@ impl Effects {
         ended
     }
 
-    /// FUN_100575a0's subset: generators still alive start part-way, sub-schedulers are caught up themselves, 0x03 /
-    /// 0x73 only resolve, 0x1e / 0x26 / 0x27 / 0x3f run as normal (a drive `over` ticks in); every other op is skipped.
+    /// FUN_100575a0's subset: generators still alive start part-way, sub-schedulers (0x09 / 0x57 / 0x03 / 0x73) are caught
+    /// up themselves, 0x85 and 0x1e / 0x26 / 0x27 / 0x3f run as normal (a drive `over` ticks in); every other op is
+    /// skipped.
     fn catch_up(&mut self, me: usize, t: &mut Task, op: &SOp, over: f32, actors: &dyn Actors) {
         match op.code {
             0x02 => self.catch_up_generator(t, op, over, actors),
@@ -2668,6 +2859,21 @@ impl Effects {
                     let c = self.spawn_task(r, a1, a2, t.action.clone(), t.speed, None);
                     self.fast_forward(c, over.trunc(), actors);
                 }
+            }
+            // 0x100579c4 -> 0x10057aa4 -> FUN_10056b20: the children start caught up too, on the dolls' actors.
+            0x03 | 0x73 => {
+                if let Some(r) = self.reg.resolve(t.res.0, t.res.1, kind::SCHEDULER, op.name()) {
+                    let (a1, a2) = (self.doll_of(t.a1), self.doll_of(t.a2));
+                    let c = self.spawn_task(r, a1, a2, t.action.clone(), t.speed, None);
+                    if let Some(x) = self.tasks[c].as_mut() {
+                        x.looping = op.code == 0x73;
+                    }
+                    self.fast_forward(c, over.trunc(), actors);
+                }
+            }
+            // FUN_10056ef0: the kill runs as normal.
+            0x85 => {
+                let _ = self.run_op(me, t, op, actors);
             }
             0x1e | 0x26 | 0x27 | 0x3f => {
                 self.seq_over = over;
@@ -2879,11 +3085,11 @@ impl Effects {
         Some((m, p.unwrap_or(m.w_axis.truncate())))
     }
 
-    fn who_scale(&self, w: Who, actors: &dyn Actors) -> f32 {
+    pub(super) fn who_sizes(&self, w: Who, actors: &dyn Actors) -> [f32; 3] {
         match w {
-            Who::Actor(id) => actors.scale(id),
-            Who::Doll(d) => self.dolls.get(d).map_or(1.0, |d| actors.scale(d.of)),
-            Who::None => 1.0,
+            Who::Actor(id) => actors.sizes(id),
+            Who::Doll(d) => self.dolls.get(d).map_or([1.0; 3], |d| actors.sizes(d.of)),
+            Who::None => [1.0; 3],
         }
     }
 
@@ -2920,13 +3126,15 @@ impl Effects {
                 _ => return Vec3::ONE,
             };
             let k = if blend == 0.0 { 1.0 } else { blend };
-            let s = (self.who_scale(who, actors) - 1.0) * k + 1.0;
-            // FUN_10053e60 on nibble & 3: 0 uniform, bit 0 x and z, bit 1 y.
+            let [wide, high, _] = self.who_sizes(who, actors);
+            let s = |v: f32| (v - 1.0) * k + 1.0;
+            // FUN_10052eb0 (2019) on nibble & 3: 0 the larger of +0x98 / +0x9c uniform, bit 1 y from +0x9c, bit 0 x and
+            // z from +0x98.
             match src & 3 {
-                0 => Vec3::splat(s),
+                0 => Vec3::splat(s(wide.max(high))),
                 b => {
-                    let xz = if b & 1 != 0 { s } else { 1.0 };
-                    Vec3::new(xz, if b & 2 != 0 { s } else { 1.0 }, xz)
+                    let xz = if b & 1 != 0 { s(wide) } else { 1.0 };
+                    Vec3::new(xz, if b & 2 != 0 { s(high) } else { 1.0 }, xz)
                 }
             }
         };
@@ -3250,20 +3458,36 @@ impl Effects {
         let present = actors.models();
         let by_id: std::collections::HashMap<u32, &[u32]> = present.iter().map(|(id, f)| (*id, f.as_slice())).collect();
         self.model_hide(actors, &present, &by_id);
-        let gone: Vec<u32> = self
+        // Each changed actor with the files it keeps (none when it is gone).
+        let gone: Vec<(u32, Vec<u32>)> = self
             .models
             .iter()
             .filter(|(id, files)| by_id.get(*id) != Some(&files.as_slice()))
-            .map(|(id, _)| *id)
+            .map(|(id, _)| (*id, by_id.get(id).map_or(Vec::new(), |f| f.to_vec())))
             .collect();
         drop(by_id);
-        for id in gone {
-            self.models.remove(&id);
+        for (id, new) in gone {
+            // Retail rebuilds an actor whose look changes (FUN_10092900) and runs `!in?` afresh (+0x840 bit 7 clear).
+            // What its equipment files or the files that left started goes; race files' (a cast's) stays *(inf)*.
+            let old = self.models.remove(&id).unwrap_or_default();
+            let parts = if new.is_empty() { Vec::new() } else { actors.files(id).0 };
+            let drop: Vec<u32> = old.into_iter().filter(|f| !new.contains(f) || parts.contains(f)).collect();
+            let libs: Vec<usize> =
+                (0..self.reg.libs.len()).filter(|&l| drop.contains(&self.reg.libs[l].file_id)).collect();
+            let who = Who::Actor(id);
+            for t in self.tasks.iter_mut() {
+                if t.as_ref().is_some_and(|t| libs.contains(&t.res.0) && (t.a1 == who || t.a2 == who)) {
+                    *t = None;
+                }
+            }
             for i in 0..self.insts.len() {
-                if self.insts[i].as_ref().is_some_and(|x| x.owner == Owner::Actor(id)) {
+                if self.insts[i].as_ref().is_some_and(|x| {
+                    x.owner == Owner::Actor(id) || (libs.contains(&x.src.0) && x.actors.contains(&who))
+                }) {
                     self.kill(i);
                 }
             }
+            self.reset_equip(id);
         }
         for (id, files) in present {
             if self.models.contains_key(&id) || actors.hidden(id) || actors.model_gens_off(id) {
@@ -3851,11 +4075,12 @@ mod tests {
                 break;
             }
         }
-        let Some(e) = elem else { panic!("pks1's yaa0 never emits") };
+        assert!(elem.is_some(), "pks1's yaa0 never emits");
         morph(&mut fx, zl);
         fx.tick(&f, &Two);
         assert!(of_a(&fx).is_empty(), "{:?}", of_a(&fx));
-        assert!(live(&fx, b"idy0").iter().any(|x| x.2 == Some(e)), "{:?}", live(&fx, b"idy0"));
+        // idy0 emitted at yaa0's element; the parent was that one emission's argument only.
+        assert!(live(&fx, b"idy0").iter().any(|x| !x.1.is_empty() && x.2.is_none()), "{:?}", live(&fx, b"idy0"));
         // No yaa0 running: no idy0.
         let mut fx = Effects::new();
         fx.set_index(index.clone());
@@ -5005,6 +5230,150 @@ mod tests {
         let twice = run(Some(60));
         assert!(twice.len() == 1 && (199..=202).contains(&twice[0]), "{twice:?}");
     }
+
+    /// A Mithra with Nightmare Scythe's file (37131) on her motion list.
+    struct MithraWs;
+
+    impl Actors for MithraWs {
+        fn matrix(&self, id: u32) -> Option<Mat4> {
+            Some(Mat4::from_translation(if id == HUME {
+                Vec3::new(20.0, 4.0, -30.0)
+            } else {
+                Vec3::new(23.0, 4.0, -30.0)
+            }))
+        }
+        fn point(&self, _: u32, _: u16) -> Option<Vec3> {
+            Some(Vec3::new(0.0, -1.0, 0.0))
+        }
+        fn scale(&self, _: u32) -> f32 {
+            1.0
+        }
+        fn files(&self, id: u32) -> (Vec<u32>, Vec<u32>) {
+            if id == HUME { (vec![8392], vec![37131]) } else { (Vec::new(), Vec::new()) }
+        }
+        fn hidden(&self, _: u32) -> bool {
+            false
+        }
+        fn models(&self) -> Vec<(u32, Vec<u32>)> {
+            Vec::new()
+        }
+        fn pc(&self, id: u32) -> Option<(u8, i8)> {
+            (id == HUME).then_some((7, 0))
+        }
+    }
+
+    /// Nightmare Scythe's discs: g0a0..g0a2's elements (life 15) clone g0b0..g0b2 (op 0x53) at their place by the
+    /// target; the discs fly the `line` path for 90 ticks after the parents are gone. A mode-0 clone keeps the matrix
+    /// it was given (FUN_10052eb0 returns for mode 0), so they stay by the target, not at the world origin.
+    #[test]
+    fn element_clone_keeps_its_matrix() {
+        let cfg = crate::config::Config::load();
+        let Ok(index) = crate::dat::DatIndex::open(&cfg.ffxi_dir()) else { return };
+        let index = std::sync::Arc::new(index);
+        let mut fx = Effects::new();
+        fx.set_index(index.clone());
+        fx.set_global(Library::load(0, index.read(0).unwrap()).unwrap());
+        fx.preload(&[8392, 37131]);
+        while [8392, 37131].iter().any(|f| fx.reg.lib_of(*f).is_none()) {
+            fx.poll_loads();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let f = Frame {
+            dt: 1.0,
+            seconds: 1.0 / 60.0,
+            dayfrac: 0.5,
+            view: Mat4::IDENTITY,
+            view_rot: Mat4::IDENTITY,
+            eye: Vec3::new(0.0, -2.0, -10.0),
+            draw_distance: 2000.0,
+            area_light: Vec3::ONE,
+            focal: 350.0,
+            moon_phase: 0,
+            weekday: 0,
+        };
+        let a = Action {
+            actor: HUME,
+            category: 3,
+            arg: 99,
+            info: 0,
+            targets: vec![ActionTarget {
+                id: ORC,
+                results: vec![ActionResult { animation: 64, message: 185, value: 40, ..Default::default() }],
+            }],
+            seq: 0,
+        };
+        fx.on_action(&a, None);
+        let mut checked = 0;
+        for frame in 1..=180 {
+            fx.tick(&f, &MithraWs);
+            if frame < 130 {
+                continue;
+            }
+            for x in fx.insts.iter().flatten().filter(|x| x.name.starts_with(b"g0b")) {
+                let at = x.matrix.map(|m| m.w_axis.truncate());
+                assert!(at.is_some_and(|p| (p - Vec3::new(23.0, 3.0, -30.0)).length() < 3.0), "{at:?}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no disc clone alive past frame 130");
+    }
+
+    /// Nightmare Scythe's `g000` (endless, flag 0x1000) outlives its stop (`st44` runs on the undolled pair) until the
+    /// skill file is freed at `main`'s end: then nothing from 37131 is left.
+    #[test]
+    fn released_skill_file_takes_its_clones() {
+        let cfg = crate::config::Config::load();
+        let Ok(index) = crate::dat::DatIndex::open(&cfg.ffxi_dir()) else { return };
+        let index = std::sync::Arc::new(index);
+        let mut fx = Effects::new();
+        fx.set_index(index.clone());
+        fx.set_global(Library::load(0, index.read(0).unwrap()).unwrap());
+        fx.preload(&[8392, 37131]);
+        while [8392, 37131].iter().any(|f| fx.reg.lib_of(*f).is_none()) {
+            fx.poll_loads();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let lib = fx.reg.lib_of(37131).unwrap();
+        let f = Frame {
+            dt: 1.0,
+            seconds: 1.0 / 60.0,
+            dayfrac: 0.5,
+            view: Mat4::IDENTITY,
+            view_rot: Mat4::IDENTITY,
+            eye: Vec3::new(0.0, -2.0, -10.0),
+            draw_distance: 2000.0,
+            area_light: Vec3::ONE,
+            focal: 350.0,
+            moon_phase: 0,
+            weekday: 0,
+        };
+        let a = Action {
+            actor: HUME,
+            category: 3,
+            arg: 99,
+            info: 0,
+            targets: vec![ActionTarget {
+                id: ORC,
+                results: vec![ActionResult { animation: 64, message: 185, value: 40, ..Default::default() }],
+            }],
+            seq: 0,
+        };
+        fx.on_action(&a, None);
+        let mut done = None;
+        for frame in 1..=400 {
+            fx.tick(&f, &MithraWs);
+            if fx.skill_files_done.drain(..).any(|c| c == HUME) {
+                done = Some(frame);
+                break;
+            }
+        }
+        assert!(done.is_some(), "main never ended");
+        let live =
+            |fx: &Effects| fx.insts.iter().flatten().filter(|x| x.src.0 == lib).map(|x| x.name).collect::<Vec<_>>();
+        assert!(live(&fx).contains(b"g000"), "{:?}", live(&fx));
+        fx.release_file(37131);
+        assert!(live(&fx).is_empty() && fx.tasks.iter().flatten().all(|t| t.res.0 != lib));
+    }
 }
 
 #[cfg(test)]
@@ -5036,6 +5405,64 @@ mod skillchain_tests {
         fn pc(&self, _: u32) -> Option<(u8, i8)> {
             None
         }
+    }
+
+    /// The entity machine's disengage schedulers (FUN_1008b460, DAT 0): `bntg` holds actor1's reactions for 300 ticks;
+    /// `klbt`, 10 ticks in, kills every `bntg` task (op 0x5f on the resource, whoever it runs on) and the hold goes
+    /// with it; `hwat` shows wep0 / wep1 and hides wep2.
+    #[test]
+    fn klbt_ends_bntg() {
+        let cfg = crate::config::Config::load();
+        let Ok(index) = crate::dat::DatIndex::open(&cfg.ffxi_dir()) else { return };
+        let mut fx = Effects::new();
+        let index = std::sync::Arc::new(index);
+        fx.set_index(index.clone());
+        fx.set_global(Library::load(0, index.read(0).unwrap()).unwrap());
+        let f = Frame {
+            dt: 1.0,
+            seconds: 1.0 / 60.0,
+            dayfrac: 0.5,
+            view: Mat4::IDENTITY,
+            view_rot: Mat4::IDENTITY,
+            eye: Vec3::new(0.0, -2.0, -10.0),
+            draw_distance: 2000.0,
+            area_light: Vec3::ONE,
+            focal: 350.0,
+            moon_phase: 0,
+            weekday: 0,
+        };
+        let name = |n: &[u8; 4]| u32::from_le_bytes(*n);
+        fx.on_scheduler_alone(1, name(b"bntg"));
+        fx.tick(&f, &Pair);
+        let holds: Vec<_> = fx.task_holds.iter().map(|h| (h.0, h.1, h.2)).collect();
+        let task = fx.tasks.iter().flatten().find(|t| t.a1 == Who::Actor(1)).unwrap();
+        assert_eq!(holds, [(task.uid, 1, HOLD_REACT)]);
+        assert_eq!(task.a2, Who::None);
+        // Another actor's `klbt` does it: the kill is by resource.
+        fx.on_scheduler_alone(2, name(b"klbt"));
+        for _ in 0..8 {
+            fx.tick(&f, &Pair);
+        }
+        assert!(fx.actor_scheduler_running(1, name(b"bntg")) && fx.held.contains_key(&1));
+        for _ in 0..6 {
+            fx.tick(&f, &Pair);
+        }
+        assert!(!fx.actor_scheduler_running(1, name(b"bntg")));
+        fx.tick(&f, &Pair);
+        assert!(!fx.held.contains_key(&1));
+        fx.weapons.clear();
+        fx.on_scheduler(1, 1, name(b"hwat"));
+        fx.tick(&f, &Pair);
+        let op = |n, hide| crate::fx::WeaponOp { actor: 1, n, byte: 0, hide };
+        assert_eq!(fx.weapons, [op(0, false), op(1, false), op(2, true)]);
+        // An explicit stop (model vtable +0x29c) frees the stopped task's holds too.
+        fx.on_scheduler_alone(1, name(b"bntg"));
+        fx.tick(&f, &Pair);
+        assert!(fx.held.contains_key(&1));
+        fx.stop_actor_scheduler(1, name(b"bntg"));
+        assert!(!fx.actor_scheduler_running(1, name(b"bntg")));
+        fx.tick(&f, &Pair);
+        assert!(!fx.held.contains_key(&1));
     }
 
     /// MODLOG "Skillchains": DAT 0 `proc` (op 0x80) with record 0's proc kind 14 plays Impaction (3268) on the

@@ -46,18 +46,6 @@ pub fn pose_character_held(
     skin_character(ch, &pose_held(&ch.skeleton, anims, grips))
 }
 
-/// The bone transforms of a cross-fade from one motion to another (t = 0 all `from`; FUN_100c6380 blend).
-pub fn pose_blend(
-    ch: &Character,
-    from: &[(&crate::dat::character::Animation, f32)],
-    to: &[(&crate::dat::character::Animation, f32)],
-    t: f32,
-    grips: &[(u16, u16)],
-) -> Vec<BoneXf> {
-    let (a, b) = (pose_held(&ch.skeleton, from, grips), pose_held(&ch.skeleton, to, grips));
-    a.iter().zip(&b).map(|(x, y)| x.lerp(y, t)).collect()
-}
-
 /// Highest point (smallest y, y down) of the skinned mesh, positions only.
 pub fn skinned_top(ch: &Character, world: &[BoneXf]) -> f32 {
     let mut top = f32::MAX;
@@ -361,4 +349,84 @@ pub fn render_batches_png(
     enc.set_color(png::ColorType::Rgba);
     enc.write_header()?.write_image_data(&pixels)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod queue_shots {
+    use super::*;
+    use crate::dat::character::{Animation, Look, PoseLayer, load_character, pose_layers};
+    use crate::motionq::{Enq, Queues};
+
+    /// Frames of a Hume M through the motion queues, into VANA_QUEUE_SHOTS (a folder): a walk turning into a run
+    /// (the blend at 0, 8 and 16 ticks) and a spoken line's mouth cut off by FUN_100ce160 (0, 4 and 9 ticks after).
+    /// Run by hand: `VANA_QUEUE_SHOTS=dir cargo test queue_frames -- --ignored`.
+    #[test]
+    #[ignore]
+    fn queue_frames() {
+        let Ok(dir) = std::env::var("VANA_QUEUE_SHOTS") else { return };
+        let index = crate::dat::DatIndex::open(&crate::config::Config::load().ffxi_dir()).unwrap();
+        let look = Look { race: 1, face: 0, head: 0, body: 8, hands: 8, legs: 8, feet: 8, main: 0, sub: 0, range: 0 };
+        let ch = load_character(&index, &look).unwrap();
+        let chunks = |n: &str| -> Vec<(u8, &Animation, f32, f32)> {
+            ch.find_animations(n)
+                .into_iter()
+                .map(|a| (a.name.as_bytes()[3] - b'0', a, a.frames as f32, a.speed))
+                .collect()
+        };
+        let shot = |q: &Queues<&Animation>, name: &str, yaw: f32| {
+            let mut l = Vec::new();
+            let over = q.layers(&mut l);
+            let pl: Vec<PoseLayer> = l
+                .iter()
+                .map(|x| PoseLayer { anim: x.anim, frame: x.frame, weight: x.weight, start: x.start, over: x.over })
+                .collect();
+            let mesh = skin_character(&ch, &pose_layers(&ch.skeleton, &pl, over, &[]));
+            let centre = (mesh.min + mesh.max) / 2.0;
+            let size = (mesh.max - mesh.min).max_element();
+            let (s, c) = yaw.to_radians().sin_cos();
+            let eye = centre + glam::Vec3::new(s, 0.0, c) * size * 1.6;
+            let camera = Camera { eye, target: centre, up: glam::Vec3::NEG_Y, fov_y: 40f32.to_radians() };
+            let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+            render_png(&ch, &mesh, &camera, 450, 600, &path).unwrap();
+            println!(
+                "{name}: {}",
+                l.iter()
+                    .map(|x| format!("{}@{:.1} w{:.2}", x.anim.name, x.frame, x.weight))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        };
+        let mut q: Queues<&Animation> = Queues::default();
+        q.enqueue_motion(chunks("wlk"), 0, &Enq::status(1.0, 16.0, true), |_| 1.0);
+        for _ in 0..25 {
+            q.tick(1.0);
+        }
+        q.enqueue_motion(chunks("run"), 0, &Enq::status(1.0, 16.0, true), |_| 1.0);
+        for (k, n) in [(0, "run-blend-00"), (8, "run-blend-08"), (8, "run-blend-16")] {
+            for _ in 0..k {
+                q.tick(1.0);
+            }
+            shot(&q, n, 60.0);
+        }
+        let mut q: Queues<&Animation> = Queues::default();
+        q.enqueue_motion(chunks("idl"), 0, &Enq::status(1.0, 16.0, true), |_| 1.0);
+        let mou = ch.animations.iter().find(|a| a.name == "mou4").or(ch.animations.iter().find(|a| a.name == "mou6"));
+        let Some(mou) = mou else {
+            println!("no mouth motion in the model");
+            return;
+        };
+        let talk =
+            Enq { share: 1.0, rate: 1.0, count: 1, blend: 8.0, out_len: 1.0, start: 0.0, end: 0.0, carry: false };
+        q.enqueue(4, mou, mou.frames as f32, mou.speed, &talk);
+        for _ in 0..12 {
+            q.tick(1.0);
+        }
+        q.fade_region(4, 8.0);
+        for (k, n) in [(0, "mouth-off-0"), (4, "mouth-off-4"), (5, "mouth-off-9")] {
+            for _ in 0..k {
+                q.tick(1.0);
+            }
+            shot(&q, n, 0.0);
+        }
+    }
 }

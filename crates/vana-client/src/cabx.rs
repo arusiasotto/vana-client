@@ -4,6 +4,7 @@
 
 use anyhow::{Result, bail};
 use md5::{Digest, Md5};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -185,29 +186,42 @@ pub fn extract_all<R: Read + Seek>(
             pos: 0,
         };
         let mut at = 0u64;
-        // WiX stores identical files once; later entries point back at the same bytes.
-        let mut stored: std::collections::HashMap<(u32, u32), (PathBuf, [u8; 16])> = Default::default();
-        for e in files {
+        // WiX stores identical files once; later entries point back at the same bytes. A run's bytes go to its
+        // first wanted entry, even when an unwanted one comes first.
+        let dests: Vec<Option<PathBuf>> = files.iter().map(|e| dest_for(&e.name)).collect();
+        let mut first_wanted: HashMap<(u32, u32), PathBuf> = HashMap::new();
+        for (e, dest) in files.iter().zip(&dests) {
+            if let Some(path) = dest {
+                first_wanted.entry((e.folder_offset, e.size)).or_insert_with(|| path.clone());
+            }
+        }
+        // Every run streamed, wanted or not: where its bytes went and their MD5.
+        let mut stored: HashMap<(u32, u32), Option<(PathBuf, [u8; 16])>> = HashMap::new();
+        for (e, dest) in files.iter().zip(dests) {
+            let key = (e.folder_offset, e.size);
             if (e.folder_offset as u64) < at {
-                let Some((src, md5)) = stored.get(&(e.folder_offset, e.size)).cloned() else {
+                let Some(source) = stored.get(&key) else {
                     bail!("{}: overlaps another file in the cabinet", e.name);
                 };
-                if let Some(path) = dest_for(&e.name) {
+                let (Some(path), Some((src, md5))) = (dest, source.clone()) else { continue };
+                if path != src {
                     if let Some(parent) = path.parent() {
                         fs::create_dir_all(parent)?;
                     }
                     fs::copy(&src, &path)?;
                     on_bytes(e.size as u64);
-                    done.push(Extracted { name: e.name.clone(), path, md5 });
                 }
+                done.push(Extracted { name: e.name.clone(), path, md5 });
                 continue;
             }
             let skip = e.folder_offset as u64 - at;
             io::copy(&mut (&mut stream).take(skip), &mut io::sink())?;
             at = e.folder_offset as u64 + e.size as u64;
             let mut part = (&mut stream).take(e.size as u64);
-            let Some(path) = dest_for(&e.name) else {
+            let wanted = dest.is_some();
+            let Some(path) = dest.or_else(|| first_wanted.get(&key).cloned()) else {
                 io::copy(&mut part, &mut io::sink())?;
+                stored.insert(key, None);
                 continue;
             };
             if let Some(parent) = path.parent() {
@@ -231,9 +245,72 @@ pub fn extract_all<R: Read + Seek>(
                 bail!("{}: cabinet ended after {written} of {} bytes", e.name, e.size);
             }
             let md5: [u8; 16] = md5.finalize().into();
-            stored.insert((e.folder_offset, e.size), (path.clone(), md5));
-            done.push(Extracted { name: e.name.clone(), path, md5 });
+            stored.insert(key, Some((path.clone(), md5)));
+            if wanted {
+                done.push(Extracted { name: e.name.clone(), path, md5 });
+            }
         }
     }
     Ok(done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// A stored one-folder cabinet: `data` in one block, `files` as (name, folder offset, size).
+    fn cabinet(data: &[u8], files: &[(&str, u32, u32)]) -> Vec<u8> {
+        let mut entries = Vec::new();
+        for &(name, offset, size) in files {
+            entries.extend(size.to_le_bytes());
+            entries.extend(offset.to_le_bytes());
+            entries.extend([0u8; 8]); // folder 0, date, time, attributes
+            entries.extend(name.as_bytes());
+            entries.push(0);
+        }
+        let files_at = 36 + 8;
+        let mut c = vec![0u8; 36];
+        c[..4].copy_from_slice(b"MSCF");
+        c[16..20].copy_from_slice(&(files_at as u32).to_le_bytes());
+        c[26..28].copy_from_slice(&1u16.to_le_bytes());
+        c[28..30].copy_from_slice(&(files.len() as u16).to_le_bytes());
+        c.extend(((files_at + entries.len()) as u32).to_le_bytes());
+        c.extend(1u16.to_le_bytes()); // one block
+        c.extend(0u16.to_le_bytes()); // stored
+        c.extend(entries);
+        c.extend([0u8; 4]); // checksum
+        c.extend((data.len() as u16).to_le_bytes());
+        c.extend((data.len() as u16).to_le_bytes());
+        c.extend(data);
+        c
+    }
+
+    fn extract(cab: &[u8], dir: &Path, wanted: &[&str]) -> Result<Vec<(String, Vec<u8>, [u8; 16])>> {
+        let done = extract_all(io::Cursor::new(cab), |name| wanted.contains(&name).then(|| dir.join(name)), |_| {})?;
+        Ok(done.into_iter().map(|x| (x.name, fs::read(&x.path).unwrap(), x.md5)).collect())
+    }
+
+    /// WiX shared bytes: a wanted copy whose first entry is not wanted still gets them, as does every wanted one; an
+    /// entry that overlaps another without being a copy of it fails, wanted or not.
+    #[test]
+    fn shared_bytes() {
+        let dir = std::env::temp_dir().join(format!("vana-cabx-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let cab = cabinet(b"abcdwxyz", &[("one", 0, 4), ("two", 0, 4), ("three", 4, 4)]);
+        let abcd: [u8; 16] = Md5::digest(b"abcd").into();
+
+        let got = extract(&cab, &dir, &["two"]).unwrap();
+        assert_eq!(got, [("two".to_string(), b"abcd".to_vec(), abcd)]);
+        assert!(!dir.join("one").exists());
+
+        let got = extract(&cab, &dir, &["one", "two", "three"]).unwrap();
+        let names: Vec<(&str, &[u8])> = got.iter().map(|(n, d, _)| (n.as_str(), &d[..])).collect();
+        assert_eq!(names, [("one", &b"abcd"[..]), ("two", b"abcd"), ("three", b"wxyz")]);
+
+        let bad = cabinet(b"abcdwxyz", &[("one", 0, 4), ("odd", 2, 4), ("three", 4, 4)]);
+        assert!(extract(&bad, &dir, &["one"]).is_err());
+        assert!(extract(&bad, &dir, &[]).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

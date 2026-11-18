@@ -549,6 +549,9 @@ pub(super) fn install(
             if fields.contains_key("page")? {
                 w.meta[k].page = fields.get::<Option<i64>>("page")?.map(|p| (p.max(1) - 1) as usize);
             }
+            if let Some(h) = fields.get::<Option<bool>>("hidden")? {
+                w.meta[k].hidden = h;
+            }
             w.settle();
             Ok(())
         })?,
@@ -1023,7 +1026,7 @@ pub(super) fn install(
             let out = lua.create_table()?;
             let Some(info) = w.item_info.as_ref() else { return Ok(out) };
             let named = |id: u16| {
-                info.item(id)
+                info.peek(id)
                     .is_some_and(|it| it.name.eq_ignore_ascii_case(&name) || it.singular.eq_ignore_ascii_case(&name))
             };
             for (&(bag, slot), &(id, count)) in
@@ -1147,7 +1150,7 @@ pub(super) fn install(
         "can_wear",
         lua.create_function(|lua, id: u16| {
             let w = world(lua)?;
-            Ok(w.item_info.as_ref().and_then(|c| c.item(id)).is_some_and(|it| super::super::shop::can_wear(w, &it, id)))
+            Ok(w.item_info.as_ref().and_then(|c| c.peek(id)).is_some_and(|it| super::super::shop::can_wear(w, &it, id)))
         })?,
     )?;
     game.set(
@@ -1382,10 +1385,11 @@ pub(super) fn install(
         "item",
         lua.create_function(|lua, id: u32| {
             let w = world(lua)?;
-            // The currency file's range runs past 0xffff (only gil has a record now).
+            // The currency file's range runs past 0xffff (only gil has a record now). A mod's lookups take no slot of
+            // the record cache (`Items::peek`): the auto-translate Items group stays what the game itself looked up.
             let it = match u16::try_from(id) {
-                Ok(small) => w.item_info.as_ref().and_then(|c| c.item(small)),
-                Err(_) => w.names.as_ref().and_then(|n| n.items.item(id)).map(std::sync::Arc::new),
+                Ok(small) => w.item_info.as_ref().and_then(|c| c.peek(small)),
+                Err(_) => w.names.as_ref().and_then(|n| n.items.peek(id)).map(std::sync::Arc::new),
             };
             let Some(it) = it else { return Ok(None) };
             let t = lua.create_table()?;
@@ -1550,7 +1554,7 @@ pub(super) fn install(
                 .get(..24)
                 .and_then(|b| b.try_into().ok())
                 .ok_or_else(|| mlua::Error::runtime("extdata is 24 bytes"))?;
-            let t = w.item_info.as_ref().and_then(|c| c.item(item)).map_or(0, |it| it.item_type);
+            let t = w.item_info.as_ref().and_then(|c| c.peek(item)).map_or(0, |it| it.item_type);
             let out = lua.create_table()?;
             if !((matches!(t, 4 | 5) && super::super::augment::applies(item, t, &e)) || t == 0x1a) {
                 return Ok(out);
@@ -1614,7 +1618,8 @@ pub(super) fn install(
                     }
                 }
             }
-            let ctx = crate::dat::battle::Ctx { actor, target, me: w.name.clone(), work, ..Default::default() };
+            let names = w.names.clone().map(crate::dat::battle::Tables);
+            let ctx = crate::dat::battle::Ctx { actor, target, me: w.name.clone(), work, names, ..Default::default() };
             let Some(line) = bt.expand(id, &ctx) else { return Ok(None) };
             let t = lua.create_table()?;
             t.set("text", line.lines.join("\n"))?;
@@ -1624,22 +1629,42 @@ pub(super) fn install(
     )?;
     res.set(
         "autotranslate",
-        lua.create_function(|lua, (word, group): (Option<String>, Option<u8>)| {
+        lua.create_function(|lua, (word, group): (Option<String>, Option<Value>)| {
             let w = world(lua)?;
+            let filter = group.map(|g| super::runtime::phrase_category(&g)).transpose()?;
             let Some(d) = w.battle.as_ref().and_then(|b| b.phrases.as_ref()) else { return Ok(None) };
             let word = word.unwrap_or_default();
-            let (hits, matched) = d.query(&word, group);
+            let (hits, matched) = d.query(&word, filter);
             let out = lua.create_table()?;
             // A word that matches nothing gives nothing (the game's candidate list shows the groups instead).
-            if !word.trim().is_empty() && group.is_none() && !matched {
+            if !word.trim().is_empty() && filter.is_none() && !matched {
                 return Ok(Some(out));
             }
             for (text, id) in hits {
                 let t = lua.create_table()?;
                 t.set("text", text)?;
-                t.set("group", id[2])?;
-                t.set("id", id[3])?;
-                t.set("phrase", super::runtime::phrase(id))?;
+                // A phrase is (group, id); a word of a built group is an item or key item id, which fills the
+                // block's last two bytes itself (no group).
+                match crate::dat::autotrans::block_item(id) {
+                    None => {
+                        t.set("kind", "phrase")?;
+                        t.set("group", id[2])?;
+                        t.set("id", id[3])?;
+                    }
+                    Some((key, item)) => {
+                        t.set("kind", if key { "key_item" } else { "item" })?;
+                        t.set("id", item)?;
+                    }
+                }
+                // A built group's title as a line holds it: id 0 by the game's encoder (the category block has a 00).
+                let block = match crate::dat::autotrans::block_item(id) {
+                    Some((key, 0)) => {
+                        use crate::dat::autotrans::{KIND_ITEMS, KIND_KEY_ITEMS, id_block};
+                        id_block(if key { KIND_KEY_ITEMS } else { KIND_ITEMS }, 0)
+                    }
+                    _ => id,
+                };
+                t.set("phrase", super::runtime::phrase(block))?;
                 out.push(t)?;
             }
             Ok(Some(out))
@@ -1653,9 +1678,17 @@ pub(super) fn install(
             let out = lua.create_table()?;
             for g in &d.groups {
                 let t = lua.create_table()?;
+                t.set("kind", "phrase")?;
                 t.set("group", g.id)?;
                 t.set("title", g.title.as_str())?;
                 t.set("count", g.phrases.len())?;
+                out.push(t)?;
+            }
+            for g in d.built().iter() {
+                let t = lua.create_table()?;
+                t.set("kind", if g.kind == crate::dat::autotrans::KIND_KEY_ITEMS { "key_item" } else { "item" })?;
+                t.set("title", g.title.as_str())?;
+                t.set("count", g.words.len())?;
                 out.push(t)?;
             }
             Ok(Some(out))
@@ -1673,7 +1706,7 @@ pub(super) fn install(
                 .ok_or_else(|| mlua::Error::runtime("lang: ja, en, de or fr"))?;
             let Some(n) = names_in(w, lang) else { return Ok(None) };
             Ok(match kind.as_str() {
-                "item" => n.item(id).map(|x| x.bare),
+                "item" => n.items.noun(id).map(|x| x.bare),
                 "key_item" => n.key_item(id).map(|x| x.bare),
                 "spell" => n.spell(id),
                 "ability" => n.ability(id),
@@ -2414,6 +2447,7 @@ fn elem(t: &Table) -> mlua::Result<(super::window::Elem, super::window::Meta)> {
     let meta = super::window::Meta {
         tip: t.get::<Option<String>>("tip")?.unwrap_or_default(),
         page: t.get::<Option<i64>>("page")?.map(|p| (p.max(1) - 1) as usize),
+        hidden: t.get::<Option<bool>>("hidden")?.unwrap_or(false),
     };
     Ok((elem_only(t)?, meta))
 }

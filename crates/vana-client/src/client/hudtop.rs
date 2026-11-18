@@ -199,11 +199,6 @@ impl HudTop {
         self.pct = if quiet < 10_000 { (self.pct + 12).min(100) } else { (self.pct - 6).max(0) };
     }
 
-    /// The cached grid position, "(X-N)" (FUN_101f7600(1)).
-    pub fn grid(&self) -> &str {
-        &self.grid
-    }
-
     /// World entry / zone-in (FUN_1015e3f0): the bars up, the timer at 30.
     pub fn enter(&mut self) {
         self.fade = TopFade::default();
@@ -819,8 +814,10 @@ pub fn topbar_shot(
             true,
         );
         m.wait_image(&mut gu);
-        if f.get(5) == Some(&"markers") {
-            m.shot_markers();
+        match f.get(5) {
+            Some(&"markers") => m.shot_markers(),
+            Some(&"marker-menu") => m.shot_marker_menu(),
+            _ => {}
         }
         m.draw(&mut gu, sw, sh, false);
         let [help, title] = gu.focus_text("menu    map0", m.cursor);
@@ -954,22 +951,26 @@ pub fn topbar_shot(
             let f: Vec<&str> = w.split(':').collect();
             // "update[:CURSOR]": the Update window with a sample plan (5321 files, 452 MB).
             if f[0] == "update" {
-                let entry = crate::patch::Entry { path: "ROM/0/0.DAT".into(), versions: Vec::new() };
+                let entry = crate::patch::Entry { path: "ROM/0/0.DAT".into(), ..Default::default() };
                 let todo = vec![(0usize, crate::patch::Action::Direct, 84_910u64); 5321];
                 let plan = crate::patch::Plan {
+                    service: crate::patch::GAME,
                     server: crate::patch::ServerVersion {
                         released: 0,
                         label: "empty".into(),
                         version: "30261006_0".into(),
+                        ..Default::default()
                     },
                     manifest: Vec::new(),
                     entries: vec![entry],
                     todo,
                     current: 44082,
                     skipped_code: 10,
+                    ..Default::default()
                 };
                 let status = std::sync::Arc::new(std::sync::Mutex::new(super::updater::Status {
-                    game: super::updater::Game::Available(plan),
+                    game: super::updater::Game::Available(Box::new(plan)),
+                    viewer: None,
                     client: super::updater::Client::Unavailable(String::new()),
                 }));
                 let mut u = super::updater::UpdateUi::open(status, cfg.ffxi_dir());

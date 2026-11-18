@@ -1,0 +1,178 @@
+name = "Target Lines"
+version = "1.1.2"
+description = "FFXII-style glowing arcs from each actor to its target as attacks, spells and abilities land, with AoE rings (MogSafe's TargetLines for Windower)."
+permissions = []
+homepage = "https://github.com/MogSafe/TargetLines"
+
+[commands.tl]
+help = "Target Lines: whether it is on and how many lines show. Its settings are on the Battle tab."
+args = ""
+forms = [
+  { args = "test", help = "A line to your target for 8 seconds." },
+  { args = "clear", help = "Removes every line showing." },
+]
+
+[commands.targetlines]
+help = "Same as //tl."
+args = ""
+
+[settings.on]
+type = "bool"
+default = true
+label = "Target Lines"
+help = "Draws a line from each actor to its target as it acts."
+tab = "Battle"
+place = 50
+
+[settings.color_blind]
+type = "bool"
+default = false
+label = "Colour Blind Colours"
+help = "Sky blue, yellow, vermilion and pink instead of blue, green, red and magenta."
+tab = "Battle"
+place = 51
+
+[settings.regular_attacks]
+type = "enum"
+options = ["First only", "Repeat", "Off"]
+values = ["first", "repeat", "off"]
+default = "first"
+label = "Regular Attacks"
+help = "Melee and ranged attacks: a line on the first hit of each attacker on each target, again after the cooldown, or none."
+tab = "Battle"
+place = 52
+
+[settings.pair_cooldown]
+type = "number"
+default = 8.0
+min = 0.0
+max = 30.0
+step = 0.5
+label = "Repeat Cooldown"
+help = "With Regular Attacks on Repeat: seconds before the same attacker and target get another line."
+tab = "Battle"
+place = 53
+
+[settings.special_lines]
+type = "bool"
+default = true
+label = "Special Actions"
+help = "Spells, weapon skills, abilities and monster TP moves."
+tab = "Battle"
+place = 54
+
+[settings.player_lines]
+type = "bool"
+default = true
+label = "Your Lines"
+tab = "Battle"
+place = 55
+
+[settings.party_lines]
+type = "bool"
+default = true
+label = "Party and Trust Lines"
+tab = "Battle"
+place = 56
+
+[settings.pet_lines]
+type = "bool"
+default = true
+label = "Pet Lines"
+tab = "Battle"
+place = 57
+
+[settings.enemy_lines]
+type = "bool"
+default = true
+label = "Enemy Lines"
+tab = "Battle"
+place = 58
+
+[settings.other_party_lines]
+type = "bool"
+default = false
+label = "Other Players' Lines"
+help = "Lines between actors that are neither you nor your party or alliance."
+tab = "Battle"
+place = 59
+
+[settings.aoe_mode]
+type = "enum"
+options = ["Ring (A)", "Ring (B)", "Fan", "Off"]
+values = ["ring1", "ring2", "fan", "off"]
+default = "ring1"
+label = "AoE Style"
+help = "Area actions: a growing ring, a ring with lines to each target, a line to each target, or nothing."
+tab = "Battle"
+place = 60
+
+[settings.fade]
+type = "number"
+default = 1.5
+min = 0.5
+max = 4.0
+step = 0.1
+label = "Line Duration"
+help = "Seconds a line shows."
+tab = "Battle"
+place = 61
+
+[settings.screen_lines]
+type = "bool"
+default = true
+label = "Glowing Arcs"
+help = "Glowing arcs drawn over the scene. Off: thin lines in the world, hidden by what stands in front."
+tab = "Battle"
+place = 62
+
+[settings.curved]
+type = "bool"
+default = true
+label = "Curved"
+help = "Arcs rise between the two actors. Off: straight lines."
+tab = "Battle"
+place = 63
+
+[settings.thickness]
+type = "int"
+default = 9
+min = 4
+max = 18
+label = "Arc Thickness"
+help = "The glowing arcs' core width in pixels."
+tab = "Battle"
+place = 64
+
+[settings.world_width]
+type = "number"
+default = 0.16
+min = 0.05
+max = 0.4
+step = 0.01
+label = "World Line Spread"
+help = "With Glowing Arcs off: how far apart the world line's strands are, in yalms."
+tab = "Battle"
+place = 65
+
+[settings.source_height]
+type = "number"
+default = 1.0
+min = 0.5
+max = 1.5
+step = 0.05
+label = "Source Height"
+help = "How high on the actor a line starts."
+tab = "Battle"
+place = 66
+
+[settings.target_height]
+type = "number"
+default = 1.0
+min = 0.5
+max = 1.5
+step = 0.05
+label = "Target Height"
+help = "How high on the target a line ends."
+tab = "Battle"
+place = 67

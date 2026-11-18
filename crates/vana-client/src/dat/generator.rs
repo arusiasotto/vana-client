@@ -335,7 +335,6 @@ impl KeyFrame {
     }
 
     /// FUN_10053520 / FUN_10053740: sampled with the first key's value replaced by `v0`.
-    #[cfg(test)]
     pub fn sample_v0(&self, x: f32, eased: bool, v0: f32) -> f32 {
         let mut k = self.clone();
         if let Some(first) = k.keys.first_mut() {
@@ -356,6 +355,8 @@ pub struct D3m {
     /// Header byte 5 (res+0x35): the triangles after the textured runs are drawn untextured.
     pub untextured_tail: bool,
     pub vertices: Vec<D3mVertex>,
+    /// Header word 0 >> 4 (FUN_1003fcd0): the bounding radius.
+    pub radius: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -409,7 +410,8 @@ impl D3m {
                 }
             })
             .collect();
-        Ok(Self { format, textures, per_texture: counts, untextured_tail: m != 0, vertices })
+        let radius = (u16::from_le_bytes([d[0], d[1]]) >> 4) as f32;
+        Ok(Self { format, textures, per_texture: counts, untextured_tail: m != 0, vertices, radius })
     }
 }
 

@@ -5,7 +5,7 @@
 use super::World;
 use super::game_ui::GameUi;
 use crate::audio::Ui as Se;
-use crate::dat::font::PHRASE_BASE;
+use crate::dat::font::{PHRASE_BASE, is_phrase};
 
 /// Raw and expanded limits of the chat line (E+0xa54 = 0x78).
 pub(super) const MAX: usize = 120;
@@ -23,15 +23,12 @@ pub struct Cand {
 pub struct Fep {
     pub cands: Vec<Cand>,
     pub sel: usize,
-    /// The category the list shows (T+0xec2c), and the root word and selection to go back to (DAT_10662d58 / d54).
-    filter: Option<u8>,
+    /// The category the list shows (T+0xec2c, its title's block id), and the root word and selection to go back to
+    /// (DAT_10662d58 / d54).
+    filter: Option<[u8; 4]>,
     root: (String, usize),
     /// The chars of the word being completed at the end of the line.
     word_len: usize,
-}
-
-fn is_phrase(c: char) -> bool {
-    (PHRASE_BASE..PHRASE_BASE + 0x400).contains(&(c as u32))
 }
 
 /// The line's unit boundaries (FUN_1018fb00 / FUN_1018fa80): a phrase block is one unit, any other char one.
@@ -127,8 +124,18 @@ fn word(line: &str) -> &str {
 
 /// FUN_101b6ee0: the dictionary's candidates, then the typed word (plain) and the names that start with it (tell
 /// history, party: FUN_1018d7f0).
-fn query(w: &World, word: &str, filter: Option<u8>) -> Vec<Cand> {
+fn query(w: &World, word: &str, filter: Option<[u8; 4]>) -> Vec<Cand> {
     let Some(d) = w.battle.as_ref().and_then(|b| b.phrases.as_ref()) else { return Vec::new() };
+    // The root category list (no word, no category) builds the Items and Key Items groups again (FUN_101bd060 ->
+    // FUN_101bcd10): the item record cache as it stands, and the key items we hold in the table's order.
+    if filter.is_none() && word.is_empty() {
+        let (recent, keys) = w.names.as_ref().map_or_else(Default::default, |n| {
+            let keys: Vec<(u32, String, bool)> =
+                n.key_item_list().into_iter().map(|(id, name)| (id, name, w.has_key_item(id as u16))).collect();
+            (n.items.recent(), keys)
+        });
+        d.rebuild(&recent, &keys);
+    }
     let (hits, matched) = d.query(word, filter);
     let mut out: Vec<Cand> = hits.into_iter().map(|(text, id)| Cand { text, id: Some(id) }).collect();
     if filter.is_none() && !word.is_empty() {
@@ -166,9 +173,27 @@ pub(super) fn lengths(w: &World, line: &str) -> (usize, usize) {
 
 /// The line with its phrases as plain text (no brackets).
 pub(super) fn plain(w: &World, line: &str) -> String {
+    plain_with(w, line, w.names.as_deref().map(|n| n as &dyn crate::dat::names::NameSource))
+}
+
+/// `plain` for a mod: its item lookups take no slot of the record cache (`names::Peek`).
+pub(super) fn plain_peek(w: &World, line: &str) -> String {
+    let peek = w.names.as_deref().map(crate::dat::names::Peek);
+    plain_with(w, line, peek.as_ref().map(|n| n as &dyn crate::dat::names::NameSource))
+}
+
+fn plain_with(w: &World, line: &str, names: Option<&dyn crate::dat::names::NameSource>) -> String {
+    match w.battle.as_ref().and_then(|b| b.phrases.as_ref()) {
+        Some(d) => d.expand_plain(line, names),
+        None => line.chars().filter(|c| !is_phrase(*c)).collect(),
+    }
+}
+
+/// The line with its phrases between the auto-translate brackets (FUN_101b8850 with braces).
+pub(super) fn braced(w: &World, line: &str) -> String {
     let names = w.names.clone();
     match w.battle.as_ref().and_then(|b| b.phrases.as_ref()) {
-        Some(d) => d.expand_plain(line, names.as_deref().map(|n| n as &dyn crate::dat::names::NameSource)),
+        Some(d) => d.expand(line, names.as_deref().map(|n| n as &dyn crate::dat::names::NameSource)),
         None => line.chars().filter(|c| !is_phrase(*c)).collect(),
     }
 }
@@ -214,13 +239,14 @@ pub(super) fn key(w: &mut World, key: egui::Key, shift: bool) -> bool {
             };
             match c.id {
                 None => put(w, spliced(&line, at, &c.text), c.text.chars().count()),
-                Some(id) if id[3] == 0 && id[0] < 7 => {
-                    // A category: nothing goes in; the list reopens on its phrases.
+                Some(id) if id[3] == 0 => {
+                    // A category (FUN_101ae200: the id's last byte is 0, which no item or key item block has): nothing
+                    // goes in; the list reopens on its phrases.
                     put(w, line, 0);
                     if f.filter.is_none() {
                         f.root.1 = f.sel;
                     }
-                    f.filter = Some(id[2]);
+                    f.filter = Some(id);
                     f.word_len = 0;
                     f.cands = query(w, "", f.filter);
                     f.sel = 0;
@@ -367,7 +393,7 @@ pub(super) fn pieces(w: &World, line: &str) -> Vec<(String, bool)> {
 pub struct FieldFep {
     pub cands: Vec<Cand>,
     pub sel: usize,
-    filter: Option<u8>,
+    filter: Option<[u8; 4]>,
     root: (String, usize),
     /// The word being completed (the chars after the last space before the caret).
     pub word: String,
@@ -430,11 +456,11 @@ pub(super) fn field_key(w: &mut World, f: &mut FieldFep, key: egui::Key, shift: 
             return match c.id {
                 None => FieldPick::Put(c.text),
                 // A category: its phrases replace the list (the word stays until a phrase is put).
-                Some(id) if id[3] == 0 && id[0] < 7 => {
+                Some(id) if id[3] == 0 => {
                     if f.filter.is_none() {
                         f.root.1 = f.sel;
                     }
-                    f.filter = Some(id[2]);
+                    f.filter = Some(id);
                     f.cands = query(w, "", f.filter);
                     f.sel = 0;
                     w.sounds.push(Se::Select as u32);
