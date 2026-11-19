@@ -1,6 +1,7 @@
 // Windows release builds open no console window; main() attaches to the parent one when started from a terminal.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+<<<<<<< HEAD
 mod audio;
 mod cabx;
 mod client;
@@ -4068,3 +4069,8 @@ fn fx_shot(
     println!("wrote {} frames", paths.len());
     Ok(())
 }
+=======
+fn main() -> anyhow::Result<()> {
+    vana_client::entry()
+}
+>>>>>>> 7b32aee3 (Split the client into a library and a thin binary)
