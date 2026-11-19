@@ -56,9 +56,15 @@ mod event;
 mod favs;
 mod firstrun;
 mod flash;
+#[cfg(target_os = "android")]
+mod folder_pick;
 mod footsteps;
+#[cfg(target_os = "android")]
+mod game_data;
 mod game_ui;
 mod gamepad;
+#[cfg(target_os = "android")]
+mod gamepad_android;
 #[cfg(target_os = "linux")]
 mod gamepad_sdl;
 mod hudtop;
@@ -869,6 +875,9 @@ pub(crate) struct LoginField<'a> {
 
 /// The most rows a combo field's list shows.
 const COMBO_ROWS: usize = 8;
+
+/// The Anisotropy setting's cap: mobile GPUs pay a lot for 16x.
+const MAX_ANISOTROPY: u16 = if cfg!(target_os = "android") { 4 } else { 16 };
 
 /// The server key of PlayOnline logins (Server Type PlayOnline): they sign in through net/pol.
 pub(crate) fn is_playonline(server: &str) -> bool {
@@ -9008,6 +9017,9 @@ pub struct App {
     updates: Option<updater::Shared>,
     /// No game files yet: the download window (not retail).
     first_run: Option<firstrun::FirstRun>,
+    /// Android: the title Config's Game data window (client/game_data.rs).
+    #[cfg(target_os = "android")]
+    game_data: Option<game_data::Editor>,
     update_ui: Option<updater::UpdateUi>,
     /// The Update window opened by itself for an out-of-date PlayOnline Viewer (once a run).
     viewer_asked: bool,
@@ -9126,7 +9138,7 @@ impl App {
             cfg.username = user.clone();
         }
         let frame_limit = cfg.frame_limit();
-        crate::render::ANISOTROPY.store(cfg.anisotropy.clamp(1, 16), std::sync::atomic::Ordering::Relaxed);
+        crate::render::ANISOTROPY.store(cfg.anisotropy.clamp(1, MAX_ANISOTROPY), std::sync::atomic::Ordering::Relaxed);
         crate::render::MIPMAPS.store(cfg.tool("0000") != 0, std::sync::atomic::Ordering::Relaxed);
         crate::render::set_uncompressed(cfg.tool("0018") >= 2);
         crate::render::MAP_COMPRESSED.store(cfg.tool("0019") == 0, std::sync::atomic::Ordering::Relaxed);
@@ -9134,9 +9146,12 @@ impl App {
         let (tasks_tx, tasks) = channel();
         let phase = Phase::login(&cfg);
         // Config 0022 (FUN_10010d20 state 1): the opening movie before the title; in a test drive only with FFXI_OPENING.
-        let opening = (cfg.tool("0022") != 0 && (!drive.driven() || std::env::var_os("FFXI_OPENING").is_some()))
-            .then(|| opening::Opening::open(&cfg.ffxi_dir().join("mov")))
-            .flatten();
+        // No opening movie on Android.
+        let opening = (!cfg!(target_os = "android")
+            && cfg.tool("0022") != 0
+            && (!drive.driven() || std::env::var_os("FFXI_OPENING").is_some()))
+        .then(|| opening::Opening::open(&cfg.ffxi_dir().join("mov")))
+        .flatten();
         let installed = crate::dat::installed(&cfg.ffxi_dir());
         let monitor = cfg.monitor.clone();
         // The executable's path while it is still the running file (a restart after an update needs it).
@@ -9275,6 +9290,8 @@ impl App {
             lobby_settings: None,
             updates,
             first_run: None,
+            #[cfg(target_os = "android")]
+            game_data: None,
             update_ui: None,
             viewer_asked: false,
             whats_new,
@@ -9300,7 +9317,8 @@ impl App {
     fn apply_settings(&mut self) {
         self.frame_limit = self.cfg.frame_limit();
         self.present_dirty = true;
-        crate::render::ANISOTROPY.store(self.cfg.anisotropy.clamp(1, 16), std::sync::atomic::Ordering::Relaxed);
+        crate::render::ANISOTROPY
+            .store(self.cfg.anisotropy.clamp(1, MAX_ANISOTROPY), std::sync::atomic::Ordering::Relaxed);
         crate::render::MIPMAPS.store(self.cfg.tool("0000") != 0, std::sync::atomic::Ordering::Relaxed);
         crate::render::set_uncompressed(self.cfg.tool("0018") >= 2);
         crate::render::MAP_COMPRESSED.store(self.cfg.tool("0019") == 0, std::sync::atomic::Ordering::Relaxed);
@@ -15164,14 +15182,15 @@ impl App {
         // A release is a drag past 65 square UI pixels or 25 ticks held, or when mouse look turned the camera more than
         // 4 pixels meanwhile (the look holds the pointer, so it barely moves): a camera drag that starts on an actor
         // opens no menu and makes no double click.
-        let looked = self.look_travel > 4.0;
+        let looked = self.look_travel > 4.0 && !cfg!(target_os = "android");
+        let drag = if cfg!(target_os = "android") { 400.0 } else { 65.0 };
         let release = |from: Option<((f64, f64), Instant)>,
                        at: Option<(f64, f64)>,
                        k: (f32, f32)|
          -> Option<((f64, f64), bool)> {
             let ((a, t), b) = (from?, at?);
             let (dx, dy) = ((b.0 - a.0) as f32 * k.0, (b.1 - a.1) as f32 * k.1);
-            Some((b, looked || dx * dx + dy * dy >= 65.0 || t.elapsed().as_secs_f32() * 60.0 >= 25.0))
+            Some((b, looked || dx * dx + dy * dy >= drag || t.elapsed().as_secs_f32() * 60.0 >= 25.0))
         };
         let size = self.window_size;
         let (k, retail_aspect) = (self.ui_k, self.cfg.retail_aspect);
@@ -15486,6 +15505,8 @@ impl App {
                         log::warn!("saving the config: {e:#}");
                     }
                     self.updates = Some(updater::start(self.cfg.ffxi_dir(), uses_playonline(&self.cfg)));
+                    #[cfg(target_os = "android")]
+                    self.gamepad.reload_retail(self.cfg.game_dir.clone());
                 }
                 firstrun::Action::Begin(dir) => {
                     self.cfg.game_dir = dir;
@@ -15495,6 +15516,24 @@ impl App {
                 }
                 firstrun::Action::None => {}
             }
+            // Android: the window takes the touches (no mouse invalidation for an undrawn UI).
+            #[cfg(target_os = "android")]
+            {
+                self.ui_drawn = true;
+            }
+            return;
+        }
+        #[cfg(target_os = "android")]
+        if let Some(editor) = self.game_data.as_mut() {
+            match editor.ui(ctx) {
+                game_data::Action::Close => self.game_data = None,
+                game_data::Action::Apply(dir) => {
+                    self.game_data = None;
+                    self.android_use_game_dir(dir);
+                }
+                game_data::Action::None => {}
+            }
+            self.ui_drawn = true;
             return;
         }
         if self.game_ui.is_none() {
@@ -16224,6 +16263,10 @@ impl App {
                                     }
                                     lobby_changes(&out.changed, &mut lobby_apply);
                                     closed |= out.closed;
+                                    #[cfg(target_os = "android")]
+                                    if out.open_game_data {
+                                        self.game_data = Some(game_data::Editor::new(self.cfg.game_dir.clone()));
+                                    }
                                 }
                                 if closed {
                                     self.lobby_cfg = None;
@@ -18066,6 +18109,10 @@ impl App {
             self.draw_opening();
             return false;
         }
+        #[cfg(target_os = "android")]
+        if self.gfx.is_some() {
+            return true;
+        }
         // Nothing is shown until the title can draw.
         if !self.shown {
             if !self.title_ready() {
@@ -19476,7 +19523,15 @@ fn world_uploads(gfx: &Gfx, fg: &mut FrameGpu, w: &mut World, r: &mut ZoneRender
     // This frame's copies: a zone going up (more while its indicator hides the world), then the models
     // actors are waiting for.
     use crate::render::upload::{FRAME_MS, LOADING_MS};
+    #[cfg(not(target_os = "android"))]
     gfx.gpu.begin_uploads(if w.downloading.is_some() { LOADING_MS } else { FRAME_MS });
+    // GLES copies are slow: at the desktop's budget only the sky is up for a long time.
+    #[cfg(target_os = "android")]
+    gfx.gpu.begin_uploads(if w.zone_uploading.is_some() || w.downloading.is_some() {
+        LOADING_MS * 15.0
+    } else {
+        FRAME_MS * 8.0
+    });
     perf::timed(|| "uploads".into(), || r.upload_step(&gfx.gpu, &mut fg.encoder));
     // A preloaded zone streams in whatever room is left (client/preload.rs).
     if let Some(p) = w.preload.as_mut().and_then(|p| p.ready.as_mut()) {
@@ -20911,6 +20966,8 @@ impl FrameGpu {
 impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         use winit::event_loop::ControlFlow;
+        #[cfg(target_os = "android")]
+        self.android_about_to_wait(event_loop);
         match self.next_frame {
             Some(t) if Instant::now() < t => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             Some(_) => {
@@ -20936,6 +20993,8 @@ impl ApplicationHandler for App {
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gfx.is_some() {
+            #[cfg(target_os = "android")]
+            self.android_refresh_surface();
             return;
         }
         // Hidden (and on Wayland unmapped, nothing being presented) until the title can draw. Driven test runs
@@ -20971,7 +21030,15 @@ impl ApplicationHandler for App {
             let attrs = WindowAttributesExtWayland::with_name(attrs, "vana-client", "vana-client");
             WindowAttributesExtX11::with_name(attrs, "vana-client", "vana-client")
         };
-        let window = Arc::new(event_loop.create_window(attrs).expect("creating the window"));
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            // Android's native window may not be up yet: about_to_wait tries again.
+            Err(e) if cfg!(target_os = "android") => {
+                log::warn!("creating the window: {e}");
+                return;
+            }
+            Err(e) => panic!("creating the window: {e:?}"),
+        };
         #[cfg(windows)]
         windpi::keep_size(&window);
         // A first start (no config yet): Menu Size and Interface Size from the screen's size (client/screen.rs).
@@ -20989,7 +21056,14 @@ impl ApplicationHandler for App {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
             event_loop.owned_display_handle(),
         )));
-        let surface = instance.create_surface(window.clone()).expect("creating the surface");
+        let surface = match instance.create_surface(window.clone()) {
+            Ok(s) => s,
+            Err(e) if cfg!(target_os = "android") => {
+                log::warn!("creating the surface: {e}");
+                return;
+            }
+            Err(e) => panic!("creating the surface: {e:?}"),
+        };
         self.gpus = crate::render::adapter_names(&instance, Some(&surface));
         let gpu = Gpu::with_adapter(instance, Some(&surface), &self.cfg.gpu).expect("opening the GPU");
         let size = window.inner_size();
@@ -21039,6 +21113,11 @@ impl ApplicationHandler for App {
         gpu.warm(&[config.format]);
         window.request_redraw();
         self.next_frame = Some(Instant::now());
+        #[cfg(target_os = "android")]
+        {
+            self.shown = true;
+            window.set_visible(true);
+        }
         self.gfx = Some(Gfx { window, gpu, surface, config, depth, egui_ctx, egui_state, egui_renderer });
     }
 
@@ -21078,7 +21157,14 @@ impl ApplicationHandler for App {
         if let (Phase::World(w), Some(gfx)) = (&mut self.phase, &self.gfx) {
             lua::input::set_over_ui(w, gfx.egui_ctx.is_pointer_over_egui());
         }
-        if self.opening.is_none()
+        // Android: egui takes the pointer first, as it drops a button press with no pointer position yet.
+        let pointer_first = cfg!(target_os = "android")
+            && matches!(
+                event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Touch(_)
+            );
+        if !pointer_first
+            && self.opening.is_none()
             && let Phase::World(w) = &mut self.phase
             && lua::input::window_event(w, &event)
         {
@@ -21086,6 +21172,13 @@ impl ApplicationHandler for App {
         }
         let Some(gfx) = &mut self.gfx else { return };
         let consumed = gfx.egui_state.on_window_event(&gfx.window, &event).consumed;
+        if pointer_first
+            && self.opening.is_none()
+            && let Phase::World(w) = &mut self.phase
+            && lua::input::window_event(w, &event)
+        {
+            return;
+        }
         match event {
             // Retail takes Close off its window menu (RemoveMenu SC_CLOSE). Ours logs out first in the world
             // ("/shutdown on", exit when the server ends the session); at once elsewhere, with the link quiet for
@@ -21221,9 +21314,14 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            #[cfg(not(target_os = "android"))]
             WindowEvent::MouseInput { state, button, .. } if !consumed || state == ElementState::Released => {
                 self.mouse_button(button, state == ElementState::Pressed, consumed);
             }
+            #[cfg(target_os = "android")]
+            WindowEvent::MouseInput { state, button, .. } => self.android_mouse_input(button, state),
+            #[cfg(target_os = "android")]
+            WindowEvent::Touch(touch) => self.android_touch(touch),
             WindowEvent::CursorMoved { position, .. } => {
                 // FUN_100016c0: window-message motion shows the cursor only past 2 px (not while a look drag holds it).
                 if self.look_grab.is_none()
@@ -21233,9 +21331,11 @@ impl ApplicationHandler for App {
                 {
                     self.mouse.visible = true;
                 }
+                // Android: a left drag never looks (a tap's jitter would turn it into a drag with no click).
                 let looking = self.dragging
                     || self.middle_down
                     || (self.left_down
+                        && !cfg!(target_os = "android")
                         && self.press_at.is_some_and(|a| (a.0 - position.x).abs() + (a.1 - position.y).abs() >= 5.0));
                 if let (true, Some((x, y))) = (looking, self.last_cursor) {
                     if self.look_grab.is_none() {
@@ -21253,6 +21353,8 @@ impl ApplicationHandler for App {
                     }
                 }
                 self.last_cursor = Some((position.x, position.y));
+                #[cfg(target_os = "android")]
+                self.android_egui_pointer((position.x, position.y), None);
             }
             WindowEvent::MouseWheel { delta, .. } if !consumed => {
                 if let Phase::World(world) = &mut self.phase {
@@ -21621,11 +21723,22 @@ pub fn run(cfg: Config, drive: Drive) -> Result<()> {
         log::warn!("installing the client copy: {e:#}");
     }
     crate::patch::adopt_old_ffximain(&cfg.ffxi_dir());
+    #[cfg(not(target_os = "android"))]
     let event_loop = EventLoop::new()?;
+    #[cfg(target_os = "android")]
+    let event_loop = android::event_loop()?;
     let mut app = App::new(cfg, drive);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
+
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(target_os = "android")]
+pub(crate) use android::{
+    android_activity_ptr, android_event_loop_running, android_resume_after_activity, android_run_on_ui_thread,
+    set_android_app,
+};
 
 /// The window's egui context: no egui keyboard zoom (Ctrl+0 / Ctrl+Plus / Ctrl+Minus are macro keys), and no quit
 /// shortcut (egui consumes Ctrl+Q, and we never act on its close).

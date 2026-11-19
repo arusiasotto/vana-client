@@ -2035,7 +2035,11 @@ fn keys_page(
 }
 
 /// The title's Config list: retail's page (lobycwin) and ours.
+#[cfg(not(target_os = "android"))]
 const LOBBY: [&str; 2] = ["Title Screen", "Settings"];
+/// Android adds where the game files are read from (client/game_data.rs).
+#[cfg(target_os = "android")]
+const LOBBY: [&str; 3] = ["Title Screen", "Settings", "Game data"];
 
 /// lobycwin's settings in retail's order on screen: the title music first.
 fn lobby_shapes() -> Vec<Shape> {
@@ -2145,6 +2149,10 @@ pub fn lobby(p: &mut Panels, c: &mut ConfigUi, v: &mut Values, s: Option<&mut Se
         Some(Click::Entry(k)) => {
             (c.m_entry, c.m_open, c.m_row) = (k, true, 0);
             out.sounds.push(Se::Select);
+            #[cfg(target_os = "android")]
+            if k == 2 {
+                (out.open_game_data, out.closed) = (true, true);
+            }
         }
         Some(Click::Opt(i, x)) => {
             (c.m_open, c.m_row) = (true, i);
@@ -2201,6 +2209,10 @@ pub fn lobby_key(
             (kit::Act::Press(..), _) => {
                 (c.m_open, c.m_row) = (true, 0);
                 out.sounds.push(Se::Select);
+                #[cfg(target_os = "android")]
+                if c.m_entry == 2 {
+                    (out.open_game_data, out.closed) = (true, true);
+                }
             }
             (a, _) => out.sounds.extend(a.sound()),
         }
