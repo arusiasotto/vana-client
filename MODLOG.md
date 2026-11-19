@@ -24659,6 +24659,96 @@ Addresses are 30261006_0's.
 - Seen live: Lnxcsfix as RDM 99 with Excalibur 119 III: `!hide` translucent (after a bot's Cure tasks on her ended),
   `!hide` again solid with the aura, `!hide status` 0.
 
+## Ctrl / Alt shortcuts: the common test (2026-11-17)
+
+Addresses are 30261006_0's.
+
+- The shortcut records (built in FUN_101ae140) run each frame in the field (FUN_101ae3e0), each through FUN_101adf20:
+  the press edge, then its condition set (FUN_101ae010, the set number from the record's +0x100):
+  - Set 1, A "/attack" (0x3b) and H "/heal" (0x3d): no event hold (FUN_10087070(0)), plus the common part.
+  - Set 4, E Equipment (0x36), I Items (0x39), C check / talk (0x3f) and M / J / W / B (0x41 / 0x7f / 0x80 / 0x9f):
+    no event hold, the UI shown, no window with flag 0x20000 (FUN_1015ecc0), plus the common part.
+  - The common part: no sub-target prompt (T +0x59, +0xc4; T = DAT_1057876c), not dead (own status not 2 / 3), no
+    Num+ focus (T +0x68 == 0: neither the log nor the status icons), not in Mog House layout mode (DAT_106631d4 +0x1c
+    == 0).
+- Ours checked M / J / W / B only for an event, death and the prompt, and A / H / E / I / C for nothing.
+  - Alt+A under a forgotten prompt sent /attack. Then the battle menu opened at the engage and cancelled the prompt.
+  - The cancel put back the prompt's saved target and lock: the monster that died before. It was dropped at once
+    with the lock (user, 2026-11-17).
+  - The prompt in that run was most likely the engaged battle menu's Switch Target (Enter on its first row) *(inf:
+    from the key log)*.
+- All of them now share one test (mod.rs shortcut_ok): no event, alive, no prompt (or party cursor), no Num+ focus
+  (log_active, log_focus != 2), no layout; E / I / C / M / J / W / B also no 0x20000 window (World.main_open). The
+  UI-shown part needs nothing: with the UI hidden no key arm runs.
+- egui-winit turns Ctrl+C into a Copy event before any key event, so the Copy arm takes the same test.
+- Opening a prompt is now logged with its callback and the saved target and lock.
+- Seen live: Lnxcsfix with a `/ma "Cure" <st>` prompt up: Alt+A sent nothing; after Escape it sent /attack. Ctrl+C
+  under the prompt checked nothing (after Escape: "examines you"); Ctrl+M over the map opened nothing (after Escape:
+  the magic list).
+
+## Distortion reads the scene in place (2026-11-18)
+
+- User report: many effects, fire spells most, looked like they played at a low frame rate.
+- They did. The cost was in the frame itself, not in effect timing:
+  - Offscreen, Fire's elements change every 0.2-tick step: fx-shot with a fractional step, a temporary
+    FFXI_FX_DT not kept.
+  - Live, FFXI_PERF on Lnxcsfix (BLM 75, Fire III on a Snipper, frame limit 144): 41.7 fps for the 2 s of the impact,
+    GPU 16.96 ms a frame of which fx draw was 13.42 ms (0.3 before), worst gap 62.5 ms.
+- Each CMoDist / CMoVuDist element copied the whole colour target before its 256x256 copy pass (section "Distortion
+  / heat haze"), and so did the squeeze of the DistModel / DistRing / DistMorph variants. A fire spell's dozens of
+  haze elements made dozens of full-size copies a frame. Retail copies only the diamond's screen box.
+- The copy pass draws into the 256x256 target and only reads the scene, so it now samples the colour target itself,
+  through a view in the copy's format, when the target can be bound. The swapchain image cannot, and still takes the
+  copy. What it reads is the same: the scene as drawn up to that element, the earlier distortions included.
+- Seen live (same test): 89..92 fps during the impact, fx draw 2.0..2.4 ms, worst gap 31.7 ms. That run's baseline
+  was about 105 fps.
+- Left: each distortion element still ends the effect pass and opens two (CPU encode up to 3.9 ms a frame in the
+  impact). Batching elements whose boxes do not overlap would need their screen boxes on the CPU.
+
+## CMoVuDist repeats in compute (2026-11-18)
+
+- After "Distortion reads the scene in place", a fire spell's impact still split the effect pass about 600 times a
+  frame. Fire III (file 2946, `fair/g004`) has up to 20 live CMoVuDist elements at n = 10, each repeat ending the pass,
+  running the 256x256 copy pass and opening the pass again. Live: about 4 ms of CPU encode a frame in the impact.
+- Ours now runs an element's repeats in compute (render/effects.rs DistIter, effects.wgsl "repeats in compute"):
+  - dist_region: the screen region both passes touch (the diamond's box and the shifted fan, 2 pixels wider), the
+    copy's texel rect, the shared geometry, and the indirect group counts.
+  - dist_load: the region's colour (as stored) and depth, once.
+  - Per repeat: dist_copy (vs_dist_copy / fs_dist_copy) and dist_fan (vs_dist + fragment variant 9 + SRCALPHA /
+    INVSRCALPHA colour-only blend + LESSEQUAL depth, written by flag 12). They sample by hand as the copy sampler does
+    (linear with 8-bit sub-texel weights, MIRROR), cover as the rasteriser does (pixel centres, 1/256 snapping,
+    top-left rule), and encode / decode sRGB in linearize mode.
+  - vs_dist + fs_dist_put write the region back once, under the fan, with the fan's depth state.
+  - So one break of the effect pass per element, not one per repeat; the repeat cap goes from 64 to retail's 512.
+  - Used when the scene and its depth can be bound; else the passes as before. The offscreen target (render_pngs_lit)
+    can be bound now, so the offscreen tools take the compute path too.
+- Checked offscreen against the passes (fx-shot 232, Fire III, every 20 ticks): identical outside the VuDist frames.
+  Within them, at most 8 levels on a few dozen pixels and 1..2 on the rest (sampling precision over the 10 repeats).
+- Live (Lnxcsfix BLM 75, Fire III on a Snipper, no frame limit, back to back in the same weather): the impact cost
+  +2.0 ms a frame with the passes (CPU encode +2.3 ms) and +1.1 ms with the compute repeats (CPU +0.5, GPU +1.0).
+- Not modelled: a fan triangle with a point behind the eye is dropped where the rasteriser would clip it. The
+  write-back (vs_dist_put) drops the same triangles, so it never writes a pixel dist_load did not read (review). Not
+  seen with Fire III: its VuDist elements face the camera, so their five points share one depth.
+
+## A scheduler motion that follows a counted one takes over its pose (2026-11-17)
+
+- User report: at the end of a trust cast a Mithra holds both hands out in front. Ours dropped them to her sides for
+  a moment, then raised them again.
+- The cast's scheduler (Nine's log, spell 922):
+  - `ms0` (count 8, 150 ticks);
+  - then `ms1` (hands out, count 1), stretched over its op's 80 ticks, out blend 0;
+  - then `ms2` (count 1, 100 ticks, blend in 20), started at the tick `ms1` ends.
+- Ours, in the same frame:
+  - saw `ms1`'s counted end first and brought the status motion back (blend in 0: a snap to idle);
+  - then queued `ms2`, which blended in over 20 ticks from that idle pose.
+- Retail: a counted end with nothing queued after it sets model +0x79c (vtable +0x1fc(1)), and queueing a region-0
+  motion clears it (vtable +0x1fc(0)). FUN_100c6380 brings the status motion back only while it is set (section
+  "Event motions, actor fades, PC battle motions"). So `ms2`, queued as `ms1` ends, keeps the status motion out, and blends from `ms1`'s last pose.
+- Ours now collects the frame's op-0x05 starts (the swing's one-shot and the play's) before the status test. A
+  counted end counts only when none starts that frame.
+- Seen live (Lnxcsfix, Mithra, Lehko Habhoka in West Ronfaure, side view, a shot every 0.15 s): `ms1 -> ms2`, the
+  hands out throughout. Nine's log: 14 of her 15 trust casts went `ms1 -> idl -> ms2` before.
+
 ## Mode-0 generators keep their matrix: Nightmare Scythe's discs (2026-11-17)
 
 - User report: Nightmare Scythe was missing its two spinning discs that slice through the target.
