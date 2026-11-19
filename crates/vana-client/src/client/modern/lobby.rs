@@ -769,7 +769,8 @@ fn step_rows(gu: &GameUi, step: usize) -> Vec<String> {
 
 /// A text field: the text (or `empty`, dimmed) and the caret at char `caret` while `caret` is Some and blinking on.
 fn field(ui: &mut Ui, m: &Modern, text: &str, empty: &str, caret: Option<usize>) {
-    let (r, _) = ui.allocate_exact_size(vec2(W - 14.0, 30.0), Sense::hover());
+    let sense = if caret.is_some() { Sense::click() } else { Sense::hover() };
+    let (r, resp) = ui.allocate_exact_size(vec2(W - 14.0, 30.0), sense);
     let face = if caret.is_some() { "controls/input_focused" } else { "controls/input_normal" };
     if let Some(s) = m.art.sprite(face) {
         ui.painter().add(paint::nine_slice(&s, r, (r.height() / s.size.y).min(1.0), Color32::WHITE));
@@ -789,6 +790,9 @@ fn field(ui: &mut Ui, m: &Modern, text: &str, empty: &str, caret: Option<usize>)
             [pos2(x, r.min.y + 7.0), pos2(x, r.max.y - 7.0)],
             egui::Stroke::new(1.5, m.theme.color("text")),
         );
+    }
+    if caret.is_some() {
+        m.lobby_ime.set(Some(super::super::LobbyImeHint { rect: r, retap: resp.clicked() }));
     }
     ui.ctx().request_repaint();
 }
@@ -1202,7 +1206,7 @@ fn windows(p: &mut Panels, gu: &GameUi, v: &View, out: &mut Pointer) {
         p.panel_at("select rename", None, 460.0, low, |ui| {
             ui.label(egui::RichText::new(&v.help).size(m.theme.small).color(m.theme.color("muted")));
             ui.add_space(6.0);
-            let (r, _) = ui.allocate_exact_size(vec2(400.0, 30.0), Sense::hover());
+            let (r, resp) = ui.allocate_exact_size(vec2(400.0, 30.0), Sense::click());
             if let Some(s) = m.art.sprite("controls/input_focused") {
                 ui.painter().add(paint::nine_slice(&s, r, (r.height() / s.size.y).min(1.0), Color32::WHITE));
             }
@@ -1214,6 +1218,7 @@ fn windows(p: &mut Panels, gu: &GameUi, v: &View, out: &mut Pointer) {
                 FontId::proportional(m.theme.ui),
                 m.theme.color("text"),
             );
+            m.lobby_ime.set(Some(super::super::LobbyImeHint { rect: r, retap: resp.clicked() }));
         });
     }
 }

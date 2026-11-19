@@ -915,6 +915,37 @@ pub struct LoginView {
     pub busy: bool,
 }
 
+/// A pre-world text field that should take Android's soft keyboard. `rect` is UI pixels. `retap` is a click on that
+/// field this frame, so a keyboard the player closed comes back. Filled on every platform; only the Android build reads
+/// it.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) struct LobbyIme {
+    rect: [f32; 4],
+    password: bool,
+    retap: bool,
+}
+
+/// Modern lobby panels lay the field out in egui points; convert when handing off to [`LobbyIme`].
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) struct LobbyImeHint {
+    pub rect: egui::Rect,
+    pub retap: bool,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn lobby_ime_from_hint(h: LobbyImeHint, ppp: f32, ui_k: (f32, f32)) -> LobbyIme {
+    LobbyIme {
+        rect: [
+            h.rect.min.x * ppp * ui_k.0,
+            h.rect.min.y * ppp * ui_k.1,
+            h.rect.width() * ppp * ui_k.0,
+            h.rect.height() * ppp * ui_k.1,
+        ],
+        password: false,
+        retap: h.retap,
+    }
+}
+
 /// The tail of `text` that fits in `max` pixels, so the caret end stays visible.
 pub(super) fn fit_tail(lu: &GameUi, text: &str, max: f32) -> String {
     let mut t = text;
@@ -999,6 +1030,7 @@ fn login_window(
     sounds: &mut Vec<crate::audio::Ui>,
     modern: Option<&mut Option<LoginView>>,
     monitor_scale: f32,
+    ime: &mut Option<LobbyIme>,
 ) -> Option<LoginChoice> {
     const CHOICES: [LoginChoice; 3] = [LoginChoice::LogIn, LoginChoice::Create, LoginChoice::Exit];
     let n = fields.len();
@@ -1345,6 +1377,13 @@ fn login_window(
             _ => "Enter your account information to log in.",
         }
     };
+    // An editable field asks for the soft keyboard (Android shows it from the IME request). A click on it asks
+    // again, so one the player closed comes back. A read-only combo, a button, or a busy form leaves it down.
+    *ime = (!busy && *focus < n && !fields[*focus].read_only).then(|| LobbyIme {
+        rect: field_rect(*focus),
+        password: fields[*focus].secret,
+        retap: input.clicked && input.pointer.is_some_and(|p| inside(&field_rect(*focus), p)),
+    });
     let slots = lu.title_with(sw, sh, None, 0, [true; 5], 0, None, true, modern.is_some());
     let help_colour = if help_over.is_some() || busy || status.is_empty() { WHITE } else { YELLOW };
     let shown = |x: &LoginField| if x.secret { "*".repeat(x.text.chars().count()) } else { x.text.clone() };
@@ -8994,6 +9033,9 @@ pub struct App {
     mouse: mousecur::MouseCursor,
     /// A lobby or login error (or the new account's notice) waiting in the OK window on the login screen.
     login_error: Option<String>,
+    /// The lobby field that should take Android's soft keyboard this frame (login, rename, creator name, …).
+    #[cfg(target_os = "android")]
+    lobby_ime: std::cell::Cell<Option<LobbyIme>>,
     /// The backdrop behind a lobby run (lobbywin 85): ptcbgwin at the lobby entry, hnbackwi at the log-in.
     backdrop: Option<Backdrop>,
     /// A failed log-in run's popup over its backdrop; OK goes back to the title menu (FUN_10241200's -1).
@@ -9186,6 +9228,8 @@ impl App {
             drag_from: None,
             stand_sent: false,
             mouse: Default::default(),
+            #[cfg(target_os = "android")]
+            lobby_ime: std::cell::Cell::new(None),
             wheel: 0.0,
             list_wheel: 0.0,
             mods: Default::default(),
@@ -15438,6 +15482,14 @@ impl App {
     fn ui(&mut self, ctx: &egui::Context, window: [u32; 2]) {
         let mut action: Option<Box<dyn FnOnce(&mut App)>> = None;
         self.ui_drawn = false;
+        // Set again only while a pre-world field wants it; anything else leaves the soft keyboard down.
+        #[cfg(target_os = "android")]
+        {
+            self.lobby_ime.set(None);
+            if let Some(m) = self.modern.as_mut() {
+                m.lobby_ime.set(None);
+            }
+        }
         // Config-tool 0037 / 0038: the UI is laid out at its size and stretched to the window.
         let size = self.cfg.ui_size(window);
         self.ui_k = (size[0] as f32 / window[0].max(1) as f32, size[1] as f32 / window[1].max(1) as f32);
@@ -15666,6 +15718,7 @@ impl App {
                     let mut sounds = Vec::new();
                     let modern_ui = self.cfg.modern_ui;
                     let mut view = None;
+                    let mut field_ime = None;
                     let update_help = self.update_ui.as_ref().map(|u| u.help());
                     let help_over = update_help.as_deref().or_else(|| self.twofa.as_ref().map(|t| t.help()));
                     // Not retail: Update while something is out of date.
@@ -15688,7 +15741,15 @@ impl App {
                         &mut sounds,
                         modern_ui.then_some(&mut view),
                         ctx.native_pixels_per_point().unwrap_or(1.0),
+                        &mut field_ime,
                     );
+                    // The error, Update, and account windows cover the form. The account window asks for its own field.
+                    #[cfg(target_os = "android")]
+                    if self.login_error.is_none() && self.update_ui.is_none() && self.twofa.is_none() && !busy {
+                        self.lobby_ime.set(field_ime);
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    let _ = field_ime;
                     drop(fields);
                     // Trust this computer is the account's: unticked, its token goes at once.
                     if trusted != self.cfg.trust_computer {
@@ -15761,9 +15822,26 @@ impl App {
                         }
                     }
                     // The two-factor window over the form (client/twofa.rs).
+                    #[cfg(target_os = "android")]
+                    let mut account_ime = None;
                     if let Some(t) = self.twofa.as_mut() {
                         let mut tv = None;
                         let act = twofa::window(lu, &input, size, t, busy, &mut sounds, modern_ui.then_some(&mut tv));
+                        // The account window's own field, not the form's under it.
+                        #[cfg(target_os = "android")]
+                        {
+                            account_ime = (!busy && !matches!(act, Some(twofa::Act::Close)))
+                                .then(|| t.keyboard())
+                                .flatten()
+                                .map(|password| LobbyIme {
+                                    rect: tv
+                                        .as_ref()
+                                        .and_then(|v| v.fields.get(v.focus).map(|(r, _)| *r))
+                                        .unwrap_or([0.0, 0.0, 2.0, 16.0]),
+                                    password,
+                                    retap: input.clicked,
+                                });
+                        }
                         if let Some(v) = &tv {
                             self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).twofa_window(
                                 ctx,
@@ -15792,6 +15870,10 @@ impl App {
                             }
                             None => {}
                         }
+                    }
+                    #[cfg(target_os = "android")]
+                    if self.twofa.is_some() && self.login_error.is_none() {
+                        self.lobby_ime.set(account_ime);
                     }
                     // The Update window over the form (client/updater.rs): before the login, so an old client can
                     // always reach it.
@@ -16533,6 +16615,28 @@ impl App {
                             out.action = out.action.or(more.action);
                             out.moved = more.moved.or(out.moved);
                             out.input |= more.input;
+                            #[cfg(target_os = "android")]
+                            if !busy && matches!(self.select_ui.focus, select::Focus::Rename(_))
+                                && let Some(h) = m.lobby_ime.take()
+                            {
+                                self.lobby_ime.set(Some(lobby_ime_from_hint(
+                                    h,
+                                    ctx.pixels_per_point(),
+                                    self.ui_k,
+                                )));
+                            }
+                        }
+                        #[cfg(target_os = "android")]
+                        if !modern_ui
+                            && !busy
+                            && matches!(self.select_ui.focus, select::Focus::Rename(_))
+                        {
+                            let r = gu.chmkname_field_rect(sw, sh);
+                            self.lobby_ime.set(Some(LobbyIme {
+                                rect: r,
+                                password: false,
+                                retap: input.clicked && input.pointer.is_some_and(|p| inside(&r, p)),
+                            }));
                         }
                         if let Some(a) = self.audio.as_mut() {
                             for s in &out.sounds {
@@ -16771,6 +16875,32 @@ impl App {
                         } else {
                             (creator::draw_ui(gu, &view, sw, sh, status_line, None), creator::Pointer::default())
                         };
+                        #[cfg(target_os = "android")]
+                        if step == 5
+                            && !name_hidden
+                            && self.creator_world.is_none()
+                            && self.creator_ok.is_none()
+                            && !busy
+                        {
+                            if modern_ui {
+                                if let Some(m) = self.modern.as_ref()
+                                    && let Some(h) = m.lobby_ime.take()
+                                {
+                                    self.lobby_ime.set(Some(lobby_ime_from_hint(
+                                        h,
+                                        ctx.pixels_per_point(),
+                                        self.ui_k,
+                                    )));
+                                }
+                            } else {
+                                let r = gu.chmkname_field_rect(sw, sh);
+                                self.lobby_ime.set(Some(LobbyIme {
+                                    rect: r,
+                                    password: false,
+                                    retap: input.clicked && input.pointer.is_some_and(|p| inside(&r, p)),
+                                }));
+                            }
+                        }
                         let pointer = input.pointer.filter(|_| !busy);
                         let mut check = false;
                         if modern_ui {
@@ -18527,7 +18657,62 @@ impl App {
         } else {
             self.mouse.invalidate();
         }
-        // The open chat line takes an IME (ours): its caret places the candidate window; closed, the IME is off.
+        // Pre-world text fields (login, rename, creator name, …) take an IME on Android: that is what shows the soft
+        // keyboard. A click on the field asks again, so one the player closed comes back.
+        #[cfg(target_os = "android")]
+        if platform.ime.is_none()
+            && let Some(ime) = self.lobby_ime.take()
+        {
+            let (ppp, k) = (ctx.pixels_per_point(), self.ui_k);
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(ime.rect[0] / k.0 / ppp, ime.rect[1] / k.1 / ppp),
+                egui::vec2(ime.rect[2] / k.0 / ppp, ime.rect[3] / k.1 / ppp),
+            );
+            platform.ime = Some(egui::output::IMEOutput {
+                purpose: if ime.password { egui::IMEPurpose::Password } else { egui::IMEPurpose::Normal },
+                rect,
+                cursor_rect: rect,
+                should_interrupt_composition: ime.retap,
+            });
+        }
+        // An open text field takes an IME on Android (chat caret when known, else a bottom band for window fields).
+        #[cfg(target_os = "android")]
+        if let Phase::World(w) = &self.phase
+            && text_field_open(w)
+            && platform.ime.is_none()
+        {
+            let (ppp, k) = (ctx.pixels_per_point(), self.ui_k);
+            let rect = if w.typing {
+                if w.modern {
+                    self.modern.as_ref().and_then(|m| m.ime_caret.take())
+                } else {
+                    w.ime_at.take().map(|r| {
+                        egui::Rect::from_min_size(
+                            egui::pos2(r[0] / k.0 / ppp, r[1] / k.1 / ppp),
+                            egui::vec2(r[2] / k.0 / ppp, r[3] / k.1 / ppp),
+                        )
+                    })
+                }
+            } else {
+                None
+            };
+            let rect = rect.or_else(|| {
+                let (sw, sh) = (size[0] as f32, size[1] as f32);
+                Some(egui::Rect::from_min_size(
+                    egui::pos2(16.0 / k.0 / ppp, (sh - 56.0) / k.1 / ppp),
+                    egui::vec2((sw - 32.0) / k.0 / ppp, 40.0 / k.1 / ppp),
+                ))
+            });
+            if let Some(rect) = rect {
+                platform.ime = Some(egui::output::IMEOutput {
+                    purpose: egui::IMEPurpose::Normal,
+                    rect,
+                    cursor_rect: rect,
+                    should_interrupt_composition: false,
+                });
+            }
+        }
+        #[cfg(not(target_os = "android"))]
         if let Phase::World(w) = &self.phase
             && w.typing
             && platform.ime.is_none()

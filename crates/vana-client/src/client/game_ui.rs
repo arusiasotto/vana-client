@@ -2838,6 +2838,14 @@ impl GameUi {
     /// The chmkname window's contents (FUN_1022d9b0): the name at window + (0x10, 4), first letter upper case and
     /// the rest lower (FUN_1022dc60); while `active`, the caret on for frames 16..29 of every 30 and sprite 140 at
     /// child 2 (FUN_1015ed80: only with the focus).
+    /// The chmkname name field in UI pixels (creator rename and name step, classic and for Android IME).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn chmkname_field_rect(&self, w: f32, h: f32) -> [f32; 4] {
+        let Some(m) = self.data.lobby.menu("menu    chmkname") else { return [0.0, 0.0, 2.0, 16.0] };
+        let (fx, fy, fw, fh) = screens::frame_rect(m, w, h, 1.0, 1.0);
+        [fx + 16.0, fy + 4.0, (fw - 32.0).max(2.0), (fh - 8.0).max(16.0)]
+    }
+
     pub fn name_entry(&mut self, name: &str, active: bool, w: f32, h: f32) {
         let Some(m) = self.data.lobby.menu("menu    chmkname") else { return };
         let (x, y) = screens::window_pos(m, w, h, 1.0, 1.0);

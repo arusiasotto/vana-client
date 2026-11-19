@@ -107,6 +107,8 @@ pub struct Modern {
     chat_seen: std::cell::RefCell<[Option<usize>; 11]>,
     /// The login form's text size (lobby.rs), for the lobby's popups.
     lobby_text: std::cell::Cell<f32>,
+    /// A pre-world text field drawn this frame (rename, creator name), for Android IME in `App::ui`.
+    pub(crate) lobby_ime: std::cell::Cell<Option<super::LobbyImeHint>>,
     /// The windows' background opacity (config `modern_opacity`).
     opacity: std::cell::Cell<f32>,
     /// The panel a drag has really moved (show): a press alone moves nothing.
@@ -212,6 +214,7 @@ impl Modern {
             chat_seen: Default::default(),
             dragging: Default::default(),
             lobby_text: Default::default(),
+            lobby_ime: Default::default(),
             opacity: std::cell::Cell::new(0.85),
             row_style: Default::default(),
             border_style: Default::default(),

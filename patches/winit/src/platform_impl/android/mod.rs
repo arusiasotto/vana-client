@@ -1164,10 +1164,14 @@ impl Window {
     pub fn set_ime_cursor_area(&self, _position: Position, _size: Size) {}
 
     pub fn set_ime_allowed(&self, allowed: bool) {
+        // Explicit, not SHOW_IMPLICIT. The login form is not an EditText, and an implicit request is
+        // dropped ("view is not served" / "may not be shown"), including after the player closes the
+        // keyboard and taps the field again. Hide must not be HIDE_IMPLICIT_ONLY or an explicit
+        // keyboard stays up.
         if allowed {
-            self.app.show_soft_input(true);
+            self.app.show_soft_input(false);
         } else {
-            self.app.hide_soft_input(true);
+            self.app.hide_soft_input(false);
         }
     }
 
