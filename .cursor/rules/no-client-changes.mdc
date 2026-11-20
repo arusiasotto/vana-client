@@ -1,0 +1,17 @@
+---
+description: Mod work stays in the mod; the client is not changed without the user's express permission
+alwaysApply: true
+---
+
+# No client changes without express permission
+
+Work on a mod stays inside that mod's folder (for example `crates/vana-client/assets/mods/hotbar/`), plus
+`catalogue/mods.json` when the mod's version changes.
+
+Do not edit the client itself without the user's express permission for that change: anything else under
+`crates/` (Rust sources, other crates), `docs/`, build files, or shared assets.
+
+- When a request seems to need a client change (a missing API, a setting the client draws for every mod), stop and
+  ask first: say what would change, why the mod cannot do it alone, and offer a mod-only alternative if there is one.
+- "Individual Config" style requests for a mod mean a setting in that mod's `mod.toml`, not the client's mod page.
+- Permission covers only the change asked about; ask again for the next one.

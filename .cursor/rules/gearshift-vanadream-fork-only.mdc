@@ -1,0 +1,22 @@
+---
+description: Vanadreams gearshift fork stays on arusiasotto; never PR to lenonk upstream
+alwaysApply: true
+---
+
+# `gearshift-vanadream` is fork-only (not Leo’s upstream)
+
+**`crates/vana-client/assets/mods/gearshift-vanadream/`** is a **Vanadreams server** mod (vanagear port, trustgear, server item tables). Leo maintains **lenonk/vana-client** and does **not** want to carry server-specific mods in that repo.
+
+## Do
+
+- Keep all work on this mod under its folder (and `catalogue/mods.json` **only** when the user is publishing from **their fork**).
+- Commit and push to **`origin`** (e.g. `arusiasotto/vana-client`), typically branch **`vanagear`** or other user-owned branches.
+- Treat **`upstream`** (`lenonk/vana-client`) as **client + generic mods** only.
+
+## Do not
+
+- Open a PR to **`upstream`** / **lenonk/vana-client** that adds, updates, or catalogs **`gearshift-vanadream`**.
+- **`git push upstream`** (or merge into a branch meant for Leo) with this mod or its catalogue entry.
+- Add **`gearshift-vanadream`** to **`catalogue/mods.json`** on **`master`** (or any branch the user intends to contribute upstream) unless the user **explicitly** overrides this rule for a one-off.
+
+If the user asks to “push upstream” or “open a PR to Leo,” **exclude** `gearshift-vanadream/` and related catalogue lines; say that this mod belongs on **origin** only.
