@@ -1,5 +1,5 @@
 name = "Client Tweaks"
-version = "1.0.0"
+version = "1.1.0"
 description = "Switches for the game's built-in waits and a few display choices (the config and delay add-ons)."
 permissions = []
 
@@ -26,6 +26,18 @@ type = "bool"
 default = false
 label = "Instant Log Lines"
 help = "New log lines show at once instead of sliding in."
+
+[settings.no_move_lock]
+type = "bool"
+default = false
+label = "No Action Move Lock"
+help = "You can walk while a job ability or weapon draw would normally hold you in place."
+
+[settings.walk_through_players]
+type = "bool"
+default = false
+label = "Walk Through Players"
+help = "Other players never block your step. NPCs and monsters still do."
 
 [settings.dead_commands]
 type = "bool"
