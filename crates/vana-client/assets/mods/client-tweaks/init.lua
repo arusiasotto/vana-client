@@ -4,6 +4,8 @@ local SWITCHES = {
   { "instant_auction", "ah_result_delay", true },
   { "instant_equipsets", "equipset_delay", true },
   { "instant_log", "log_slide", true },
+  { "no_move_lock", "move_lock", true },
+  { "walk_through_players", "player_collision", true },
   { "dead_commands", "dead_commands", false },
   { "ttf_text", "ttf_text", false },
 }
