@@ -208,7 +208,7 @@ pub(crate) fn forget_server_tls_pins(host: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Classic UI login error with Trust server and OK (menu ptc6yesn repurposed).
+/// Trust server / OK on the classic yes-no error window (menu ptc6yesn).
 pub(crate) enum CertTrustAction {
     None,
     Dismiss,

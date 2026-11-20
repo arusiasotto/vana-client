@@ -735,6 +735,7 @@ pub fn topbar_shot(
             &mut Vec::new(),
             None,
             1.0,
+            #[cfg(target_os = "android")]
             &mut None,
         );
         if let Some(t) = twofa.as_mut() {

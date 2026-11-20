@@ -960,24 +960,20 @@ pub struct LoginView {
     pub busy: bool,
 }
 
-/// A pre-world text field that should take Android's soft keyboard. `rect` is UI pixels. `retap` is a click on that
-/// field this frame, so a keyboard the player closed comes back. Filled on every platform; only the Android build reads
-/// it.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg(target_os = "android")]
 pub(crate) struct LobbyIme {
     rect: [f32; 4],
     password: bool,
     retap: bool,
 }
 
-/// Modern lobby panels lay the field out in egui points; convert when handing off to [`LobbyIme`].
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg(target_os = "android")]
 pub(crate) struct LobbyImeHint {
     pub rect: egui::Rect,
     pub retap: bool,
 }
 
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg(target_os = "android")]
 pub(crate) fn lobby_ime_from_hint(h: LobbyImeHint, ppp: f32, ui_k: (f32, f32)) -> LobbyIme {
     LobbyIme {
         rect: [
@@ -1075,7 +1071,7 @@ fn login_window(
     sounds: &mut Vec<crate::audio::Ui>,
     modern: Option<&mut Option<LoginView>>,
     monitor_scale: f32,
-    ime: &mut Option<LobbyIme>,
+    #[cfg(target_os = "android")] ime: &mut Option<LobbyIme>,
 ) -> Option<LoginChoice> {
     const CHOICES: [LoginChoice; 3] = [LoginChoice::LogIn, LoginChoice::Create, LoginChoice::Exit];
     let n = fields.len();
@@ -1422,13 +1418,14 @@ fn login_window(
             _ => "Enter your account information to log in.",
         }
     };
-    // An editable field asks for the soft keyboard (Android shows it from the IME request). A click on it asks
-    // again, so one the player closed comes back. A read-only combo, a button, or a busy form leaves it down.
-    *ime = (!busy && *focus < n && !fields[*focus].read_only).then(|| LobbyIme {
-        rect: field_rect(*focus),
-        password: fields[*focus].secret,
-        retap: input.clicked && input.pointer.is_some_and(|p| inside(&field_rect(*focus), p)),
-    });
+    #[cfg(target_os = "android")]
+    {
+        *ime = (!busy && *focus < n && !fields[*focus].read_only).then(|| LobbyIme {
+            rect: field_rect(*focus),
+            password: fields[*focus].secret,
+            retap: input.clicked && input.pointer.is_some_and(|p| inside(&field_rect(*focus), p)),
+        });
+    }
     let slots = lu.title_with(sw, sh, None, 0, [true; 5], 0, None, true, modern.is_some());
     let help_colour = if help_over.is_some() || busy || status.is_empty() { WHITE } else { YELLOW };
     let shown = |x: &LoginField| if x.secret { "*".repeat(x.text.chars().count()) } else { x.text.clone() };
@@ -8995,7 +8992,6 @@ pub struct App {
     monitors: Vec<(String, String)>,
     gpus: Vec<String>,
     index: Option<Arc<DatIndex>>,
-    /// Android: a worker is building `index` and the FFXiMain tables before the UI needs them.
     #[cfg(target_os = "android")]
     index_warm: LoadState,
     /// Installed-content mask (ROM2..): title music and lobycwin's tracks (FUN_1023ae80).
@@ -9081,7 +9077,6 @@ pub struct App {
     mouse: mousecur::MouseCursor,
     /// A lobby or login error (or the new account's notice) waiting in the OK window on the login screen.
     login_error: Option<String>,
-    /// The lobby field that should take Android's soft keyboard this frame (login, rename, creator name, …).
     #[cfg(target_os = "android")]
     lobby_ime: std::cell::Cell<Option<LobbyIme>>,
     /// The backdrop behind a lobby run (lobbywin 85): ptcbgwin at the lobby entry, hnbackwi at the log-in.
@@ -15579,7 +15574,6 @@ impl App {
     fn ui(&mut self, ctx: &egui::Context, window: [u32; 2]) {
         let mut action: Option<Box<dyn FnOnce(&mut App)>> = None;
         self.ui_drawn = false;
-        // Set again only while a pre-world field wants it; anything else leaves the soft keyboard down.
         #[cfg(target_os = "android")]
         {
             self.lobby_ime.set(None);
@@ -15815,6 +15809,7 @@ impl App {
                     let mut sounds = Vec::new();
                     let modern_ui = self.cfg.modern_ui;
                     let mut view = None;
+                    #[cfg(target_os = "android")]
                     let mut field_ime = None;
                     let update_help = self.update_ui.as_ref().map(|u| u.help());
                     let help_over = update_help.as_deref().or_else(|| self.twofa.as_ref().map(|t| t.help()));
@@ -15838,15 +15833,13 @@ impl App {
                         &mut sounds,
                         modern_ui.then_some(&mut view),
                         ctx.native_pixels_per_point().unwrap_or(1.0),
+                        #[cfg(target_os = "android")]
                         &mut field_ime,
                     );
-                    // The error, Update, and account windows cover the form. The account window asks for its own field.
                     #[cfg(target_os = "android")]
                     if self.login_error.is_none() && self.update_ui.is_none() && self.twofa.is_none() && !busy {
                         self.lobby_ime.set(field_ime);
                     }
-                    #[cfg(not(target_os = "android"))]
-                    let _ = field_ime;
                     drop(fields);
                     // Trust this computer is the account's: unticked, its token goes at once.
                     if trusted != self.cfg.trust_computer {
@@ -15924,7 +15917,6 @@ impl App {
                     if let Some(t) = self.twofa.as_mut() {
                         let mut tv = None;
                         let act = twofa::window(lu, &input, size, t, busy, &mut sounds, modern_ui.then_some(&mut tv));
-                        // The account window's own field, not the form's under it.
                         #[cfg(target_os = "android")]
                         {
                             account_ime = (!busy && !matches!(act, Some(twofa::Act::Close)))
@@ -16136,14 +16128,14 @@ impl App {
                             None => e.clone(),
                         };
                         let (sw, sh) = (size[0] as f32, size[1] as f32);
-                        #[cfg(target_os = "android")]
-                        let cert_mismatch = android::tls_pin_mismatch_message(&text);
                         #[cfg(not(target_os = "android"))]
-                        let cert_mismatch = false;
-                        if cert_mismatch {
-                            #[cfg(target_os = "android")]
-                            {
-                                let ack = if modern_ui {
+                        let login_err_ok = false;
+                        #[cfg(target_os = "android")]
+                        let mut login_err_ok = false;
+                        #[cfg(target_os = "android")]
+                        if android::tls_pin_mismatch_message(&text) {
+                            login_err_ok = true;
+                            let ack = if modern_ui {
                                     let r = lu.popup_rects("menu    ok", sw, sh);
                                     let frame = r.as_ref().map_or([0.0; 4], |r| lift(r.frame));
                                     self.modern
@@ -16152,10 +16144,10 @@ impl App {
                                 } else {
                                     match android::cert_trust_dialog(lu, &text, &input, sw, sh) {
                                         android::CertTrustAction::Trust => {
-                                            modern::lobby::LoginErrorAck::Trust
+                                            modern::LoginErrorAck::Trust
                                         }
-                                        android::CertTrustAction::Dismiss => modern::lobby::LoginErrorAck::Ok,
-                                        _ => modern::lobby::LoginErrorAck::None,
+                                        android::CertTrustAction::Dismiss => modern::LoginErrorAck::Ok,
+                                        _ => modern::LoginErrorAck::None,
                                     }
                                 };
                                 let key_dismiss = input.events.iter().any(|ev| {
@@ -16168,13 +16160,13 @@ impl App {
                                         }
                                     )
                                 });
-                                let ack = if key_dismiss && ack == modern::lobby::LoginErrorAck::None {
-                                    modern::lobby::LoginErrorAck::Ok
+                                let ack = if key_dismiss && ack == modern::LoginErrorAck::None {
+                                    modern::LoginErrorAck::Ok
                                 } else {
                                     ack
                                 };
                                 match ack {
-                                    modern::lobby::LoginErrorAck::Trust => {
+                                    modern::LoginErrorAck::Trust => {
                                         let host = self.cfg.server.clone();
                                         match android::forget_server_tls_pins(&host) {
                                             Ok(()) => {
@@ -16191,16 +16183,16 @@ impl App {
                                             a.ui(crate::audio::Ui::Select);
                                         }
                                     }
-                                    modern::lobby::LoginErrorAck::Ok => {
+                                    modern::LoginErrorAck::Ok => {
                                         self.login_error = None;
                                         if let Some(a) = self.audio.as_mut() {
                                             a.ui(crate::audio::Ui::Select);
                                         }
                                     }
-                                    modern::lobby::LoginErrorAck::None => {}
+                                    modern::LoginErrorAck::None => {}
                                 }
-                            }
-                        } else {
+                        }
+                        if !login_err_ok {
                             let key = input.events.iter().any(|ev| {
                                 matches!(
                                     ev,
@@ -18848,8 +18840,6 @@ impl App {
         } else {
             self.mouse.invalidate();
         }
-        // Pre-world text fields (login, rename, creator name, …) take an IME on Android: that is what shows the soft
-        // keyboard. A click on the field asks again, so one the player closed comes back.
         #[cfg(target_os = "android")]
         if platform.ime.is_none()
             && let Some(ime) = self.lobby_ime.take()
@@ -18866,7 +18856,6 @@ impl App {
                 should_interrupt_composition: ime.retap,
             });
         }
-        // An open text field takes an IME on Android (chat caret when known, else a bottom band for window fields).
         #[cfg(target_os = "android")]
         if let Phase::World(w) = &self.phase
             && text_field_open(w)
