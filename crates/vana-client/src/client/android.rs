@@ -112,8 +112,14 @@ impl App {
         self.audio_tried = false;
         self.index = None;
         self.keys_table = None;
+        self.knock_table = None;
+        self.search_words = None;
+        self.blu_data = None;
+        self.cnq_tables = None;
+        self.index_warm = LoadState::Idle;
         self.game_ui_state = LoadState::Idle;
         self.flyover_state = LoadState::Idle;
+        self.start_index_warm();
         if let Err(e) = self.cfg.save() {
             log::warn!("saving the config: {e:#}");
         }

@@ -237,6 +237,8 @@ impl Task {
             Task::NameChecked(_) => "name check",
             Task::Created(_) => "created",
             Task::TwoFa(_) => "two-factor",
+            #[cfg(target_os = "android")]
+            Task::GameDataWarm(_) => "game data",
         }
     }
 }
@@ -304,6 +306,49 @@ enum Task {
     Furniture(Result<furniture::Loaded>),
     /// A ship's model (client/ships.rs).
     Ship(Result<ships::Loaded>),
+    /// Android: `DatIndex` and FFXiMain tables off the UI thread (client startup).
+    #[cfg(target_os = "android")]
+    GameDataWarm(Result<GameDataLoaded>),
+}
+
+/// What `game_data()` caches after reading the install (may be built on a worker on Android).
+struct GameDataLoaded {
+    index: Arc<DatIndex>,
+    keys_table: Arc<zone::Keys>,
+    knock_table: Option<[[f32; 3]; 8]>,
+    search_words: Option<Arc<crate::dat::tables::SearchWords>>,
+    blu_data: Arc<crate::dat::blumagic::BluData>,
+    cnq_tables: Option<Arc<crate::dat::tables::CnqTables>>,
+    point_files: [Option<u32>; 6],
+    msg_files: [Option<u32>; 11],
+    ffximain: Vec<u8>,
+}
+
+fn read_game_data(ffxi_dir: &std::path::Path) -> Result<GameDataLoaded> {
+    let index = Arc::new(DatIndex::open(ffxi_dir)?);
+    let ffximain = std::fs::read(crate::dat::ffximain(ffxi_dir))?;
+    let keys_table = Arc::new(zone::Keys::from_ffximain(&ffximain)?);
+    let knock_table = crate::dat::tables::knockback(&ffximain).ok();
+    let search_words =
+        crate::dat::tables::search_words(&ffximain).map_err(|e| log::warn!("{e:#}")).ok().map(Arc::new);
+    let blu_desc = crate::dat::msg::current_slot_file(&ffximain, 1, 0x1a);
+    let blu_data = Arc::new(crate::dat::blumagic::BluData::load(&index, blu_desc));
+    let cnq_tables = crate::dat::tables::conquest(&ffximain).map_err(|e| log::warn!("{e:#}")).ok().map(Arc::new);
+    let point_files = [0x1d, 0x1e, 0x1f, 0x20, 0x21, maze::TEXT_SLOT]
+        .map(|slot| crate::dat::msg::current_slot_file(&ffximain, 1, slot));
+    let msg_files = [0, 0, 0x63, 0x64, 0x65, 0x66, 0x68, 0x69, 0, 0, 0x6a]
+        .map(|slot| (slot != 0).then(|| crate::dat::msg::current_slot_file(&ffximain, 1, slot)).flatten());
+    Ok(GameDataLoaded {
+        index,
+        keys_table,
+        knock_table,
+        search_words,
+        blu_data,
+        cnq_tables,
+        point_files,
+        msg_files,
+        ffximain,
+    })
 }
 
 /// A pick read-back key: bit 63, the actor, a bone or 0x8000 | attach point.
@@ -8950,6 +8995,9 @@ pub struct App {
     monitors: Vec<(String, String)>,
     gpus: Vec<String>,
     index: Option<Arc<DatIndex>>,
+    /// Android: a worker is building `index` and the FFXiMain tables before the UI needs them.
+    #[cfg(target_os = "android")]
+    index_warm: LoadState,
     /// Installed-content mask (ROM2..): title music and lobycwin's tracks (FUN_1023ae80).
     installed: u32,
     keys_table: Option<Arc<zone::Keys>>,
@@ -9209,7 +9257,8 @@ impl App {
         let notes_check = drive_checks || std::env::var_os("FFXI_NOTES_CHECK").is_some();
         let notes_fetch = (whats_new.is_none() && notes_check && notes::due(&cfg.notes_seen))
             .then(|| notes::fetch_since(cfg.notes_seen.clone()));
-        Self {
+        #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+        let mut app = Self {
             cfg,
             applied_volumes: None,
             drive,
@@ -9269,6 +9318,8 @@ impl App {
             gpus: Vec::new(),
             nation: NationShow::default(),
             index: None,
+            #[cfg(target_os = "android")]
+            index_warm: LoadState::Idle,
             installed,
             keys_table: None,
             knock_table: None,
@@ -9353,7 +9404,12 @@ impl App {
             audio_tried: false,
             music_scene: MusicScene::None,
             music_created: false,
+        };
+        #[cfg(target_os = "android")]
+        if app.cfg.ffxi_dir().join("VTABLE.DAT").is_file() {
+            app.start_index_warm();
         }
+        app
     }
 
     /// Puts changed settings into effect: window size and mode, frame limit, anisotropy (new samplers), volumes.
@@ -9930,22 +9986,46 @@ impl App {
         self.drive.input.as_ref().map_or(self.drive.shot_taken, |s| s.finished())
     }
 
+    fn apply_game_data(&mut self, g: GameDataLoaded) {
+        self.index = Some(g.index);
+        self.keys_table = Some(g.keys_table);
+        self.knock_table = g.knock_table;
+        self.search_words = g.search_words;
+        self.blu_data = Some(g.blu_data);
+        self.cnq_tables = g.cnq_tables;
+        self.point_files = g.point_files;
+        self.msg_files = g.msg_files;
+        self.input.load(&g.ffximain);
+    }
+
+    #[cfg(target_os = "android")]
+    fn start_index_warm(&mut self) {
+        if self.index.is_some() || self.index_warm == LoadState::Loading {
+            return;
+        }
+        self.index_warm = LoadState::Loading;
+        let dir = self.cfg.ffxi_dir();
+        let tx = self.tasks_tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Task::GameDataWarm(read_game_data(&dir)));
+        });
+    }
+
     fn game_data(&mut self) -> Result<(Arc<DatIndex>, Arc<zone::Keys>)> {
         if self.index.is_none() {
-            self.index = Some(Arc::new(DatIndex::open(&self.cfg.ffxi_dir())?));
-            let dll = std::fs::read(crate::dat::ffximain(&self.cfg.ffxi_dir()))?;
-            self.keys_table = Some(Arc::new(zone::Keys::from_ffximain(&dll)?));
-            self.knock_table = crate::dat::tables::knockback(&dll).ok();
-            self.search_words =
-                crate::dat::tables::search_words(&dll).map_err(|e| log::warn!("{e:#}")).ok().map(Arc::new);
-            let blu_desc = crate::dat::msg::current_slot_file(&dll, 1, 0x1a);
-            self.blu_data = Some(Arc::new(crate::dat::blumagic::BluData::load(self.index.as_ref().unwrap(), blu_desc)));
-            self.cnq_tables = crate::dat::tables::conquest(&dll).map_err(|e| log::warn!("{e:#}")).ok().map(Arc::new);
-            self.point_files = [0x1d, 0x1e, 0x1f, 0x20, 0x21, maze::TEXT_SLOT]
-                .map(|slot| crate::dat::msg::current_slot_file(&dll, 1, slot));
-            self.msg_files = [0, 0, 0x63, 0x64, 0x65, 0x66, 0x68, 0x69, 0, 0, 0x6a]
-                .map(|slot| (slot != 0).then(|| crate::dat::msg::current_slot_file(&dll, 1, slot)).flatten());
-            self.input.load(&dll);
+            #[cfg(target_os = "android")]
+            {
+                match self.index_warm {
+                    LoadState::Loading => anyhow::bail!("game data loading"),
+                    LoadState::Failed => anyhow::bail!("game data failed to load"),
+                    LoadState::Idle => {
+                        self.start_index_warm();
+                        anyhow::bail!("game data loading");
+                    }
+                }
+            }
+            #[cfg(not(target_os = "android"))]
+            self.apply_game_data(read_game_data(&self.cfg.ffxi_dir())?);
         }
         Ok((self.index.clone().unwrap(), self.keys_table.clone().unwrap()))
     }
@@ -10197,6 +10277,23 @@ impl App {
             self.busy = false;
         }
         match task {
+            #[cfg(target_os = "android")]
+            Task::GameDataWarm(r) => {
+                self.index_warm = if r.is_ok() { LoadState::Idle } else { LoadState::Failed };
+                match r {
+                    Ok(g) => {
+                        log::info!("game data ready");
+                        self.apply_game_data(g);
+                        if self.game_ui_state == LoadState::Loading && self.game_ui.is_none() {
+                            self.load_game_ui();
+                        }
+                        if self.flyover_state == LoadState::Loading && self.flyover.is_none() {
+                            self.load_flyover();
+                        }
+                    }
+                    Err(e) => log::warn!("game data: {e:#}"),
+                }
+            }
             Task::Names(res) => match (res, &mut self.phase) {
                 (Ok((n, m)), Phase::World(w)) => {
                     log::info!("names loaded; text id map for {} zones", m.zones.len());
@@ -17831,9 +17928,23 @@ impl App {
             self.game_ui_state = LoadState::Failed;
             return;
         }
+        #[cfg(target_os = "android")]
+        if self.index.is_none() {
+            if self.index_warm == LoadState::Loading {
+                return;
+            }
+            if self.index_warm == LoadState::Idle {
+                self.start_index_warm();
+                return;
+            }
+        }
         let index = match self.game_data() {
             Ok((index, _)) => index,
             Err(e) => {
+                #[cfg(target_os = "android")]
+                if self.index_warm == LoadState::Loading {
+                    return;
+                }
                 log::warn!("lobby UI: {e:#}");
                 self.game_ui_state = LoadState::Failed;
                 return;
@@ -17858,7 +17969,21 @@ impl App {
     /// Loads a random title movie and its zone on a worker thread.
     fn load_flyover(&mut self) {
         self.flyover_state = LoadState::Loading;
+        #[cfg(target_os = "android")]
+        if self.index.is_none() {
+            if self.index_warm == LoadState::Loading {
+                return;
+            }
+            if self.index_warm == LoadState::Idle {
+                self.start_index_warm();
+                return;
+            }
+        }
         let Ok((index, keys)) = self.game_data() else {
+            #[cfg(target_os = "android")]
+            if self.index_warm == LoadState::Loading {
+                return;
+            }
             self.flyover_state = LoadState::Failed;
             return;
         };
