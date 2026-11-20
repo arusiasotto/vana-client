@@ -9231,12 +9231,9 @@ impl App {
         let (tasks_tx, tasks) = channel();
         let phase = Phase::login(&cfg);
         // Config 0022 (FUN_10010d20 state 1): the opening movie before the title; in a test drive only with FFXI_OPENING.
-        // No opening movie on Android.
-        let opening = (!cfg!(target_os = "android")
-            && cfg.tool("0022") != 0
-            && (!drive.driven() || std::env::var_os("FFXI_OPENING").is_some()))
-        .then(|| opening::Opening::open(&cfg.ffxi_dir().join("mov")))
-        .flatten();
+        let opening = (cfg.tool("0022") != 0 && (!drive.driven() || std::env::var_os("FFXI_OPENING").is_some()))
+            .then(|| opening::Opening::open(&cfg.ffxi_dir().join("mov")))
+            .flatten();
         let installed = crate::dat::installed(&cfg.ffxi_dir());
         let monitor = cfg.monitor.clone();
         // The executable's path while it is still the running file (a restart after an update needs it).
@@ -9401,7 +9398,7 @@ impl App {
             music_created: false,
         };
         #[cfg(target_os = "android")]
-        if app.cfg.ffxi_dir().join("VTABLE.DAT").is_file() {
+        if app.cfg.ffxi_dir().join("VTABLE.DAT").is_file() && crate::android_fs::has_all_files_access() {
             app.start_index_warm();
         }
         app
@@ -9995,6 +9992,9 @@ impl App {
 
     #[cfg(target_os = "android")]
     fn start_index_warm(&mut self) {
+        if !crate::android_fs::has_all_files_access() {
+            return;
+        }
         if self.index.is_some() || self.index_warm == LoadState::Loading {
             return;
         }
@@ -15631,25 +15631,32 @@ impl App {
             match fr.ui(ctx) {
                 firstrun::Action::Quit => self.exit_requested = true,
                 firstrun::Action::Ready => {
-                    // The folder may have been changed in the window: the config keeps it.
-                    self.cfg.game_dir = fr.game_dir().to_path_buf();
+                    let dir = fr.game_dir().to_path_buf();
                     self.first_run = None;
-                    // Audio opened on the empty folder (and the title music failed): open it on the new files.
-                    self.audio = None;
-                    self.audio_tried = false;
-                    self.index = None;
-                    self.keys_table = None;
-                    self.game_ui_state = LoadState::Idle;
-                    self.flyover_state = LoadState::Idle;
-                    self.cfg.installed = true;
-                    // From the fixed first-start window to the configured one.
-                    self.window_dirty = true;
-                    if let Err(e) = self.cfg.save() {
-                        log::warn!("saving the config: {e:#}");
-                    }
-                    self.updates = Some(updater::start(self.cfg.ffxi_dir(), uses_playonline(&self.cfg)));
                     #[cfg(target_os = "android")]
-                    self.gamepad.reload_retail(self.cfg.game_dir.clone());
+                    {
+                        log::info!("first start ready: {}", dir.display());
+                        self.status = "Loading game data…".into();
+                        self.android_use_game_dir(dir);
+                        self.window_dirty = true;
+                        self.scene_loads();
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        self.cfg.game_dir = dir;
+                        self.audio = None;
+                        self.audio_tried = false;
+                        self.index = None;
+                        self.keys_table = None;
+                        self.game_ui_state = LoadState::Idle;
+                        self.flyover_state = LoadState::Idle;
+                        self.cfg.installed = true;
+                        self.window_dirty = true;
+                        if let Err(e) = self.cfg.save() {
+                            log::warn!("saving the config: {e:#}");
+                        }
+                        self.updates = Some(updater::start(self.cfg.ffxi_dir(), uses_playonline(&self.cfg)));
+                    }
                 }
                 firstrun::Action::Begin(dir) => {
                     self.cfg.game_dir = dir;
@@ -17916,8 +17923,11 @@ impl App {
     fn load_game_ui(&mut self) {
         self.game_ui_state = LoadState::Loading;
         if firstrun::needed(&self.cfg.ffxi_dir()) {
-            self.first_run = Some(firstrun::FirstRun::new(self.cfg.game_dir.clone()));
-            self.game_ui_state = LoadState::Failed;
+            // scene_loads runs every frame while the UI is idle. Replacing the window drops the button's result.
+            if self.first_run.is_none() {
+                self.first_run = Some(firstrun::FirstRun::new(self.cfg.game_dir.clone()));
+            }
+            self.game_ui_state = LoadState::Idle;
             return;
         }
         #[cfg(target_os = "android")]
@@ -18047,10 +18057,13 @@ impl App {
         }
         let size = [gfx.config.width, gfx.config.height];
         let movie = self.movie.get_or_insert_with(|| crate::render::movie::Movie::new(&gfx.gpu, gfx.config.format));
-        if let Some(o) = self.opening.as_mut()
-            && let wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) =
-                gfx.surface.get_current_texture()
-        {
+        match gfx.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+        let Some(o) = self.opening.as_mut() else {
+            drop(frame);
+            self.gfx = Some(gfx);
+            return;
+        };
             if let Some(f) = o.fresh.take() {
                 movie.upload(&gfx.gpu, &f);
             }
@@ -18087,8 +18100,12 @@ impl App {
                 }
             }
             gfx.gpu.queue.present(frame);
-        } else {
-            gfx.surface.configure(&gfx.gpu.device, &gfx.config);
+            }
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                gfx.surface.configure(&gfx.gpu.device, &gfx.config);
+            }
+            // Timeout while the last movie frame is still on the GPU: configuring here waits it out on this thread.
+            _ => self.next_frame = Some(Instant::now() + std::time::Duration::from_millis(16)),
         }
         self.gfx = Some(gfx);
     }
@@ -21685,6 +21702,10 @@ impl ApplicationHandler for App {
             }
             #[cfg(target_os = "android")]
             WindowEvent::MouseInput { state, button, .. } => self.android_mouse_input(button, state),
+            #[cfg(target_os = "android")]
+            WindowEvent::Touch(touch) if self.opening.is_some() && touch.phase == winit::event::TouchPhase::Started => {
+                self.skip_opening();
+            }
             #[cfg(target_os = "android")]
             WindowEvent::Touch(touch) => self.android_touch(touch),
             WindowEvent::CursorMoved { position, .. } => {

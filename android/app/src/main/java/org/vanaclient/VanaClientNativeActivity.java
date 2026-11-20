@@ -1,6 +1,7 @@
 package org.vanaclient;
 
 import android.app.NativeActivity;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
@@ -21,15 +22,12 @@ import android.view.WindowManager;
  */
 public class VanaClientNativeActivity extends NativeActivity {
     private static final String TAG = "VanaClient";
-    private static final int REQUEST_FOLDER = 9001;
 
     static {
         System.loadLibrary("c++_shared");
         System.loadLibrary("vana_client");
     }
 
-    private static native void onFolderPicked(String path);
-    private static native void onFolderCancelled();
     private static native void nativeAfterUiActivity();
 
     @Override
@@ -109,29 +107,55 @@ public class VanaClientNativeActivity extends NativeActivity {
         });
     }
 
-    /** {@code startPath}: an absolute path on primary storage to open near, else Download. */
+    /** Writes the picker answer where Rust reads it (`files/folder-pick.txt`). Empty file = cancelled. */
+    static void storeFolderPickResult(Context context, String path) {
+        java.io.File out = new java.io.File(context.getFilesDir(), "folder-pick.txt");
+        java.io.File tmp = new java.io.File(context.getFilesDir(), "folder-pick.txt.tmp");
+        String body = path == null ? "" : path;
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(tmp)) {
+            fos.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            fos.getFD().sync();
+        } catch (java.io.IOException e) {
+            Log.e(TAG, "folder pick write", e);
+            return;
+        }
+        if (!tmp.renameTo(out)) {
+            Log.e(TAG, "folder pick rename failed");
+            return;
+        }
+        Log.i(TAG, "folder pick stored: '" + body + "'");
+        try (java.io.FileWriter w = new java.io.FileWriter(new java.io.File(context.getFilesDir(), "picker.log"), true)) {
+            w.write(body + "\n");
+        } catch (java.io.IOException ignored) {
+        }
+    }
+
+    static void clearFolderPickFile(Context context) {
+        java.io.File out = new java.io.File(context.getFilesDir(), "folder-pick.txt");
+        if (out.exists() && !out.delete()) {
+            Log.w(TAG, "folder pick file not cleared");
+        }
+    }
+
     public void requestFolderPicker(String startPath) {
         runOnUiThread(() -> {
             try {
-                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-                Uri initial = initialFolderUri(startPath);
-                if (initial != null) {
-                    intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, initial);
-                }
-                startActivityForResult(intent, REQUEST_FOLDER);
+                clearFolderPickFile(this);
+                Intent intent = new Intent(this, FolderPickerProxyActivity.class);
+                intent.putExtra("startPath", startPath);
+                startActivity(intent);
             } catch (RuntimeException e) {
                 Log.e(TAG, "folder picker", e);
-                onFolderCancelled();
+                storeFolderPickResult(this, null);
             }
         });
     }
 
-    private static Uri initialFolderUri(String startPath) {
+    static Uri initialFolderUri(String startPath) {
         String rel = primaryRelative(startPath);
         if (rel == null || rel.isEmpty()) {
             rel = "Download";
         } else {
-            // The parent, so the folder itself or one above it can be picked.
             int slash = rel.lastIndexOf('/');
             if (slash > 0) {
                 rel = rel.substring(0, slash);
@@ -153,27 +177,25 @@ public class VanaClientNativeActivity extends NativeActivity {
         return rel.startsWith("/") ? rel.substring(1) : rel;
     }
 
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (requestCode != REQUEST_FOLDER) {
-            super.onActivityResult(requestCode, resultCode, data);
-            return;
-        }
-        String path = resultCode == RESULT_OK && data != null && data.getData() != null ? treePath(data.getData()) : null;
-        if (path == null) {
-            onFolderCancelled();
-        } else {
-            onFolderPicked(path);
-        }
-    }
-
     /** The plain path of a tree on primary storage (read directly under All files access). */
-    private static String treePath(Uri treeUri) {
+    static String treePathFromUri(Uri treeUri) {
         String docId = DocumentsContract.getTreeDocumentId(treeUri);
-        if (docId == null || !docId.startsWith("primary:")) {
-            Log.w(TAG, "folder not on primary storage: " + docId);
+        if (docId == null) {
+            docId = DocumentsContract.getDocumentId(treeUri);
+        }
+        if (docId == null) {
+            Log.w(TAG, "folder picker: no document id in " + treeUri);
             return null;
         }
-        return Environment.getExternalStorageDirectory().getAbsolutePath() + "/" + Uri.decode(docId.substring(8));
+        String decoded = Uri.decode(docId);
+        if (decoded.startsWith("raw:")) {
+            return decoded.substring(4);
+        }
+        if (!decoded.startsWith("primary:")) {
+            Log.w(TAG, "folder not on primary storage: " + decoded);
+            return null;
+        }
+        String rel = decoded.substring("primary:".length());
+        return Environment.getExternalStorageDirectory().getAbsolutePath() + "/" + rel;
     }
 }

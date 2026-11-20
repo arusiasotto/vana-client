@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 /// PlayOnline's page for the five FFXIFullSetup volumes (the browser downloads them; the install reads them locally).
-const SE_CLIENT_DOWNLOAD: &str = "https://www.playonline.com/ff11us/download/us/download_a.html";
+const SE_CLIENT_DOWNLOAD: &str = "https://www.playonline.com/ff11us/download/media/install_win.html";
 
 fn downloads() -> PathBuf {
     crate::config::downloads_dir().unwrap_or_default()
@@ -58,11 +58,12 @@ fn short_path(p: &Path) -> String {
     if n > 44 { format!("…{}", s.chars().skip(n - 40).collect::<String>()) } else { s }
 }
 
-/// What the system folder picker is open for.
+/// Which choice the in-app folder list is filling in.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Browse {
     Existing,
     Archives,
+    InstallTo,
 }
 
 pub struct FirstRun {
@@ -74,10 +75,38 @@ pub struct FirstRun {
     /// The folder with the installer volumes, as typed.
     archive_path_input: String,
     browse: Option<Browse>,
+    /// Folder the in-app list is showing while `browse` is set.
+    browser_at: PathBuf,
     note: String,
 }
 
 impl FirstRun {
+    /// The game folder (parent of `FINAL FANTASY XI`) if the install path field resolves.
+    fn resolved_game_dir(&self) -> Option<PathBuf> {
+        let typed = PathBuf::from(self.path_input.trim());
+        let pick = if typed.as_os_str().is_empty() { self.game_dir.clone() } else { typed };
+        existing(&pick).ok()
+    }
+
+    fn try_start(&mut self, action: &mut Action) {
+        self.note.clear();
+        if !crate::android_fs::has_all_files_access() {
+            self.note = "Turn on All files access (step 1), then tap Start.".into();
+            return;
+        }
+        let typed = PathBuf::from(self.path_input.trim());
+        let pick = if typed.as_os_str().is_empty() { self.game_dir.clone() } else { typed };
+        match existing(&pick) {
+            Ok(game_dir) => {
+                log::info!("starting with game files in {}", game_dir.display());
+                self.path_input = game_dir.display().to_string();
+                self.game_dir = game_dir;
+                *action = Action::Ready;
+            }
+            Err(e) => self.note = format!("{e:#}"),
+        }
+    }
+
     pub fn new(game_dir: PathBuf) -> Self {
         // Configs from before shared storage kept the game in app storage.
         let game_dir =
@@ -89,6 +118,7 @@ impl FirstRun {
             stage: Arc::new(Mutex::new(Stage::Ask)),
             progress: Arc::new(Progress::default()),
             browse: None,
+            browser_at: crate::client::folder_pick::storage_root(),
             note: String::new(),
         }
     }
@@ -164,39 +194,78 @@ impl FirstRun {
         });
     }
 
-    /// The system folder picker's answer, once it comes.
-    fn take_picked(&mut self, ctx: &egui::Context) -> Option<Action> {
-        let what = self.browse?;
-        let Some(picked) = crate::client::folder_pick::poll() else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            return None;
-        };
-        self.browse = None;
-        self.note.clear();
-        let Some(dir) = picked else {
-            self.note = "No folder was chosen.".into();
-            return None;
-        };
+    /// Applies a folder from the system picker (`browse` says which field it was for).
+    fn apply_folder_pick(&mut self, what: Browse, dir: &Path) {
+        log::info!("folder picked: {}", dir.display());
         match what {
-            Browse::Archives => self.archive_path_input = dir.display().to_string(),
-            Browse::Existing => match existing(&dir) {
-                Ok(game_dir) => {
-                    self.path_input = game_dir.display().to_string();
-                    self.game_dir = game_dir;
-                    *self.stage.lock().unwrap() = Stage::Done;
-                    return Some(Action::Ready);
+            Browse::Archives => {
+                self.archive_path_input = dir.display().to_string();
+                let n = installer_parts_in(dir);
+                self.note = if n == VOLUMES {
+                    format!("Installer: {VOLUMES}/{VOLUMES} in {}", short_path(dir))
+                } else {
+                    format!("Found {n}/{VOLUMES} installer parts in {}. Pick the folder that has all five.", short_path(dir))
+                };
+            }
+            Browse::InstallTo => {
+                self.path_input = dir.display().to_string();
+                self.game_dir = dir.to_path_buf();
+                self.note = format!("Install to {}", short_path(dir));
+            }
+            Browse::Existing => {
+                self.path_input = dir.display().to_string();
+                if !crate::android_fs::has_all_files_access() {
+                    self.note = "Turn on All files access (step 1), then tap Start.".into();
+                } else {
+                    match existing(dir) {
+                        Ok(game_dir) => {
+                            log::info!("picked game files in {}", game_dir.display());
+                            self.path_input = game_dir.display().to_string();
+                            self.game_dir = game_dir;
+                            self.note = "Folder set — tap Start.".into();
+                        }
+                        Err(e) => {
+                            self.note = format!("{e:#} Tap Start to try this path, or pick a parent folder.");
+                        }
+                    }
                 }
-                Err(e) => self.note = format!("{e:#}"),
-            },
+            }
         }
-        None
+    }
+
+    fn open_browser(&mut self, what: Browse, hint: &Path) {
+        self.browser_at = crate::client::folder_pick::start_dir(hint);
+        self.browse = Some(what);
+    }
+
+    /// In-app folder list. Returns true when it drew (the rest of the form stays hidden).
+    fn folder_browser(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some(what) = self.browse else { return false };
+        ui.label(egui::RichText::new("Choose a folder").size(15.0));
+        if !self.note.is_empty() {
+            ui.label(egui::RichText::new(&self.note).size(13.0).color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)));
+        }
+        let cwd = self.browser_at.clone();
+        match crate::client::folder_pick::browser(ui, &cwd) {
+            crate::client::folder_pick::BrowserAction::Up => {
+                self.browser_at = crate::client::folder_pick::go_up(&cwd);
+            }
+            crate::client::folder_pick::BrowserAction::Enter(dir) => self.browser_at = dir,
+            crate::client::folder_pick::BrowserAction::Use => {
+                self.browse = None;
+                self.apply_folder_pick(what, &cwd);
+            }
+            crate::client::folder_pick::BrowserAction::Cancel => {
+                self.browse = None;
+                self.note = "No folder was chosen.".into();
+            }
+            crate::client::folder_pick::BrowserAction::None => {}
+        }
+        true
     }
 
     /// The window (egui: no game art exists yet).
     pub fn ui(&mut self, ctx: &egui::Context) -> Action {
-        if let Some(action) = self.take_picked(ctx) {
-            return action;
-        }
         let failed = match &*self.stage.lock().unwrap() {
             Stage::Done => return Action::Ready,
             Stage::Failed(e) => Some(e.clone()),
@@ -210,7 +279,7 @@ impl FirstRun {
             0.0,
             egui::Color32::from_rgb(0x12, 0x14, 0x22),
         );
-        egui::Area::new(egui::Id::unique("first run")).anchor(egui::Align2::CENTER_TOP, [0.0, 10.0]).show(ctx, |ui| {
+        egui::Area::new(egui::Id::new("first run")).anchor(egui::Align2::CENTER_TOP, [0.0, 10.0]).show(ctx, |ui| {
             egui::Frame::new()
                 .fill(egui::Color32::from_rgb(0x1e, 0x22, 0x3a))
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x6a, 0x70, 0xa8)))
@@ -225,25 +294,46 @@ impl FirstRun {
                             .color(egui::Color32::from_rgb(0xe8, 0xc8, 0x80)),
                     );
                     ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .max_height((screen.height() - 20.0).max(160.0))
-                        .auto_shrink([false; 2])
-                        .show(ui, |ui| match (&failed, working) {
-                            (Some(e), _) => self.failed_ui(ui, e, &mut action),
-                            (None, true) => self.progress_ui(ui),
-                            (None, false) => self.ask_ui(ui, &mut action),
-                        });
+                    match (&failed, working) {
+                        (Some(e), _) => self.failed_ui(ui, e, &mut action),
+                        (None, true) => self.progress_ui(ui),
+                        (None, false) => self.ask_ui_scroll(ui, &mut action),
+                    }
+                    if failed.is_none() && !working && self.browse.is_none() {
+                        self.ask_ui_start_row(ui, &mut action);
+                    }
                 });
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(if working { 250 } else { 16 }));
         action
     }
 
-    fn ask_ui(&mut self, ui: &mut egui::Ui, action: &mut Action) {
-        let busy = self.browse.is_some();
+    /// Start loads an existing install, or unpacks the five volumes into Install to.
+    fn can_start(&self) -> bool {
+        if !crate::android_fs::has_all_files_access() {
+            return false;
+        }
+        if self.resolved_game_dir().is_some() {
+            return true;
+        }
+        let archives = PathBuf::from(self.archive_path_input.trim());
+        installer_dir(&self.install_parent(), &archives).is_some()
+    }
+
+    fn on_start(&mut self, action: &mut Action) {
+        if self.resolved_game_dir().is_some() {
+            self.try_start(action);
+        } else {
+            *action = self.begin_install();
+        }
+    }
+
+    fn ask_ui_scroll(&mut self, ui: &mut egui::Ui, _action: &mut Action) {
+        if self.folder_browser(ui) {
+            return;
+        }
         let install_parent = self.install_parent();
         let archives = PathBuf::from(self.archive_path_input.trim());
-        let ready = installer_dir(&install_parent, &archives);
         let all_files = crate::android_fs::has_all_files_access();
         let step = |n: &str| egui::RichText::new(n).size(14.0).color(egui::Color32::LIGHT_GRAY);
         let green = egui::Color32::from_rgb(0x90, 0xc8, 0x90);
@@ -251,7 +341,7 @@ impl FirstRun {
         ui.label(step("Step 1"));
         ui.label(egui::RichText::new("All files access").size(15.0));
         ui.horizontal(|ui| {
-            if ui.add_enabled(!busy, egui::Button::new("Open settings")).clicked() {
+            if ui.button("Open settings").clicked() {
                 crate::android_fs::request_all_files_access();
             }
             let (status, color) =
@@ -266,68 +356,47 @@ impl FirstRun {
         );
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(!busy, egui::Button::new("Square Enix")).clicked() {
+            if ui.button("Square Enix").clicked() {
                 crate::android_fs::open_url(SE_CLIENT_DOWNLOAD);
                 self.note = "Download all five FFXIFullSetup parts to one folder, then use Local installer.".into();
             }
-            if ui.add_enabled(!busy, egui::Button::new("Local installer")).clicked() {
-                if ready.is_some() {
-                    *action = self.begin_install();
-                } else {
-                    self.note = format!(
-                        "Put all five parts in the archives folder below (found {}/{VOLUMES}).",
-                        installer_parts_in(&archives)
-                    );
-                }
+            if ui.button("Local installer").clicked() {
+                self.note = "Choose the folder that holds all five FFXIFullSetup parts.".into();
+                let start = if archives.as_os_str().is_empty() { downloads() } else { archives };
+                self.open_browser(Browse::Archives, &start);
             }
-            if ui.add_enabled(!busy, egui::Button::new("Existing install")).clicked() {
-                self.note.clear();
-                self.browse = Some(Browse::Existing);
-                crate::client::folder_pick::start(&install_parent);
+            if ui.button("Existing install").clicked() {
+                self.note = "Choose the folder that contains FINAL FANTASY XI.".into();
+                self.open_browser(Browse::Existing, &install_parent);
             }
-        });
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new("Local installer paths").size(12.0).weak());
-        if let Some(dir) = &ready {
-            ui.label(egui::RichText::new(format!("Ready: {VOLUMES}/5 in {}", short_path(dir))).size(12.0).color(green));
-        } else if !archives.as_os_str().is_empty() {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Found {}/{VOLUMES} parts in {}",
-                    installer_parts_in(&archives),
-                    short_path(&archives)
-                ))
-                .weak()
-                .size(12.0),
-            );
-        }
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Archives").size(12.0));
-            egui::TextEdit::singleline(&mut self.archive_path_input)
-                .desired_width(ui.available_width() * 0.42)
-                .font(egui::TextStyle::Monospace)
-                .show(ui);
-            if ui.add_enabled(!busy, egui::Button::new("…")).clicked() {
-                self.note.clear();
-                self.browse = Some(Browse::Archives);
-                let start = if archives.as_os_str().is_empty() { downloads() } else { archives.clone() };
-                crate::client::folder_pick::start(&start);
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Install to").size(12.0));
-            egui::TextEdit::singleline(&mut self.path_input)
-                .desired_width(ui.available_width() * 0.42)
-                .font(egui::TextStyle::Monospace)
-                .show(ui);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Quit").clicked() {
-                    *action = Action::Quit;
-                }
-            });
         });
         if !self.note.is_empty() {
-            ui.label(egui::RichText::new(&self.note).size(13.0).color(egui::Color32::from_rgb(0xe0, 0x80, 0x70)));
+            ui.label(egui::RichText::new(&self.note).size(13.0).color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)));
+        }
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Install to").size(14.0));
+        ui.label(
+            egui::RichText::new(short_path(&install_parent)).size(13.0).font(egui::FontId::monospace(13.0)),
+        );
+        if ui.button("Browse install folder").clicked() {
+            self.note.clear();
+            self.open_browser(Browse::InstallTo, &install_parent);
+        }
+    }
+
+    fn ask_ui_start_row(&mut self, ui: &mut egui::Ui, action: &mut Action) {
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("Quit").clicked() {
+                *action = Action::Quit;
+            }
+            let start = ui.add_enabled(self.can_start(), egui::Button::new(egui::RichText::new("Start").size(18.0)));
+            if start.clicked() {
+                self.on_start(action);
+            }
+        });
+        if !crate::android_fs::has_all_files_access() {
+            ui.label(egui::RichText::new("All files access must be Active before Start.").size(12.0).weak());
         }
     }
 

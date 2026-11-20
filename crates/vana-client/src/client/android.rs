@@ -71,6 +71,7 @@ impl App {
         }
         if RESUMED.swap(false, Ordering::Relaxed) {
             self.android_refresh_surface();
+            self.android_unstick_game_data();
         }
         if self.next_frame.is_none() && (self.first_run.is_some() || self.game_data.is_some() || self.game_ui.is_none())
         {
@@ -102,6 +103,28 @@ impl App {
         gfx.window.request_redraw();
         self.shown = true;
         self.next_frame = Some(Instant::now());
+    }
+
+    /// After Settings or the folder picker: All files access may have changed — retry a load that failed without it.
+    fn android_unstick_game_data(&mut self) {
+        if !crate::android_fs::has_all_files_access() || self.index.is_some() {
+            return;
+        }
+        if self.index_warm == LoadState::Failed {
+            self.index_warm = LoadState::Idle;
+        }
+        if self.game_ui.is_none()
+            && self.first_run.is_none()
+            && self.game_ui_state == LoadState::Failed
+        {
+            self.game_ui_state = LoadState::Idle;
+        }
+        if self.flyover.is_none() && self.flyover_state == LoadState::Failed {
+            self.flyover_state = LoadState::Idle;
+        }
+        if self.index_warm == LoadState::Idle && self.cfg.ffxi_dir().join("VTABLE.DAT").is_file() {
+            self.start_index_warm();
+        }
     }
 
     /// The Game data window's folder: saved, and the game files loaded again from it (as a first start's end).
