@@ -169,9 +169,12 @@ impl Gpu {
         );
         set_uncompressed(uncompressed());
         // The effects update pass binds 9 storage buffers (the default limit is 8; desktop GPUs allow far more).
+        // Start from the adapter: wgpu's Limits::default() asks for 16 inter-stage shader variables, and the
+        // Raspberry Pi 5's GPU only has 15, so a default request is rejected.
+        let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
-            max_storage_buffers_per_shader_stage: adapter.limits().max_storage_buffers_per_shader_stage.min(16),
-            ..Default::default()
+            max_storage_buffers_per_shader_stage: adapter_limits.max_storage_buffers_per_shader_stage.min(16),
+            ..adapter_limits
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_features,
