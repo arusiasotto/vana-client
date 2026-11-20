@@ -16039,36 +16039,102 @@ impl App {
                             None => e.clone(),
                         };
                         let (sw, sh) = (size[0] as f32, size[1] as f32);
-                        let key = input.events.iter().any(|ev| {
-                            matches!(
-                                ev,
-                                egui::Event::Key { key: egui::Key::Enter | egui::Key::Escape, pressed: true, .. }
-                            )
-                        });
-                        let click = if modern_ui {
-                            let r = lu.popup_rects("menu    ok", sw, sh);
-                            let frame = r.as_ref().map_or([0.0; 4], |r| lift(r.frame));
-                            let ok = r
-                                .as_ref()
-                                .and_then(|r| r.children.first().map(|c| place(r.frame, c.1)))
-                                .unwrap_or(frame);
-                            self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).ok_popup(
-                                ctx,
-                                window,
-                                self.cfg.modern_scale,
-                                self.ui_k,
-                                frame,
-                                ok,
-                                &text,
-                            )
+                        #[cfg(target_os = "android")]
+                        let cert_mismatch = android::tls_pin_mismatch_message(&text);
+                        #[cfg(not(target_os = "android"))]
+                        let cert_mismatch = false;
+                        if cert_mismatch {
+                            #[cfg(target_os = "android")]
+                            {
+                                let ack = if modern_ui {
+                                    let r = lu.popup_rects("menu    ok", sw, sh);
+                                    let frame = r.as_ref().map_or([0.0; 4], |r| lift(r.frame));
+                                    self.modern
+                                        .get_or_insert_with(|| modern::Modern::new(ctx))
+                                        .ok_trust_popup(ctx, window, self.cfg.modern_scale, self.ui_k, frame, &text)
+                                } else {
+                                    match android::cert_trust_dialog(lu, &text, &input, sw, sh) {
+                                        android::CertTrustAction::Trust => {
+                                            modern::lobby::LoginErrorAck::Trust
+                                        }
+                                        android::CertTrustAction::Dismiss => modern::lobby::LoginErrorAck::Ok,
+                                        _ => modern::lobby::LoginErrorAck::None,
+                                    }
+                                };
+                                let key_dismiss = input.events.iter().any(|ev| {
+                                    matches!(
+                                        ev,
+                                        egui::Event::Key {
+                                            key: egui::Key::Enter | egui::Key::Escape,
+                                            pressed: true,
+                                            ..
+                                        }
+                                    )
+                                });
+                                let ack = if key_dismiss && ack == modern::lobby::LoginErrorAck::None {
+                                    modern::lobby::LoginErrorAck::Ok
+                                } else {
+                                    ack
+                                };
+                                match ack {
+                                    modern::lobby::LoginErrorAck::Trust => {
+                                        let host = self.cfg.server.clone();
+                                        match android::forget_server_tls_pins(&host) {
+                                            Ok(()) => {
+                                                self.login_error = None;
+                                                self.status =
+                                                    "The server's certificate was reset. Try logging in again.".into();
+                                            }
+                                            Err(err) => {
+                                                self.login_error =
+                                                    Some(format!("Could not trust the server: {err:#}"));
+                                            }
+                                        }
+                                        if let Some(a) = self.audio.as_mut() {
+                                            a.ui(crate::audio::Ui::Select);
+                                        }
+                                    }
+                                    modern::lobby::LoginErrorAck::Ok => {
+                                        self.login_error = None;
+                                        if let Some(a) = self.audio.as_mut() {
+                                            a.ui(crate::audio::Ui::Select);
+                                        }
+                                    }
+                                    modern::lobby::LoginErrorAck::None => {}
+                                }
+                            }
                         } else {
-                            let ok = lu.ok_window(&text, sw, sh);
-                            input.clicked && ok.is_some_and(|r| input.pointer.is_some_and(|p| inside(&r, p)))
-                        };
-                        if key || click {
-                            self.login_error = None;
-                            if let Some(a) = self.audio.as_mut() {
-                                a.ui(crate::audio::Ui::Select);
+                            let key = input.events.iter().any(|ev| {
+                                matches!(
+                                    ev,
+                                    egui::Event::Key { key: egui::Key::Enter | egui::Key::Escape, pressed: true, .. }
+                                )
+                            });
+                            let click = if modern_ui {
+                                let r = lu.popup_rects("menu    ok", sw, sh);
+                                let frame = r.as_ref().map_or([0.0; 4], |r| lift(r.frame));
+                                let ok = r
+                                    .as_ref()
+                                    .and_then(|r| r.children.first().map(|c| place(r.frame, c.1)))
+                                    .unwrap_or(frame);
+                                self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).ok_popup(
+                                    ctx,
+                                    window,
+                                    self.cfg.modern_scale,
+                                    self.ui_k,
+                                    frame,
+                                    ok,
+                                    &text,
+                                )
+                            } else {
+                                let ok = lu.ok_window(&text, sw, sh);
+                                input.clicked && ok.is_some_and(|r| input.pointer.is_some_and(|p| inside(&r, p)))
+                            };
+                            if key || click {
+                                self.login_error = None;
+                                if let Some(a) = self.audio.as_mut() {
+                                    a.ui(crate::audio::Ui::Select);
+                                }
                             }
                         }
                     }

@@ -188,3 +188,78 @@ impl App {
         }
     }
 }
+
+/// A pinned certificate no longer matches what the server sent (login or lobby TLS).
+pub(crate) fn tls_pin_mismatch_message(message: &str) -> bool {
+    message.contains("the certificate changed")
+        || message.contains("sent another certificate than the login server")
+}
+
+/// Trust-server for the login form's server host: forgets its pins so the next connection learns the certificate.
+pub(crate) fn forget_server_tls_pins(host: &str) -> anyhow::Result<()> {
+    let store = crate::config::known_servers_path();
+    crate::net::tls::trust(&store, host.trim(), None, None)?;
+    Ok(())
+}
+
+/// Classic UI login error with Trust server and OK (menu ptc6yesn repurposed).
+pub(crate) enum CertTrustAction {
+    None,
+    Dismiss,
+    Trust,
+}
+
+pub(crate) fn cert_trust_dialog(
+    lu: &mut super::game_ui::GameUi,
+    text: &str,
+    input: &super::UiInput,
+    sw: f32,
+    sh: f32,
+) -> CertTrustAction {
+    const TRUST: &str = "Trust server";
+    const OK: &str = "OK";
+    let Some(children) = lu.yes_no_window(text, true, false, sw, sh) else {
+        return CertTrustAction::None;
+    };
+    let (mut trust_r, mut ok_r) = (None, None);
+    for (id, r) in children {
+        match id {
+            1 => trust_r = Some(r),
+            2 => ok_r = Some(r),
+            _ => {}
+        }
+    }
+    let (Some(tr), Some(or)) = (trust_r, ok_r) else {
+        return CertTrustAction::None;
+    };
+    for (r, label, lit) in [(tr, TRUST, true), (or, OK, false)] {
+        let tint = if lit { 0x8080_5020 } else { 0x8080_8080 };
+        super::settings::button(lu, r, tint);
+        let lx = r[0] + ((r[2] - lu.label_width(label)) / 2.0).round();
+        lu.label(label, lx, r[1] + 1.0, tint, true);
+    }
+    lu.cursor(tr[0], tr[1]);
+    if input.clicked {
+        if let Some(p) = input.pointer {
+            if super::inside(&tr, p) {
+                return CertTrustAction::Trust;
+            }
+            if super::inside(&or, p) {
+                return CertTrustAction::Dismiss;
+            }
+        }
+    }
+    if input.events.iter().any(|ev| {
+        matches!(
+            ev,
+            egui::Event::Key {
+                key: egui::Key::Escape | egui::Key::Enter,
+                pressed: true,
+                ..
+            }
+        )
+    }) {
+        return CertTrustAction::Dismiss;
+    }
+    CertTrustAction::None
+}

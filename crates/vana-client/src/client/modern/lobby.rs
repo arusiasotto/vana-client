@@ -16,6 +16,15 @@ use egui::{Align2, Color32, Context, FontFamily, FontId, Sense, Ui, pos2, vec2};
 
 const W: f32 = 380.0;
 
+/// A login error popup with Trust server (Android certificate mismatch).
+#[cfg(target_os = "android")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginErrorAck {
+    None,
+    Ok,
+    Trust,
+}
+
 impl Modern {
     /// egui's zoom for the window height and the Interface Size, as the game's layer sets it.
     fn zoom_to(&mut self, ctx: &Context, window: [u32; 2], scale: u32) {
@@ -608,6 +617,51 @@ impl Modern {
             self.theme.color("gold"),
         );
         hover && ctx.input(|i| i.pointer.primary_clicked())
+    }
+
+    /// Login certificate mismatch (Android): Trust server and OK; which button was pressed, if any.
+    #[cfg(target_os = "android")]
+    pub fn ok_trust_popup(
+        &mut self,
+        ctx: &Context,
+        window: [u32; 2],
+        scale: u32,
+        ui_k: (f32, f32),
+        frame: [f32; 4],
+        text: &str,
+    ) -> LoginErrorAck {
+        let (p, size, r) = self.popup_frame(ctx, window, scale, ui_k, "ok-trust", frame, text, 52.0);
+        let gap = 14.0;
+        let bw = (size * 6.0).max(112.0);
+        let bh = (size * 1.45).max(30.0);
+        let total = bw * 2.0 + gap;
+        let y = (r.max.y - bh / 2.0 - 10.0).min(r.max.y - 5.0);
+        let trust_b =
+            egui::Rect::from_center_size(pos2(r.center().x - total / 2.0 + bw / 2.0, y), vec2(bw, bh));
+        let ok_b = egui::Rect::from_center_size(pos2(r.center().x + total / 2.0 - bw / 2.0, y), vec2(bw, bh));
+        let hover = ctx.input(|i| i.pointer.hover_pos());
+        let clicked = ctx.input(|i| i.pointer.primary_clicked());
+        self.lobby_button(
+            &p,
+            trust_b,
+            "Trust server",
+            true,
+            true,
+            hover,
+            size,
+        );
+        self.lobby_button(&p, ok_b, "OK", false, true, hover, size);
+        if clicked {
+            if let Some(h) = hover {
+                if trust_b.contains(h) {
+                    return LoginErrorAck::Trust;
+                }
+                if ok_b.contains(h) {
+                    return LoginErrorAck::Ok;
+                }
+            }
+        }
+        LoginErrorAck::None
     }
 
     /// The select (or delete) screen: what the mouse did, for SelectUi::pointer.
