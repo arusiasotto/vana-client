@@ -8,6 +8,9 @@ use std::sync::Mutex;
 
 static PAD: Mutex<Pad> = Mutex::new(Pad { buttons: Vec::new(), axes: [0.0; 6] });
 static SEEN: Mutex<bool> = Mutex::new(false);
+/// The hat is what is holding the D-pad. Stick motion also reports hat 0,0, which must not release a D-pad that
+/// arrived as a key.
+static HAT_OWNS: Mutex<bool> = Mutex::new(false);
 
 /// A trigger past this (0 ..= 1) also holds the L2 / R2 virtual button, as gilrs and SDL.
 const TRIGGER_PRESS: f32 = 0.75;
@@ -77,15 +80,39 @@ fn map_keycode(code: i32) -> Option<u8> {
     })
 }
 
-fn apply_hat(hat_x: f32, hat_y: f32) {
-    // Stick motion often delivers hat 0,0; do not clear D-pad bits set by KEYCODE_DPAD_*.
-    if hat_x.abs() < 0.01 && hat_y.abs() < 0.01 {
+/// Virtual D-pad buttons (right, left, up, down) from one hat sample. `owns` stays set while a non-centered hat is
+/// what holds them, so a later 0,0 is that press releasing. A stick sample is also 0,0 and must leave a key-held
+/// D-pad alone.
+fn hat_buttons(buttons: &mut Vec<u8>, owns: &mut bool, hat_x: f32, hat_y: f32) {
+    let live = hat_x.abs() >= 0.5 || hat_y.abs() >= 0.5;
+    if !live {
+        if *owns {
+            buttons.retain(|b| !matches!(*b, 4 | 5 | 6 | 7));
+            *owns = false;
+        }
         return;
     }
-    set_button(5, hat_x < -0.5); // left
-    set_button(4, hat_x > 0.5); // right
-    set_button(6, hat_y < -0.5); // up (Android hat Y up-negative)
-    set_button(7, hat_y > 0.5); // down
+    *owns = true;
+    let want = [(4, hat_x > 0.5), (5, hat_x < -0.5), (6, hat_y < -0.5), (7, hat_y > 0.5)];
+    for (b, down) in want {
+        if down {
+            if !buttons.contains(&b) {
+                buttons.push(b);
+            }
+        } else {
+            buttons.retain(|x| *x != b);
+        }
+    }
+    buttons.sort_unstable();
+}
+
+fn apply_hat(hat_x: f32, hat_y: f32) {
+    let mut p = PAD.lock().unwrap();
+    let mut owns = HAT_OWNS.lock().unwrap();
+    hat_buttons(&mut p.buttons, &mut owns, hat_x, hat_y);
+    drop(owns);
+    drop(p);
+    *SEEN.lock().unwrap() = true;
 }
 
 /// Called from the patched winit android input path (AInputQueue joystick / gamepad motion).
@@ -114,4 +141,42 @@ pub extern "C" fn vana_android_gamepad_key(key_code: i32, down: bool) {
             set_button(b, down);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hat_buttons;
+
+    #[test]
+    fn hat_release_clears_the_dpad() {
+        let mut buttons = Vec::new();
+        let mut owns = false;
+        hat_buttons(&mut buttons, &mut owns, 0.0, 1.0);
+        assert_eq!(buttons, vec![7]);
+        assert!(owns);
+        // The release is hat 0,0. Leaving it held is the infinite scroll.
+        hat_buttons(&mut buttons, &mut owns, 0.0, 0.0);
+        assert!(buttons.is_empty());
+        assert!(!owns);
+    }
+
+    #[test]
+    fn stick_center_does_not_drop_a_key_dpad() {
+        let mut buttons = vec![7];
+        let mut owns = false;
+        hat_buttons(&mut buttons, &mut owns, 0.0, 0.0);
+        assert_eq!(buttons, vec![7]);
+        assert!(!owns);
+    }
+
+    #[test]
+    fn hat_changes_direction() {
+        let mut buttons = Vec::new();
+        let mut owns = false;
+        hat_buttons(&mut buttons, &mut owns, 0.0, 1.0);
+        hat_buttons(&mut buttons, &mut owns, 1.0, 0.0);
+        assert_eq!(buttons, vec![4]);
+        hat_buttons(&mut buttons, &mut owns, 0.0, 0.0);
+        assert!(buttons.is_empty());
+    }
 }
