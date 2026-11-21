@@ -445,6 +445,14 @@ impl SelectScene {
             }
         }
         zone.lighting = self.data.lighting;
+        // One character a frame on Android: every model's textures at once is what makes the system offer to close
+        // the app while the ring is coming up.
+        #[cfg(target_os = "android")]
+        if self.actors.len() < self.data.models.len() {
+            let i = self.actors.len();
+            self.actors.push(self.data.models[i].as_ref().map(|(model, _)| zone.new_actor(gpu, model)));
+        }
+        #[cfg(not(target_os = "android"))]
         if self.actors.len() != self.data.models.len() {
             self.actors =
                 self.data.models.iter().map(|m| m.as_ref().map(|(model, _)| zone.new_actor(gpu, model))).collect();

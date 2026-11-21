@@ -250,7 +250,27 @@ impl Creator {
         alive: Option<Vec<u32>>,
     ) {
         let view = target.0;
-        let zone = self.zone.get_or_insert_with(|| ZoneRenderer::new(gpu, &self.backdrop.scene, format));
+        // The whole backdrop in one upload stalls the phone long enough for Android to offer to close the app.
+        #[cfg(target_os = "android")]
+        {
+            if self.zone.is_none() {
+                let geo = std::sync::Arc::new(crate::render::ZoneGeometry::build(&self.backdrop.scene));
+                let textures = std::mem::take(&mut self.backdrop.scene.textures);
+                self.zone = Some(ZoneRenderer::streamed(gpu, geo, textures, format));
+            }
+            let zone = self.zone.as_mut().unwrap();
+            gpu.begin_uploads(crate::render::upload::LOADING_MS * 15.0);
+            zone.upload_step(gpu, encoder);
+            gpu.run_mips(encoder, crate::render::MIP_BUDGET);
+            if !zone.ready(gpu) {
+                return;
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            self.zone.get_or_insert_with(|| ZoneRenderer::new(gpu, &self.backdrop.scene, format));
+        }
+        let zone = self.zone.as_mut().unwrap();
         zone.lighting = self.backdrop.lighting;
         let r = self.renderer.get_or_insert_with(|| DancerRenderer::new(gpu, format));
         let Some(d) = &mut self.dancer else {

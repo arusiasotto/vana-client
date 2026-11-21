@@ -64,7 +64,8 @@ mod game_data;
 mod game_ui;
 mod gamepad;
 mod gamepad_dinput;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod gamepad_android;
 #[cfg(target_os = "linux")]
 mod gamepad_sdl;

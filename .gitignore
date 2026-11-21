@@ -14,10 +14,6 @@ release/android-link-stubs/*.o
 release/android-link-stubs/libpthread.a
 release/*.apk
 patches/winit/.cargo-ok
-<<<<<<< HEAD
-patches/winit/.cargo_vcs_info.json
-=======
 patches/winit/.cargo_vcs_info.json
 patches/unrar_sys/.cargo-ok
 patches/unrar_sys/.cargo_vcs_info.json
->>>>>>> 7815f28f (Patch unrar_sys for Android without editing ~/.cargo/registry.)
