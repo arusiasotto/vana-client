@@ -79,9 +79,14 @@ else
   APK_SUB=debug/app-debug.apk
 fi
 
+GRADLE_ARGS=()
+if [[ -n "${VANA_ANDROID_RELEASE_TAG:-}" ]]; then
+  GRADLE_ARGS=(-PvanaVersionName="${VANA_ANDROID_RELEASE_TAG#android-v}")
+fi
+
 echo "Packaging APK ($VARIANT)..."
 cd "$ROOT/android"
-"$GRADLE" "$GRADLE_TASK"
+"$GRADLE" "${GRADLE_ARGS[@]}" "$GRADLE_TASK"
 
 mkdir -p "$ROOT/target/assets"
 APK="$ROOT/target/assets/vana-client-android-aarch64.apk"

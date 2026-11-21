@@ -55,3 +55,9 @@ CI (`.github/workflows/android.yml`) builds a debug-signed APK unless the reposi
 ## Building
 
 `release/build-android-apk.sh` cross-compiles `libvana_client.so` (NDK 27, `cargo-ndk`) and packages the APK with Gradle as `target/assets/vana-client-android-aarch64.apk`; `VANA_ANDROID_APK_VARIANT=release` builds the signed release. Game files are never part of the APK.
+
+Set `VANA_ANDROID_RELEASE_TAG=android-v1.0.14-rc4` when packaging a release candidate so the APK's `versionName` matches the GitHub tag (the title **Update** window compares against those tags).
+
+## In-app updates
+
+On the title screen, **Update** checks `arusiasotto/vana-client` for the newest `android-v*` release with `vana-client-android-aarch64.apk`, downloads it, and opens the system installer. Game-file patches still come from the PlayOnline patch server. Override the repo with `VANA_RELEASE_REPO` for test builds.

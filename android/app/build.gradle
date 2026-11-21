@@ -23,7 +23,8 @@ android {
         minSdk 26
         targetSdk 35
         versionCode 2
-        versionName "1.0.14-rc1"
+        // release/build-android-apk.sh sets -PvanaVersionName from the android-v* tag (1.0.14-rc4).
+        versionName project.findProperty("vanaVersionName") ?: "1.0.15"
         ndk {
             abiFilters "arm64-v8a"
         }
@@ -60,4 +61,8 @@ android {
             useLegacyPackaging true
         }
     }
+}
+
+dependencies {
+    implementation "androidx.core:core:1.13.1"
 }
