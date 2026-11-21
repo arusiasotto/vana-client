@@ -3,6 +3,8 @@
 
 #[cfg(target_os = "android")]
 mod android_fs;
+#[cfg(target_os = "android")]
+mod android_log;
 mod audio;
 mod cabx;
 mod client;
@@ -67,7 +69,6 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     use std::sync::Once;
     static PROCESS_INIT: Once = Once::new();
     PROCESS_INIT.call_once(|| {
-        android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Debug));
         if let Some(dir) = app.internal_data_path() {
             // SAFETY: set once before `entry()` spawns worker threads that read the environment.
             unsafe {
@@ -75,11 +76,6 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
                 std::env::set_var("HOME", &dir);
             }
         }
-        let default = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            log::error!("panic: {info}");
-            default(info);
-        }));
     });
     client::set_android_app(app);
     // Activity recreate: the event loop from the first call is still running; hand the new activity in and stay alive.
