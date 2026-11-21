@@ -107,12 +107,19 @@ const PAGES: [(&str, &str, &[Item]); 14] = [
         "Display",
         &[
             Head("Window"),
+            // Android's surface is the activity, so these three do not change the picture.
+            #[cfg(not(target_os = "android"))]
             Ours("Window Mode"),
+            #[cfg(not(target_os = "android"))]
             Ours("Resolution"),
+            #[cfg(not(target_os = "android"))]
             Ours("Monitor"),
             Ours("GPU"),
             Ours("Frame Limit"),
+            #[cfg(not(target_os = "android"))]
             Head("Scaling"),
+            #[cfg(target_os = "android")]
+            Head("Background Resolution"),
             Ours("Background"),
             Ours("Menu Size"),
             Ours("3D Aspect"),

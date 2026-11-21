@@ -387,6 +387,7 @@ fn sentence(s: &str) -> String {
     if s.ends_with(['.', '!', '?']) { s.to_string() } else { format!("{s}.") }
 }
 const MODERN_SCALES: &[(u32, &str)] = &[
+    (25, "25%"),
     (50, "50%"),
     (55, "55%"),
     (60, "60%"),
@@ -439,12 +440,21 @@ const PACKS: usize = 10;
 const MODS: usize = 11;
 const EXTRA_TABS: [&str; 4] = ["Maps", "Timers", "Battle", "Misc."];
 
+#[cfg(not(target_os = "android"))]
+const BACKGROUND_HELP: &str = "How sharp the 3D world is drawn. Set it higher than the window for a sharper picture at a cost in speed, or lower for speed.";
+/// Android: every stop is a share of this screen. 100% follows the screen. The others are that percentage of its
+/// lines, in the same shape.
+#[cfg(target_os = "android")]
+const BACKGROUND_HELP: &str = "How sharp the 3D world is drawn. 100% is this screen. Each other step is that share of its lines, in the same shape: 50% draws half as many, 200% draws twice as many. Lower is faster, higher is sharper. Menus and text stay sharp.";
+
 /// `in_game`: the volumes are the Gameplay page's there, so the Sound page leaves them out. `modern`: the minimap's and
 /// the Timers' place and size are set by dragging them there, so those rows are left out.
 fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] {
     use Val::*;
     use When::*;
     const GENERAL: &[SRow] = &[
+        // Android's surface is the activity: window mode does not change it.
+        #[cfg(not(target_os = "android"))]
         row(
             "Window Mode",
             "Full screen, a window, or a borderless window at your chosen size or the size of your desktop.",
@@ -468,7 +478,10 @@ fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] 
         ),
     ];
     const SCREEN: &[SRow] = &[
+        // Android's surface is the activity: the window size and which monitor do not change it.
+        #[cfg(not(target_os = "android"))]
         row("Resolution", "The size of the game window.", Size("0001", "0002", Sizes::Window), &[], Now),
+        #[cfg(not(target_os = "android"))]
         row("Monitor", "Which monitor the game opens on (not retail).", Monitor, &[], Now),
         row(
             "GPU",
@@ -479,7 +492,7 @@ fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] 
         ),
         row(
             "Background",
-            "How sharp the 3D world is drawn. Set it higher than the window for a sharper picture at a cost in speed, or lower for speed.",
+            BACKGROUND_HELP,
             Size("0003", "0004", Sizes::Background),
             &[],
             Now,
@@ -846,6 +859,39 @@ fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] 
     }
 }
 
+/// Android's Background stops, smallest share first. 100% is stored as the window's own size so it keeps following
+/// the screen. Every other stop is that percentage of the screen, in the same shape.
+const PHONE_PERCENTS: &[(u32, &str)] = &[
+    (33, "33%"),
+    (50, "50%"),
+    (67, "67%"),
+    (75, "75%"),
+    (100, "100%"),
+    (125, "125%"),
+    (150, "150%"),
+    (200, "200%"),
+];
+
+fn phone_background(window: [u32; 2]) -> Vec<([u32; 2], &'static str)> {
+    let [w, h] = [window[0].max(1), window[1].max(1)];
+    let mut v = Vec::new();
+    for (pct, name) in PHONE_PERCENTS {
+        if *pct == 100 {
+            v.push(([0, 0], *name));
+            continue;
+        }
+        let size = [
+            ((w as f32) * (*pct as f32) / 100.0).round().clamp(1.0, 8192.0) as u32,
+            ((h as f32) * (*pct as f32) / 100.0).round().clamp(1.0, 8192.0) as u32,
+        ];
+        if size == [w, h] || v.iter().any(|s| s.0 == size) {
+            continue;
+        }
+        v.push((size, *name));
+    }
+    v
+}
+
 const RESOLUTIONS: [[u32; 2]; 17] = [
     [640, 480],
     [800, 600],
@@ -1100,9 +1146,13 @@ impl SettingsUi {
             Sizes::Window => RESOLUTIONS.to_vec(),
             // 0 = the window's; then scales of it and the tool's squares.
             Sizes::Background => {
-                let mut v = vec![[0, 0], scaled(0.5), scaled(0.75), scaled(1.5), scaled(2.0)];
-                v.extend([[512, 512], [1024, 1024], [2048, 2048], [4096, 4096]]);
-                v
+                if cfg!(target_os = "android") {
+                    phone_background(self.window).into_iter().map(|(s, _)| s).collect()
+                } else {
+                    let mut v = vec![[0, 0], scaled(0.5), scaled(0.75), scaled(1.5), scaled(2.0)];
+                    v.extend([[512, 512], [1024, 1024], [2048, 2048], [4096, 4096]]);
+                    v
+                }
             }
             // The v5 tool: the window, then 95 %, 90 % ... while the height stays 512 or more.
             Sizes::Ui => {
@@ -1348,10 +1398,19 @@ impl SettingsUi {
     /// The row's value as a slider shows it.
     fn shown(&self, r: &Row) -> String {
         match r.val {
-            Val::Size(a, b, _) => match [self.tool_get(a), self.tool_get(b)] {
-                [0, _] | [_, 0] => "Window".into(),
-                [x, y] => format!("{x}x{y}"),
-            },
+            Val::Size(a, b, k) => {
+                let cur = [self.tool_get(a), self.tool_get(b)];
+                if cfg!(target_os = "android")
+                    && k == Sizes::Background
+                    && let Some(name) = phone_background(self.window).iter().find(|(s, n)| *s == cur && !n.is_empty())
+                {
+                    return name.1.to_string();
+                }
+                match cur {
+                    [0, _] | [_, 0] => "Window".into(),
+                    [x, y] => format!("{x}x{y}"),
+                }
+            }
             Val::Gamma => format!("{:+.1}", f32::from_bits(self.tool_get("0028"))),
             Val::FrameLimit if self.s.frame_limit == 0 => "Unlimited".into(),
             Val::FrameLimit => format!("{}", self.s.frame_limit),
@@ -2672,6 +2731,30 @@ mod tests {
         assert_eq!((c.window_mode(), c.background([1280, 800]), c.frame_limit), (2, [640, 400], 0));
         let back: Config = serde_json::from_slice(&serde_json::to_vec(&c).unwrap()).unwrap();
         assert_eq!(Settings::of(&back), ui.s);
+    }
+
+    /// Android's Background steps are shares of the screen. 100% is the screen itself, stored so it keeps following it.
+    #[test]
+    fn phone_background_is_a_share_of_the_screen() {
+        let wide = phone_background([2400, 1080]);
+        assert_eq!(wide.iter().map(|s| s.1).collect::<Vec<_>>(), ["33%", "50%", "67%", "75%", "100%", "125%", "150%", "200%"]);
+        assert_eq!(wide.iter().find(|s| s.1 == "50%").unwrap().0, [1200, 540]);
+        assert_eq!(wide.iter().find(|s| s.1 == "100%").unwrap().0, [0, 0]);
+        assert_eq!(wide.iter().find(|s| s.1 == "200%").unwrap().0, [4800, 2160]);
+        let tall = phone_background([1080, 2400]);
+        assert_eq!(tall.iter().find(|s| s.1 == "50%").unwrap().0, [540, 1200]);
+        for (window, stops) in [([2400, 1080], &wide), ([1080, 2400], &tall)] {
+            let area = |s: [u32; 2]| {
+                let [x, y] = if s == [0, 0] { window } else { s };
+                x as u64 * y as u64
+            };
+            assert!(stops.windows(2).all(|w| area(w[0].0) <= area(w[1].0)));
+            let mut sizes: Vec<_> = stops.iter().map(|s| s.0).collect();
+            let n = sizes.len();
+            sizes.sort();
+            sizes.dedup();
+            assert_eq!(sizes.len(), n);
+        }
     }
 
     /// Extras: pages as Settings (Maps, Timers, Battle, Misc.), opened on the page name; buttons pick with Left / Right
