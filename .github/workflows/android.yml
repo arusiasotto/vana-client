@@ -5,7 +5,7 @@ name: Android
 
 on:
   push:
-    branches: [master]
+    branches: [android]
   pull_request:
   workflow_dispatch:
 
