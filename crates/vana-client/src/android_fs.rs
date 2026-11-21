@@ -73,6 +73,35 @@ pub fn request_all_files_access() {
     stale_all_files_access();
 }
 
+/// Installed APK `versionName` (for example `1.0.14-rc4`).
+pub fn app_version_name() -> Option<String> {
+    with_activity(|env, activity| {
+        let v = env.call_method(activity, "appVersionName", "()Ljava/lang/String;", &[])?.l()?;
+        let j = jni::objects::JString::from(v);
+        Ok(env.get_string(&j)?.to_string_lossy().into_owned())
+    })
+    .ok()
+}
+
+/// Cache path for a downloaded update APK (`updateApkPath` in Java).
+pub fn update_apk_path() -> anyhow::Result<std::path::PathBuf> {
+    with_activity(|env, activity| {
+        let v = env.call_method(activity, "updateApkPath", "()Ljava/lang/String;", &[])?.l()?;
+        let j = jni::objects::JString::from(v);
+        Ok(std::path::PathBuf::from(env.get_string(&j)?.to_string_lossy().into_owned()))
+    })
+}
+
+/// Opens the system installer for an APK at `path`.
+pub fn install_apk(path: &std::path::Path) -> anyhow::Result<()> {
+    let path = path.to_string_lossy().into_owned();
+    with_activity(|env, activity| {
+        let j = env.new_string(&path)?;
+        env.call_method(activity, "installApk", "(Ljava/lang/String;)V", &[(&j).into()])?;
+        Ok(())
+    })
+}
+
 /// Opens `url` in the system browser.
 pub fn open_url(url: &str) {
     if let Err(e) = with_activity(|env, activity| {

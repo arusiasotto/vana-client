@@ -2,11 +2,14 @@ package org.vanaclient;
 
 import android.app.NativeActivity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.Settings;
+import java.io.File;
+import androidx.core.content.FileProvider;
 import android.util.Log;
 import android.view.View;
 import android.view.Window;
@@ -101,6 +104,41 @@ public class VanaClientNativeActivity extends NativeActivity {
                 startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
             } catch (RuntimeException e) {
                 Log.e(TAG, "openBrowser", e);
+            }
+        });
+    }
+
+    /** Installed APK version (matches android-v* release tags after the android- prefix). */
+    public String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            return "0";
+        }
+    }
+
+    /** Where the client downloads an update APK (cache; readable by FileProvider). */
+    public String updateApkPath() {
+        return new File(getCacheDir(), "vana-client-update.apk").getAbsolutePath();
+    }
+
+    /** Opens the system installer for an APK the client downloaded. */
+    public void installApk(String path) {
+        runOnUiThread(() -> {
+            try {
+                File file = new File(path);
+                if (!file.isFile()) {
+                    Log.e(TAG, "installApk: missing " + path);
+                    return;
+                }
+                Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setDataAndType(uri, "application/vnd.android.package-archive");
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (RuntimeException e) {
+                Log.e(TAG, "installApk", e);
             }
         });
     }
