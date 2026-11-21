@@ -88,7 +88,7 @@ crate-type = ["rlib"]
 [target."cfg(target_os = \"android\")".dependencies]
 # winit's NativeActivity glue (the patched winit also takes the controllers off its input queue).
 winit = { version = "0.30.13", features = ["android-native-activity"] }
-android_logger = "0.15"
+android_log-sys = "0.3"
 jni = "0.21"
 ndk-context = "0.1"
 

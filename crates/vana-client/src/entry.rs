@@ -1153,7 +1153,11 @@ pub fn entry() -> Result<()> {
         "info"
     }));
     log.format_timestamp_millis();
+    #[cfg(not(target_os = "android"))]
     let path = config::log_path();
+    #[cfg(target_os = "android")]
+    crate::android_log::init(client)?;
+    #[cfg(not(target_os = "android"))]
     if (client || cfg!(windows))
         && let Ok(file) = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| {
             let _ = std::fs::rename(&path, path.with_extension("prev.log"));
@@ -1161,13 +1165,17 @@ pub fn entry() -> Result<()> {
         })
     {
         log.target(env_logger::Target::Pipe(Box::new(Tee(file))));
+    }
+    if client || cfg!(windows) {
         let default = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             log::error!("{info}\n{}", std::backtrace::Backtrace::force_capture());
             default(info);
         }));
     }
+    #[cfg(not(target_os = "android"))]
     log.init();
+    log::info!("vana-client starting");
     let Some(cmd) = cli.cmd else {
         return client::run(config::Config::load(), client::Drive::default());
     };

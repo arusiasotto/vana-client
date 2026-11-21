@@ -22028,7 +22028,14 @@ impl ApplicationHandler for App {
             Err(e) => panic!("creating the surface: {e:?}"),
         };
         self.gpus = crate::render::adapter_names(&instance, Some(&surface));
-        let gpu = Gpu::with_adapter(instance, Some(&surface), &self.cfg.gpu).expect("opening the GPU");
+        let gpu = match Gpu::with_adapter(instance, Some(&surface), &self.cfg.gpu) {
+            Ok(g) => g,
+            Err(e) if cfg!(target_os = "android") => {
+                log::warn!("opening the GPU: {e:#}");
+                return;
+            }
+            Err(e) => panic!("opening the GPU: {e:?}"),
+        };
         let size = window.inner_size();
         // A low-spec GPU (GL / GLES, no BC textures, a software rasterizer) on a first start (no config file yet):
         // cheaper values than the defaults (Config::low_spec_defaults). An existing config is never rewritten, so an
