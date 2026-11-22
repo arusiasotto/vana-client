@@ -4,6 +4,7 @@
 
 use super::Put;
 use super::{DEPTH_FORMAT, Gpu};
+use wgpu::util::DeviceExt;
 use crate::fx::elem::{BACK_WORDS, OUT_WORDS, PART_WORDS, SLOT_WORDS, w};
 use crate::fx::{Draw, Effects, Frame, MAX_ELEMS, MAX_PARTS, Write};
 use glam::Mat4;
@@ -634,7 +635,12 @@ impl EffectsGpu {
     }
 
     pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Self {
-        let device = &gpu.device;
+        Self::new_on_device(&gpu.device, &gpu.queue, format)
+    }
+
+    /// Pipeline creation on a worker thread while the main thread shares the same device and queue.
+    pub fn new_on_device(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        let device = device;
         let consts = crate::fx::elem::wgsl_consts();
         let src = include_str!("effects.wgsl");
         let (compute_src, draw_src) = src.split_once("// ---- Drawing ----").unwrap();
@@ -1122,14 +1128,28 @@ impl EffectsGpu {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let spec_black_2d = super::upload_texture(
-            gpu,
-            &crate::dat::zone::Texture::new(String::new(), 0, 1, 1, vec![0, 0, 0, 0]),
-            false,
-        );
-        let spec_black_cube = Self::cube_view(gpu, 1, 1, None);
-        let white_view =
-            super::upload_texture(gpu, &crate::dat::zone::Texture::new(String::new(), 0, 1, 1, vec![255; 4]), false);
+        let tiny = |rgba: &[u8]| {
+            device
+                .create_texture_with_data(
+                    queue,
+                    &wgpu::TextureDescriptor {
+                        label: Some("effects placeholder 2d"),
+                        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    },
+                    wgpu::util::TextureDataOrder::LayerMajor,
+                    rgba,
+                )
+                .create_view(&Default::default())
+        };
+        let spec_black_2d = tiny(&[0, 0, 0, 0]);
+        let spec_black_cube = Self::cube_view_dq(device, queue, 1, 1, None);
+        let white_view = tiny(&[255; 4]);
         let white = Self::tex_group(device, &tex_layout, &sampler, &white_view);
         let table = |label: &str| (buf(label, 1024, U::STORAGE | U::COPY_DST), 1024usize);
         let no_depth = device
@@ -1288,7 +1308,11 @@ impl EffectsGpu {
 
     /// FUN_10039e50 for a `cubemap ` image: every face black (rgb 0), face -Z (layer 5) the image.
     fn cube_view(gpu: &Gpu, w: u32, h: u32, rgba: Option<&[u8]>) -> wgpu::TextureView {
-        let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        Self::cube_view_dq(&gpu.device, &gpu.queue, w, h, rgba)
+    }
+
+    fn cube_view_dq(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: Option<&[u8]>) -> wgpu::TextureView {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("effects cube"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 6 },
             mip_level_count: 1,
@@ -1301,7 +1325,7 @@ impl EffectsGpu {
         let black = vec![0u8; (w * h * 4) as usize];
         for layer in 0..6 {
             let data = if layer == 5 { rgba.unwrap_or(&black) } else { &black };
-            gpu.queue.write_texture(
+            queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &tex,
                     mip_level: 0,

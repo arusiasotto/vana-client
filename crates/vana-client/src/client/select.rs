@@ -81,7 +81,6 @@ pub const NATION_VOICES: u32 = 0x0400_0000;
 /// the zone (FUN_10242cd0, FUN_10239720), the sky's clouds among them. Its GPU side: ids are per registry.
 pub struct LobbyFx {
     fx: crate::fx::Effects,
-    gpu: Option<crate::render::effects::EffectsGpu>,
     /// Real time not yet given to the effects; the lobby clock.
     dt: f32,
     minute: f32,
@@ -96,7 +95,7 @@ impl LobbyFx {
         fx.set_global(libs.global);
         fx.load_zone(libs.zone);
         fx.set_weather("suny", 0.0);
-        Self { fx, gpu: None, dt: 0.0, minute }
+        Self { fx, dt: 0.0, minute }
     }
 
     pub fn advance(&mut self, dt: f32) {
@@ -131,8 +130,8 @@ impl LobbyFx {
     }
 
     /// After the frame's submit: the effects' readback.
-    pub fn after_submit(&mut self, gpu: &Gpu) {
-        if let Some(eg) = &mut self.gpu {
+    pub fn after_submit(&mut self, gpu: &Gpu, effects: &mut Option<crate::render::effects::EffectsGpu>) {
+        if let Some(eg) = effects {
             eg.after_submit(gpu, &mut self.fx);
         }
     }
@@ -141,7 +140,7 @@ impl LobbyFx {
     pub fn draw(
         &mut self,
         gpu: &Gpu,
-        format: wgpu::TextureFormat,
+        _format: wgpu::TextureFormat,
         encoder: &mut wgpu::CommandEncoder,
         target: Target,
         depth: &wgpu::TextureView,
@@ -149,9 +148,10 @@ impl LobbyFx {
         camera: &Camera,
         aspect: f32,
         alive: Option<Vec<u32>>,
+        effects: &mut Option<crate::render::effects::EffectsGpu>,
     ) {
         let (fx, (view, color_tex, bg)) = (&mut self.fx, target);
-        let eg = self.gpu.get_or_insert_with(|| crate::render::effects::EffectsGpu::new(gpu, format));
+        let Some(eg) = effects else { return };
         if fx.reg.light_keys != zone.light_keys {
             fx.reg.light_keys = zone.light_keys.clone();
         }
@@ -424,6 +424,7 @@ impl SelectScene {
         depth: &wgpu::TextureView,
         aspect: f32,
         alive: Option<Vec<u32>>,
+        effects_gpu: &mut Option<crate::render::effects::EffectsGpu>,
     ) {
         let view = target.0;
         #[cfg(not(target_os = "android"))]
@@ -467,7 +468,7 @@ impl SelectScene {
         let actors: Vec<&ActorGpu> = self.actors.iter().flatten().collect();
         zone.render(gpu, encoder, view, depth, &camera, aspect, &actors);
         if let Some(fx) = &mut self.effects {
-            fx.draw(gpu, format, encoder, target, depth, zone, &camera, aspect, alive);
+            fx.draw(gpu, format, encoder, target, depth, zone, &camera, aspect, alive, effects_gpu);
         }
     }
 }
@@ -1376,8 +1377,9 @@ pub fn screen_shot(shot: &ScreenShot, out: &std::path::Path) -> Result<()> {
     });
     let view = target_tex.create_view(&Default::default());
     let depth = crate::render::depth_view(&gpu.device, w, h);
+    let mut effects_gpu = Some(crate::render::effects::EffectsGpu::new(&gpu, format));
     // Every lobby frame is drawn, so the effects run as they would on screen.
-    let frame = |scene: &mut SelectScene, cursor: usize| {
+    let mut frame = |scene: &mut SelectScene, cursor: usize| {
         scene.advance(FRAME, cursor);
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         scene.render(
@@ -1388,11 +1390,12 @@ pub fn screen_shot(shot: &ScreenShot, out: &std::path::Path) -> Result<()> {
             &depth,
             w as f32 / h.max(1) as f32,
             None,
+            &mut effects_gpu,
         );
         gpu.queue.submit([enc.finish()]);
         let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
         if let Some(fx) = scene.effects() {
-            fx.after_submit(&gpu);
+            fx.after_submit(&gpu, &mut effects_gpu);
         }
     };
     for _ in 0..shot.hold.max(30) {
@@ -1420,7 +1423,16 @@ pub fn screen_shot(shot: &ScreenShot, out: &std::path::Path) -> Result<()> {
     };
     let mut enc = gpu.device.create_command_encoder(&Default::default());
     scene.advance(FRAME, st.cursor);
-    scene.render(&gpu, format, &mut enc, (&view, Some(&target_tex), [w, h]), &depth, w as f32 / h.max(1) as f32, None);
+    scene.render(
+        &gpu,
+        format,
+        &mut enc,
+        (&view, Some(&target_tex), [w, h]),
+        &depth,
+        w as f32 / h.max(1) as f32,
+        None,
+        &mut effects_gpu,
+    );
     let input = Input { events: &[], pointer: None, moved: false, clicked: false, busy: false, modern: false };
     st.step(&mut gu, &input, &list, &chars, shot.deleting, w as f32, h as f32, None);
     gu.render(&gpu, format, &mut enc, &view, [w, h], [w, h], true, 1.0, 1.0);

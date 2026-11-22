@@ -248,6 +248,7 @@ impl Creator {
         depth: &wgpu::TextureView,
         aspect: f32,
         alive: Option<Vec<u32>>,
+        effects_gpu: &mut Option<crate::render::effects::EffectsGpu>,
     ) {
         let view = target.0;
         let zone = self.zone.get_or_insert_with(|| ZoneRenderer::new(gpu, &self.backdrop.scene, format));
@@ -263,7 +264,7 @@ impl Creator {
             };
             zone.render(gpu, encoder, view, depth, &camera, aspect, &[]);
             if let Some(fx) = &mut self.effects {
-                fx.draw(gpu, format, encoder, target, depth, zone, &camera, aspect, alive);
+                fx.draw(gpu, format, encoder, target, depth, zone, &camera, aspect, alive, effects_gpu);
             }
             return;
         };
@@ -379,7 +380,7 @@ impl Creator {
         let camera = zone_camera(cam, fov.to_radians());
         zone.render(gpu, encoder, view, depth, &camera, aspect, &[]);
         if let Some(fx) = &mut self.effects {
-            fx.draw(gpu, format, encoder, target, depth, zone, &camera, aspect, alive);
+            fx.draw(gpu, format, encoder, target, depth, zone, &camera, aspect, alive, effects_gpu);
         }
         if self.show_dancer {
             posed.gpu.draw(r, encoder, view, depth);
@@ -738,16 +739,26 @@ pub fn screen_shot(shot: &ScreenShot, out: &std::path::Path) -> Result<()> {
     let view = target.create_view(&Default::default());
     let depth = crate::render::depth_view(&gpu.device, w, h);
     // A second of lobby effects first (the clouds), the performance held at --frame.
+    let mut effects_gpu = Some(crate::render::effects::EffectsGpu::new(&gpu, format));
     for _ in 0..30 {
         if let Some(fx) = &mut cr.effects {
             fx.advance(1.0 / 30.0);
         }
         let mut enc = gpu.device.create_command_encoder(&Default::default());
-        cr.render(&gpu, format, &mut enc, (&view, Some(&target), [w, h]), &depth, w as f32 / h.max(1) as f32, None);
+        cr.render(
+            &gpu,
+            format,
+            &mut enc,
+            (&view, Some(&target), [w, h]),
+            &depth,
+            w as f32 / h.max(1) as f32,
+            None,
+            &mut effects_gpu,
+        );
         gpu.queue.submit([enc.finish()]);
         let _ = gpu.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
         if let Some(fx) = &mut cr.effects {
-            fx.after_submit(&gpu);
+            fx.after_submit(&gpu, &mut effects_gpu);
         }
     }
     // --world list | pass:DIGITS: the world step over the name step, one world.
@@ -790,7 +801,17 @@ pub fn screen_shot(shot: &ScreenShot, out: &std::path::Path) -> Result<()> {
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         match &mut fly {
             Some(f) => {
-                f.render(&gpu, format, &mut enc, (&view, None), &depth, [w, h], w as f32 / h.max(1) as f32, None);
+                f.render(
+                    &gpu,
+                    format,
+                    &mut enc,
+                    (&view, None),
+                    &depth,
+                    [w, h],
+                    w as f32 / h.max(1) as f32,
+                    None,
+                    &mut effects_gpu,
+                );
             }
             None => cr.render(
                 &gpu,
@@ -800,6 +821,7 @@ pub fn screen_shot(shot: &ScreenShot, out: &std::path::Path) -> Result<()> {
                 &depth,
                 w as f32 / h.max(1) as f32,
                 None,
+                &mut effects_gpu,
             ),
         }
         gu.clear();

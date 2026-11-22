@@ -268,9 +268,9 @@ impl Flyover {
     }
 
     /// After the frame's submit: the effects' readback.
-    pub fn after_submit(&mut self, gpu: &Gpu) {
+    pub fn after_submit(&mut self, gpu: &Gpu, effects_gpu: &mut Option<crate::render::effects::EffectsGpu>) {
         if let Some(fx) = &mut self.effects {
-            fx.after_submit(gpu);
+            fx.after_submit(gpu, effects_gpu);
         }
     }
 
@@ -287,6 +287,7 @@ impl Flyover {
         size: [u32; 2],
         aspect: f32,
         alive: Option<Vec<u32>>,
+        effects_gpu: &mut Option<crate::render::effects::EffectsGpu>,
     ) -> bool {
         let Some(cam) = self.camera() else { return false };
         let cross = self.cross.filter(|(_, start, len)| self.tick < start + len);
@@ -346,7 +347,7 @@ impl Flyover {
         zone.set_camera_list(gpu, ground.camera_list(cam.eye), far);
         zone.render(gpu, encoder, view, depth, &cam, aspect, &[]);
         if let Some(fx) = &mut self.effects {
-            fx.draw(gpu, format, encoder, (view, tex, size), depth, zone, &cam, aspect, alive);
+            fx.draw(gpu, format, encoder, (view, tex, size), depth, zone, &cam, aspect, alive, effects_gpu);
         }
         // FUN_100132b0's second block: last frame over the scene while the blur's alpha is not 0.
         let blur = (b[3] * 255.0 >= 0.5).then(|| crate::render::screenfx::Blur {

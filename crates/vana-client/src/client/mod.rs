@@ -9017,6 +9017,8 @@ pub struct App {
     /// The zone change crossfade's held frame.
     screen_fx_zone: Option<crate::render::screenfx::ScreenFx>,
     effects_gpu: Option<crate::render::effects::EffectsGpu>,
+    /// Compiles effect pipelines off the main thread (V3D can block for a long time in `EffectsGpu::new`).
+    effects_warm: Option<std::thread::JoinHandle<crate::render::effects::EffectsGpu>>,
     /// Lobby screen fades, and whether the window has been shown (it stays hidden until the title can draw).
     lobby_fade: LobbyFade,
     shown: bool,
@@ -9328,6 +9330,7 @@ impl App {
             screen_fx_world: None,
             screen_fx_zone: None,
             effects_gpu: None,
+            effects_warm: None,
             lobby_fade: LobbyFade::default(),
             shown: false,
             hud_blockers: Vec::new(),
@@ -10521,7 +10524,12 @@ impl App {
                         log::info!("server features 0x{features:08X}, expansions 0x{expansions:08X}");
                         // The effects' GPU side caches by the World's registry ids (library, texture, mesh); a new
                         // World starts a new registry, so the old session's cache would draw the wrong ones.
+                        self.effects_warm = None;
                         self.effects_gpu = None;
+                        let warm = self.gfx.as_ref().map(|g| (g.gpu.device.clone(), g.gpu.queue.clone(), g.config.format));
+                        if let Some((device, queue, format)) = warm {
+                            self.start_effects_warm(&device, &queue, format);
+                        }
                         self.phase = Phase::World(Box::new(World {
                             features,
                             net,
@@ -19071,6 +19079,33 @@ impl App {
         world_frame(&mut cx, gfx, g, w, dt);
     }
 
+    /// Compiles effect pipelines on a worker thread so the main thread does not hang in the V3D driver.
+    fn start_effects_warm(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
+        if self.effects_gpu.is_some() || self.effects_warm.is_some() {
+            return;
+        }
+        let device = device.clone();
+        let queue = queue.clone();
+        self.effects_warm = Some(std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let eg = crate::render::effects::EffectsGpu::new_on_device(&device, &queue, format);
+            log::info!("effects GPU ready in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+            eg
+        }));
+    }
+
+    fn poll_effects_warm(&mut self) {
+        let Some(handle) = self.effects_warm.take() else { return };
+        if handle.is_finished() {
+            match handle.join() {
+                Ok(eg) => self.effects_gpu = Some(eg),
+                Err(e) => log::error!("effects warm thread panicked: {e:?}"),
+            }
+        } else {
+            self.effects_warm = Some(handle);
+        }
+    }
+
     /// The lobby's scenes into the scene targets: the creator's dancer or the nation step's flyover, the select ring,
     /// the title's flyover.
     fn draw_lobby_scenes(&mut self, gfx: &Gfx, g: &mut FrameGpu, dt: f32) {
@@ -19125,6 +19160,7 @@ impl App {
                         bg,
                         aspect,
                         alive,
+                        &mut self.effects_gpu,
                     );
                     for c in fly.take_sounds() {
                         let Some(a) = &mut self.audio else { break };
@@ -19141,6 +19177,7 @@ impl App {
                         &scene_depth,
                         aspect,
                         alive,
+                        &mut self.effects_gpu,
                     );
                     for c in cr.effects.as_mut().map(|fx| fx.take_sounds()).unwrap_or_default() {
                         let Some(a) = &mut self.audio else { break };
@@ -19170,6 +19207,7 @@ impl App {
                 bg,
                 aspect,
                 alive,
+                &mut self.effects_gpu,
             );
             for c in fly.take_sounds() {
                 let Some(a) = &mut self.audio else { break };
@@ -19190,6 +19228,7 @@ impl App {
                 &scene_depth,
                 aspect,
                 alive,
+                &mut self.effects_gpu,
             );
             for c in sel.effects().map(|fx| fx.take_sounds()).unwrap_or_default() {
                 let Some(a) = &mut self.audio else { break };
@@ -19212,6 +19251,7 @@ impl App {
                 bg,
                 aspect,
                 alive,
+                &mut self.effects_gpu,
             ) || g.drew_world;
             for c in fly.take_sounds() {
                 let Some(a) = &mut self.audio else { break };
@@ -19491,16 +19531,16 @@ impl App {
             eg.after_submit(&gfx.gpu, &mut w.effects);
         }
         if let Some(fx) = self.select.as_mut().and_then(|s| s.effects()) {
-            fx.after_submit(&gfx.gpu);
+            fx.after_submit(&gfx.gpu, &mut self.effects_gpu);
         }
         if let Some(fx) = self.creator.as_mut().and_then(|c| c.effects.as_mut()) {
-            fx.after_submit(&gfx.gpu);
+            fx.after_submit(&gfx.gpu, &mut self.effects_gpu);
         }
         if let Some(f) = self.flyover.as_mut() {
-            f.after_submit(&gfx.gpu);
+            f.after_submit(&gfx.gpu, &mut self.effects_gpu);
         }
         if let Some((_, f)) = self.nation.fly.as_mut() {
-            f.after_submit(&gfx.gpu);
+            f.after_submit(&gfx.gpu, &mut self.effects_gpu);
         }
         if let Phase::World(w) = &mut self.phase
             && let Some(r) = &mut w.renderer
@@ -19558,6 +19598,7 @@ impl App {
         let t0 = Instant::now();
         self.scene_loads();
         self.frame_updates();
+        self.poll_effects_warm();
         if !self.frame_shown() {
             return;
         }
@@ -21105,14 +21146,16 @@ fn draw_effects(
     r: &mut ZoneRenderer,
     wf: &WorldFrame,
 ) {
-    let (bg, aspect, scene_fmt) = (fg.bg, fg.aspect, fg.scene_fmt);
+    let (bg, aspect) = (fg.bg, fg.aspect);
     let (scene_depth, scene_tex, scene_raw) = (fg.scene_depth.clone(), fg.scene_tex.clone(), fg.scene_raw.clone());
     let (dt, ev_clock) = (wf.dt, wf.ev_clock);
     let WorldFrame { camera, model_hidden, places, drops, new_lamps, .. } = wf;
     // Effect generators: CPU emission, the GPU update pass, then the elements over the scene.
-    // Its pipelines are made while the zone still goes up (behind the loading indicator), not on the
-    // first shown frame.
-    let eg = cx.effects_gpu.get_or_insert_with(|| crate::render::effects::EffectsGpu::new(&gfx.gpu, scene_fmt));
+    // Its pipelines are warmed on a worker thread at startup (and again entering the world); until then the zone draws
+    // without effects.
+    let Some(eg) = cx.effects_gpu.as_mut() else {
+        return;
+    };
     if let Some(l) = &new_lamps {
         eg.set_lamps(&gfx.gpu, &l.iter().map(|l| (l.pos, l.slot, l.template, l.colour)).collect::<Vec<_>>());
     }
@@ -21502,6 +21545,7 @@ impl ApplicationHandler for App {
         let egui_renderer = egui_wgpu::Renderer::new(&gpu.device, config.format, Default::default());
         // Zone, posing and mip pipelines are compiled now, off this thread.
         gpu.warm(&[config.format]);
+        self.start_effects_warm(&gpu.device, &gpu.queue, config.format);
         window.request_redraw();
         self.next_frame = Some(Instant::now());
         #[cfg(target_os = "android")]
