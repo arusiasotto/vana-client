@@ -1,0 +1,34 @@
+name = "Touch Controls"
+version = "1.4.2"
+description = "Three edge touch panels — Move stick, Cam stick, and Accept/Cancel/Menu — each draggable along the screen edge."
+permissions = ["input.capture"]
+
+[settings.on]
+type = "bool"
+default = false
+label = "Touch Controls"
+help = "Shows three edge panels. Drag each tab along a screen edge to place it; fold a tab to tuck it away."
+
+[settings.lite]
+type = "bool"
+default = false
+label = "Light Panel"
+help = "On: outline sticks and buttons (no dark fills on the canvas). Edge heading tabs are still drawn by the client."
+
+[settings.scale]
+type = "int"
+default = 100
+min = 60
+max = 160
+step = 5
+label = "Scale"
+help = "Size of the sticks and buttons (percent)."
+
+[settings.deadzone]
+type = "int"
+default = 18
+min = 0
+max = 45
+step = 2
+label = "Stick Dead Zone"
+help = "How far from centre you must push before movement or camera keys are held (percent of the stick's radius)."
