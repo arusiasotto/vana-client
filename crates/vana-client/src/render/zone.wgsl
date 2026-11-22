@@ -854,21 +854,29 @@ struct CullArg {
     base_vertex: u32,
     pad: u32,
 }
-@group(3) @binding(0) var<storage, read> cull_runs: array<CullRun>;
+// Runs, then their draw-slot indices in one buffer (V3D: 8 storage buffers per compute stage).
+@group(3) @binding(0) var<storage, read> cull_buf: array<u32>;
 // Per instance: its mesh's box centre, then half extents (model space).
 @group(3) @binding(1) var<storage, read> cull_bounds: array<vec4<f32>>;
 // Instances as the vertex buffer holds them, 28 words each (render::Instance).
 @group(3) @binding(2) var<storage, read> cull_src: array<u32>;
 @group(3) @binding(3) var<storage, read_write> cull_dst: array<u32>;
-@group(3) @binding(4) var<storage, read> cull_run_args: array<u32>;
-@group(3) @binding(5) var<storage, read> cull_arg_base: array<CullArg>;
+@group(3) @binding(4) var<storage, read> cull_arg_base: array<CullArg>;
 // DrawIndexedIndirect arguments, 5 words each.
-@group(3) @binding(6) var<storage, read_write> cull_args: array<u32>;
-@group(3) @binding(7) var<storage, read_write> cull_vis: array<u32>;
-// Word 0: a camera list is in force (FUN_1017b510); then a bit per instance that may draw.
-@group(3) @binding(8) var<storage, read> cull_mask: array<u32>;
+@group(3) @binding(5) var<storage, read_write> cull_args: array<u32>;
+// Words 0..cull_mask_words(): camera list (FUN_1017b510); then per-instance visibility flags.
+@group(3) @binding(6) var<storage, read_write> cull_vis: array<u32>;
 
 const INST_WORDS: u32 = 28u;
+const CULL_RUN_WORDS: u32 = 8u;
+
+fn cull_inst_count() -> u32 { return arrayLength(&cull_bounds) / 2u; }
+fn cull_mask_words() -> u32 { return 3u + 2u * ((cull_inst_count() + 31u) / 32u); }
+
+fn cull_run(i: u32) -> CullRun {
+    let b = i * CULL_RUN_WORDS;
+    return CullRun(cull_buf[b], cull_buf[b + 1u], cull_buf[b + 2u], cull_buf[b + 3u], cull_buf[b + 4u], cull_buf[b + 5u], cull_buf[b + 6u], cull_buf[b + 7u]);
+}
 
 fn cull_col(i: u32, k: u32) -> vec4<f32> {
     let b = i * INST_WORDS + k * 4u;
@@ -888,12 +896,12 @@ fn cull_visible(i: u32) -> bool {
     let d = u.eye.xyz - origin;
     let d2 = dot(d, d);
     // The camera list (render/cull.rs set_mask): listed, or unlisted and marked to draw beyond the reach.
-    if (cull_mask[0] != 0u) {
+    if (cull_vis[0] != 0u) {
         let w = i / 32u;
         let bit = 1u << (i % 32u);
-        if ((cull_mask[3u + w] & bit) == 0u) {
-            let beyond = (cull_mask[3u + cull_mask[2] + w] & bit) != 0u;
-            if (!beyond || d2 <= bitcast<f32>(cull_mask[1])) {
+        if ((cull_vis[3u + w] & bit) == 0u) {
+            let beyond = (cull_vis[3u + cull_vis[2] + w] & bit) != 0u;
+            if (!beyond || d2 <= bitcast<f32>(cull_vis[1])) {
                 return false;
             }
         }
@@ -938,8 +946,8 @@ fn cull_visible(i: u32) -> bool {
 
 @compute @workgroup_size(64)
 fn cs_cull_vis(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (id.x < arrayLength(&cull_vis)) {
-        cull_vis[id.x] = select(0u, 1u, cull_visible(id.x));
+    if (id.x < cull_inst_count()) {
+        cull_vis[cull_mask_words() + id.x] = select(0u, 1u, cull_visible(id.x));
     }
 }
 
@@ -950,14 +958,14 @@ var<workgroup> cull_base: u32;
 // ones before it.
 @compute @workgroup_size(64)
 fn cs_cull_compact(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-    let run = cull_runs[wg.x];
+    let run = cull_run(wg.x);
     if (lid == 0u) {
         cull_base = 0u;
     }
     workgroupBarrier();
     for (var start = run.inst_start; start < run.inst_end; start += 64u) {
         let i = start + lid;
-        let v = select(0u, cull_vis[min(i, run.inst_end - 1u)], i < run.inst_end);
+        let v = select(0u, cull_vis[cull_mask_words() + min(i, run.inst_end - 1u)], i < run.inst_end);
         cull_scan[lid] = v;
         workgroupBarrier();
         for (var off = 1u; off < 64u; off <<= 1u) {
@@ -985,7 +993,7 @@ fn cs_cull_compact(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocati
     }
     let n = workgroupUniformLoad(&cull_base);
     for (var a = lid; a < run.args_count; a += 64u) {
-        let slot = cull_run_args[run.args_start + a];
+        let slot = cull_buf[run.args_start + a];
         let b = cull_arg_base[slot];
         let o = slot * 5u;
         cull_args[o] = b.index_count;

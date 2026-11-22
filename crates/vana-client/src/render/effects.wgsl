@@ -21,7 +21,7 @@ struct Params {
     light: vec4<f32>,
     // The scene projection (update op 0x53)
     proj: mat4x4<f32>,
-    // focal length on the 384-line reference (cam +0x2f4), scene depth bound (1) or not (0)
+    // focal length on the 384-line reference (cam +0x2f4), scene depth bound (1) or not (0); z = word index of slots in ops
     screen: vec4<f32>,
 };
 
@@ -30,14 +30,16 @@ struct Params {
 @group(0) @binding(2) var<storage, read> ops: array<u32>;
 @group(0) @binding(3) var<storage, read> keys: array<vec2<f32>>;
 @group(0) @binding(4) var<storage, read> key_desc: array<vec2<u32>>;
-@group(0) @binding(5) var<storage, read> slots: array<u32>;
-@group(0) @binding(6) var<storage, read_write> outs: array<f32>;
-@group(0) @binding(7) var<storage, read_write> back: array<u32>;
-@group(0) @binding(8) var<storage, read> paths: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read_write> outs: array<f32>;
+@group(0) @binding(6) var<storage, read_write> back: array<u32>;
+@group(0) @binding(7) var<storage, read> paths: array<vec4<f32>>;
 // The zone's point-light table (render/mod.rs LIGHTS x two vec4s).
-@group(0) @binding(9) var<storage, read_write> lights: array<vec4<f32>>;
+@group(0) @binding(8) var<storage, read_write> lights: array<vec4<f32>>;
 // This frame's scene depth (drawn before the update pass), for op 0x53.
-@group(0) @binding(10) var scene_depth: texture_depth_2d;
+@group(0) @binding(9) var scene_depth: texture_depth_2d;
+
+fn slots_base() -> u32 { return bitcast<u32>(p.screen.z); }
+fn slot_word(i: u32) -> u32 { return ops[slots_base() + i]; }
 
 // FUN_10044f10: the element's view-space position (+0x188) as the transform places it: camera-relative (flags bit 2)
 // elements are view_rot x pos (bit 3 too: pos itself), flag 0x20000 the parent's translation in view space plus pos
@@ -47,7 +49,7 @@ fn view_pos(b: u32, parent: u32) -> vec3<f32> {
     let pos = ev3(b, E_POS);
     if ((flags & 0x20000u) != 0u) {
         var t = vec3<f32>(0.0);
-        if (parent != NONE && slots[parent * SLOT_WORDS + S_HAS_MATRIX] != 0u) { t = slot_mat(parent)[3].xyz; }
+        if (parent != NONE && slot_word(parent * SLOT_WORDS + S_HAS_MATRIX) != 0u) { t = slot_mat(parent)[3].xyz; }
         let bboard = (flags & 1u) != 0u && (flags & 0x1c0u) == 0u;
         return (p.view * vec4<f32>(t, 1.0)).xyz + vec3<f32>(pos.x, select(pos.y, -pos.y, bboard), pos.z);
     }
@@ -255,16 +257,16 @@ fn s16(v: u32, hi: bool) -> i32 {
 fn slot_mat(s: u32) -> mat4x4<f32> {
     let o = s * SLOT_WORDS;
     return mat4x4<f32>(
-        vec4<f32>(bitcast<f32>(slots[o]), bitcast<f32>(slots[o + 1u]), bitcast<f32>(slots[o + 2u]), bitcast<f32>(slots[o + 3u])),
-        vec4<f32>(bitcast<f32>(slots[o + 4u]), bitcast<f32>(slots[o + 5u]), bitcast<f32>(slots[o + 6u]), bitcast<f32>(slots[o + 7u])),
-        vec4<f32>(bitcast<f32>(slots[o + 8u]), bitcast<f32>(slots[o + 9u]), bitcast<f32>(slots[o + 10u]), bitcast<f32>(slots[o + 11u])),
-        vec4<f32>(bitcast<f32>(slots[o + 12u]), bitcast<f32>(slots[o + 13u]), bitcast<f32>(slots[o + 14u]), bitcast<f32>(slots[o + 15u])));
+        vec4<f32>(bitcast<f32>(slot_word(o)), bitcast<f32>(slot_word(o + 1u)), bitcast<f32>(slot_word(o + 2u)), bitcast<f32>(slot_word(o + 3u))),
+        vec4<f32>(bitcast<f32>(slot_word(o + 4u)), bitcast<f32>(slot_word(o + 5u)), bitcast<f32>(slot_word(o + 6u)), bitcast<f32>(slot_word(o + 7u))),
+        vec4<f32>(bitcast<f32>(slot_word(o + 8u)), bitcast<f32>(slot_word(o + 9u)), bitcast<f32>(slot_word(o + 10u)), bitcast<f32>(slot_word(o + 11u))),
+        vec4<f32>(bitcast<f32>(slot_word(o + 12u)), bitcast<f32>(slot_word(o + 13u)), bitcast<f32>(slot_word(o + 14u)), bitcast<f32>(slot_word(o + 15u))));
 }
 fn slot_v3(s: u32, k: u32) -> vec3<f32> {
     let o = s * SLOT_WORDS + k;
-    return vec3<f32>(bitcast<f32>(slots[o]), bitcast<f32>(slots[o + 1u]), bitcast<f32>(slots[o + 2u]));
+    return vec3<f32>(bitcast<f32>(slot_word(o)), bitcast<f32>(slot_word(o + 1u)), bitcast<f32>(slot_word(o + 2u)));
 }
-fn slot_f(s: u32, k: u32) -> f32 { return bitcast<f32>(slots[s * SLOT_WORDS + k]); }
+fn slot_f(s: u32, k: u32) -> f32 { return bitcast<f32>(slot_word(s * SLOT_WORDS + k)); }
 
 // FUN_10043e00: parent x (pos x scale A).
 // Ops 0x2e / 0x48's distance (vtable +0x44): |view position| (FUN_10044f10's, camera-relative elements in view space);
@@ -281,7 +283,7 @@ fn fade_dist(b: u32, parent: u32) -> f32 {
     let kind = el[b + E_KIND];
     if (kind == DK_MESH || kind == DK_GROUND_PROJ) {
         var kx = 1.0;
-        if (parent != NONE && slots[parent * SLOT_WORDS + S_SIZE_SCALED] != 0u) { kx = slot_v3(parent, S_SCALE_B).x; }
+        if (parent != NONE && slot_word(parent * SLOT_WORDS + S_SIZE_SCALED) != 0u) { kx = slot_v3(parent, S_SCALE_B).x; }
         return length(v) + abs(ef(b, E_RADIUS) * ef(b, E_SCALE) * kx);
     }
     if (v.z > 0.0) { return 0.0; }
@@ -291,7 +293,7 @@ fn fade_dist(b: u32, parent: u32) -> f32 {
 fn world_of(b: u32, parent: u32) -> vec3<f32> {
     if (parent == NONE) { return ev3(b, E_POS); }
     let wp = ev3(b, E_POS) * slot_v3(parent, S_SCALE_A);
-    if (slots[parent * SLOT_WORDS + S_HAS_MATRIX] == 0u) { return wp; }
+    if (slot_word(parent * SLOT_WORDS + S_HAS_MATRIX) == 0u) { return wp; }
     return (slot_mat(parent) * vec4<f32>(wp, 1.0)).xyz;
 }
 
@@ -673,8 +675,8 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>) {
     var has_p = false;
     if (parent != NONE) {
         a = slot_v3(parent, S_SCALE_A);
-        if (slots[parent * SLOT_WORDS + S_SIZE_SCALED] != 0u) { ks = slot_v3(parent, S_SCALE_B); }
-        if (slots[parent * SLOT_WORDS + S_HAS_MATRIX] != 0u) { pm = slot_mat(parent); has_p = true; }
+        if (slot_word(parent * SLOT_WORDS + S_SIZE_SCALED) != 0u) { ks = slot_v3(parent, S_SCALE_B); }
+        if (slot_word(parent * SLOT_WORDS + S_HAS_MATRIX) != 0u) { pm = slot_mat(parent); has_p = true; }
     }
     let rv = ev3(b, E_ROT);
     var rot = euler(rv);

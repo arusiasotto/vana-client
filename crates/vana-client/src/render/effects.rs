@@ -675,13 +675,12 @@ impl EffectsGpu {
                 storage(2, true, cs),
                 storage(3, true, cs),
                 storage(4, true, cs),
-                storage(5, true, cs),
+                storage(5, false, cs),
                 storage(6, false, cs),
-                storage(7, false, cs),
-                storage(8, true, cs),
-                storage(9, false, cs),
+                storage(7, true, cs),
+                storage(8, false, cs),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 10,
+                    binding: 9,
                     visibility: cs,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
@@ -1495,10 +1494,15 @@ impl EffectsGpu {
         let reg = &mut fx.reg;
         let mut rebind = self.update_group.is_none();
         let mut redraw = self.draw_group.is_none();
+        let slots_words = fx.slots.len() * SLOT_WORDS;
+        let ops_words = reg.ops.len();
+        rebind |= Self::fit(gpu, &mut self.ops, (ops_words + slots_words) * 4, "effects ops");
         if reg.ops_dirty {
-            rebind |= Self::fit(gpu, &mut self.ops, reg.ops.len() * 4, "effects ops");
             q.put(&self.ops.0, 0, bytemuck::cast_slice(&reg.ops));
             reg.ops_dirty = false;
+        }
+        if !fx.slots.is_empty() {
+            q.put(&self.ops.0, (ops_words * 4) as u64, bytemuck::cast_slice(&fx.slots));
         }
         if reg.keys_dirty {
             rebind |= Self::fit(gpu, &mut self.keys, reg.key_data.len() * 8, "effects keys");
@@ -1545,7 +1549,7 @@ impl EffectsGpu {
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.trails.0.as_entire_binding() }],
             }));
         }
-        rebind |= Self::fit(gpu, &mut self.slots, fx.slots.len() * SLOT_WORDS * 4, "effects slots");
+        rebind |= Self::fit(gpu, &mut self.slots, slots_words * 4, "effects slots");
         if !fx.slots.is_empty() {
             q.put(&self.slots.0, 0, bytemuck::cast_slice(&fx.slots));
         }
@@ -1593,12 +1597,11 @@ impl EffectsGpu {
                     wgpu::BindGroupEntry { binding: 2, resource: self.ops.0.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 3, resource: self.keys.0.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 4, resource: self.key_desc.0.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 5, resource: self.slots.0.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 6, resource: self.outs.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 7, resource: self.back.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 8, resource: self.paths.0.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 9, resource: self.lights.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(depth) },
+                    wgpu::BindGroupEntry { binding: 5, resource: self.outs.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 6, resource: self.back.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 7, resource: self.paths.0.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 8, resource: self.lights.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(depth) },
                 ],
             }));
         }
@@ -1621,7 +1624,12 @@ impl EffectsGpu {
             area: [f.area_light.x, f.area_light.y, f.area_light.z, 0.0],
             light: self.light.map_or([0.0; 4], |(d, _, _)| [d.x, d.y, d.z, 1.0]),
             proj: m(self.depth.as_ref().map_or(Mat4::IDENTITY, |d| d.1)),
-            screen: [f.focal, if self.depth.is_some() { 1.0 } else { 0.0 }, 0.0, 0.0],
+            screen: [
+                f.focal,
+                if self.depth.is_some() { 1.0 } else { 0.0 },
+                f32::from_bits(ops_words as u32),
+                0.0,
+            ],
         };
         q.put(&self.params, 0, bytemuck::bytes_of(&p));
         if self.count == 0 {

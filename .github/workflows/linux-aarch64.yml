@@ -1,0 +1,35 @@
+# Linux aarch64 (Raspberry Pi class) release build on ARM runners. Use workflow_dispatch or pushes that touch the client.
+name: Linux aarch64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/rpi5-adapter-limits]
+    paths:
+      - crates/vana-client/**
+      - release/build-linux.sh
+      - .github/workflows/linux-aarch64.yml
+
+concurrency:
+  group: linux-aarch64-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-aarch64:
+    name: Linux aarch64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        env:
+          VANA_CPUSET: ""
+        run: release/build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vana-client-linux-aarch64
+          path: target/assets/vana-client-linux-aarch64
+          if-no-files-found: error

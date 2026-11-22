@@ -120,6 +120,10 @@ impl CullData {
             }
             run_args.extend(a);
         }
+        let run_words = (gpu_runs.len() * 8) as u32;
+        for r in &mut gpu_runs {
+            r.args_start += run_words;
+        }
         (Self { bounds, runs: gpu_runs, boxes, run_args, args, arg_run, out_len: out }, slots)
     }
 }
@@ -200,9 +204,8 @@ pub struct Cull {
     /// Each run's instances, and while a camera list is in force (set_mask), the runs with a listed instance.
     ranges: Vec<(u32, u32)>,
     listed: Option<Vec<bool>>,
-    /// Word 0: a camera list is in force; word 1 the reach squared past which the second set draws, word 2 the words
-    /// per set; then a bit per instance in each set: listed (it may draw), then unlisted but drawn beyond the reach.
-    mask: wgpu::Buffer,
+    /// Camera-list header, then per-instance visibility (render/zone.wgsl `cull_vis`).
+    vis: wgpu::Buffer,
     /// The visible instances, run by run (the scenery's instance vertex buffer), and the draws' indirect arguments.
     pub out: wgpu::Buffer,
     pub args: wgpu::Buffer,
@@ -239,9 +242,11 @@ impl Cull {
             })
         };
         let storage = wgpu::BufferUsages::STORAGE;
-        let runs = with("cull runs", bytemuck::cast_slice(&data.runs), storage);
+        let mut cull_buf: Vec<u32> = Vec::with_capacity(data.runs.len() * 8 + data.run_args.len());
+        cull_buf.extend_from_slice(bytemuck::cast_slice(&data.runs));
+        cull_buf.extend_from_slice(&data.run_args);
+        let runs = with("cull runs", bytemuck::cast_slice(&cull_buf), storage);
         let bounds = with("cull bounds", bytemuck::cast_slice(&data.bounds), storage);
-        let run_args = with("cull run args", bytemuck::cast_slice(&data.run_args), storage);
         let arg_base = with("cull arg base", bytemuck::cast_slice(&data.args), storage);
         let out = empty("culled instances", data.out_len as u64 * INSTANCE_BYTES, storage | wgpu::BufferUsages::VERTEX);
         let args = empty(
@@ -249,12 +254,16 @@ impl Cull {
             data.args.len() as u64 * 20,
             storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
         );
-        let vis = empty("cull visibility", data.bounds.len() as u64 * 4, storage);
-        let mask = with("cull camera list", &vec![0u8; (3 + 2 * data.bounds.len().div_ceil(32)) * 4], storage);
+        let header = 3 + 2 * data.bounds.len().div_ceil(32);
+        let vis = empty(
+            "cull visibility",
+            ((header + data.bounds.len()) * 4) as u64,
+            storage,
+        );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("cull"),
             layout,
-            entries: &[&runs, &bounds, instances, &out, &run_args, &arg_base, &args, &vis, &mask]
+            entries: &[&runs, &bounds, instances, &out, &arg_base, &args, &vis]
                 .iter()
                 .enumerate()
                 .map(|(k, b)| wgpu::BindGroupEntry { binding: k as u32, resource: b.as_entire_binding() })
@@ -275,7 +284,7 @@ impl Cull {
             arg_run: data.arg_run.clone(),
             ranges,
             listed: None,
-            mask,
+            vis,
             out,
             args,
         })
@@ -298,7 +307,7 @@ impl Cull {
                 |f: &[bool], s: u32, e: u32| f.get(s as usize..e as usize).is_some_and(|r| r.iter().any(|&on| on));
             self.ranges.iter().map(|&(s, e)| any(allowed, s, e) || any(beyond, s, e)).collect()
         });
-        gpu.queue.put(&self.mask, 0, bytemuck::cast_slice(&words));
+        gpu.queue.put(&self.vis, 0, bytemuck::cast_slice(&words));
     }
 
     /// The last culling's draws with an instance, of all, and the instances drawn (a blocking readback, for the
@@ -355,8 +364,7 @@ impl Cull {
     }
 }
 
-/// The bind group layout of group 3: runs, bounds, source instances, culled instances, run args, arg bases, args,
-/// visibility, the camera list's mask.
+/// The bind group layout of group 3 (seven storage buffers: V3D allows eight per compute stage with zone globals).
 pub fn layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     let entry = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
         binding,
@@ -376,10 +384,8 @@ pub fn layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             entry(2, true),
             entry(3, false),
             entry(4, true),
-            entry(5, true),
+            entry(5, false),
             entry(6, false),
-            entry(7, false),
-            entry(8, true),
         ],
     })
 }
