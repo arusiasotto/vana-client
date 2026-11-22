@@ -258,7 +258,7 @@ impl Cull {
         let vis = empty(
             "cull visibility",
             ((header + data.bounds.len()) * 4) as u64,
-            storage,
+            storage | wgpu::BufferUsages::COPY_DST,
         );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("cull"),

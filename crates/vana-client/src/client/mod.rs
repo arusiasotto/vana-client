@@ -10379,7 +10379,6 @@ impl App {
                 // The lobby's windows wear the modern frames when Modern is chosen (the default stays retail).
                 gu.modern_skin(self.cfg.modern_ui);
                 self.game_ui = Some(gu);
-                self.game_ui_state = LoadState::Idle;
                 log::info!("lobby UI ready");
             }
             Task::GameUi(Err(e)) => {
@@ -18248,7 +18247,7 @@ impl App {
     /// The scenes behind the lobby and the game UI load as they are wanted: the title flyover, the select ring, the
     /// creator's backdrop and dancer, the nation step's flyover.
     fn scene_loads(&mut self) {
-        if self.game_ui_state == LoadState::Idle {
+        if self.game_ui.is_none() && self.game_ui_state == LoadState::Idle {
             self.load_game_ui();
         }
         if self.title_backdrop() {
