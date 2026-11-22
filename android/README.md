@@ -56,7 +56,17 @@ CI (`.github/workflows/android.yml`) builds a debug-signed APK unless the reposi
 
 `release/build-android-apk.sh` cross-compiles `libvana_client.so` (NDK 27, `cargo-ndk`) and packages the APK with Gradle as `target/assets/vana-client-android-aarch64.apk`; `VANA_ANDROID_APK_VARIANT=release` builds the signed release. Game files are never part of the APK.
 
-Set `VANA_ANDROID_RELEASE_TAG=android-v1.0.14-rc4` when packaging a release candidate so the APK's `versionName` matches the GitHub tag (the title **Update** window compares against those tags).
+Set `VANA_ANDROID_RELEASE_TAG=android-v1.0.14-rc4` when packaging locally so the APK's `versionName` matches the GitHub tag (the title **Update** window compares against those tags).
+
+### GitHub Actions
+
+**Actions → Android → Run workflow** (default branch `android`):
+
+- **release_tag** — required, e.g. `android-v1.0.15-rc5` (sets `versionName` to `1.0.15-rc5` and names the GitHub release).
+- **publish** — creates or updates a GitHub Release and attaches the APK (re-upload replaces the file on an existing tag).
+- **prerelease** — leave on for release candidates.
+
+A **push** to `android` or a **pull request** only uploads a workflow artifact; it does not publish a release. **Release builds** is for desktop binaries upstream; use **Android** for APKs.
 
 ## In-app updates
 

@@ -1,6 +1,5 @@
-# The Android APK (arm64) for every push to master and every pull request: release/build-android-apk.sh cross-compiles
-# libvana_client.so with the SDK's NDK 27 and packages it with Gradle. The APK is the run's artifact.
-# The setup-ndk action's r27 has no clang wrappers, so the NDK comes from the runner's SDK manager.
+# arm64 APK via release/build-android-apk.sh (NDK 27, cargo-ndk, Gradle). Push and pull_request upload an artifact
+# only. workflow_dispatch can set the release tag (versionName) and publish a GitHub prerelease with the APK.
 name: Android
 
 on:
@@ -8,6 +7,22 @@ on:
     branches: [android]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag and APK versionName (e.g. android-v1.0.15-rc5)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        type: boolean
+        default: true
+      publish:
+        description: "Create or update a GitHub release with the APK"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
 
 concurrency:
   group: android-${{ github.ref }}
@@ -26,7 +41,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      # AGP 8.7 needs Gradle 8.9 or newer.
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.14.3"
@@ -41,11 +55,10 @@ jobs:
           targets: aarch64-linux-android
       - name: cargo-ndk
         run: cargo install cargo-ndk --locked
-      # With the keystore in the repository's secrets (android/README.md) the APK is release-signed; without them, as in
-      # pull requests from forks, debug-signed.
       - name: Build the APK
         env:
           GRADLE: gradle
+          VANA_ANDROID_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || '' }}
           KEYSTORE_BASE64: ${{ secrets.VANA_ANDROID_KEYSTORE_BASE64 }}
           VANA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.VANA_ANDROID_KEYSTORE_PASSWORD }}
           VANA_ANDROID_KEY_ALIAS: ${{ secrets.VANA_ANDROID_KEY_ALIAS }}
@@ -62,3 +75,31 @@ jobs:
           name: vana-client-android-aarch64.apk
           path: target/assets/vana-client-android-aarch64.apk
           if-no-files-found: error
+      - name: Publish GitHub release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          apk=target/assets/vana-client-android-aarch64.apk
+          ver="${TAG#android-v}"
+          title="Android $ver"
+          body="$(cat <<EOF
+          Built from \`${{ github.sha }}\` on branch \`${{ github.ref_name }}\`.
+
+          - \`vana-client-android-aarch64.apk\`: release-signed sideload APK (when keystore secrets are set).
+          EOF
+          )"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$apk" --repo "${{ github.repository }}" --clobber
+            echo "Updated assets on existing release $TAG"
+          else
+            args=(--repo "${{ github.repository }}" --target "${{ github.ref_name }}" --title "$title" --notes "$body")
+            if [[ "$PRERELEASE" == "true" ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "$TAG" "${args[@]}" "$apk"
+            echo "Published $TAG"
+          fi
