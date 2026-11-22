@@ -10379,6 +10379,8 @@ impl App {
                 // The lobby's windows wear the modern frames when Modern is chosen (the default stays retail).
                 gu.modern_skin(self.cfg.modern_ui);
                 self.game_ui = Some(gu);
+                self.game_ui_state = LoadState::Idle;
+                log::info!("lobby UI ready");
             }
             Task::GameUi(Err(e)) => {
                 log::warn!("lobby UI: {e:#}");
@@ -15687,14 +15689,15 @@ impl App {
             return;
         }
         if self.game_ui.is_none() {
-            if self.game_ui_state == LoadState::Failed {
-                egui::Area::new(egui::Id::unique("error")).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
-                    ctx,
-                    |ui| {
-                        ui.label(format!("The game data could not be loaded.\n{status}"));
-                    },
-                );
-            }
+            let msg = if self.game_ui_state == LoadState::Failed {
+                format!("The game data could not be loaded.\n{status}")
+            } else {
+                "Loading game UI…".to_string()
+            };
+            egui::Area::new(egui::Id::unique("lobby-load"))
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| ui.label(msg));
+            self.ui_drawn = true;
             return;
         }
         // Screen changes and leaving the lobby wait for the fade-out (LobbyFade); input meanwhile is dropped.
@@ -18443,13 +18446,20 @@ impl App {
         if self.gfx.is_some() {
             return true;
         }
-        // Nothing is shown until the title can draw.
+        // Nothing is shown until the title can draw, but stay hidden only while nothing is ready yet. A first-run
+        // wizard or title assets loading need a mapped window (Wayland does not present while unmapped); frozen here
+        // looked like a hang after "pipelines ready" on headless-looking setups.
         if !self.shown {
-            if !self.title_ready() {
+            let may_show = self.title_ready()
+                || self.first_run.is_some()
+                || self.game_ui_state == LoadState::Loading
+                || self.flyover_state == LoadState::Loading;
+            if !may_show {
                 self.next_frame = Some(Instant::now() + std::time::Duration::from_millis(16));
                 return false;
             }
             self.shown = true;
+            log::info!("window visible (title ready: {})", self.title_ready());
             if let Some(g) = &self.gfx {
                 g.window.set_visible(true);
             }
