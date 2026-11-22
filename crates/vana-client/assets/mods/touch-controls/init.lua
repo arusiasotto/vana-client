@@ -19,6 +19,33 @@ local sticks = {
 }
 local stick_touch
 local window_sig
+local hidden_panels = {} -- ui.native piece -> true while we hid it
+
+local HIDES = {
+  { setting = "hide_party", piece = "party" },
+  { setting = "hide_log", piece = "log" },
+  { setting = "hide_compass", piece = "compass" },
+}
+
+local function sync_hides()
+  for _, h in ipairs(HIDES) do
+    local want = settings.get(h.setting)
+    if want and not hidden_panels[h.piece] then
+      ui.native.hide(h.piece, true)
+      hidden_panels[h.piece] = true
+    elseif not want and hidden_panels[h.piece] then
+      ui.native.hide(h.piece, false)
+      hidden_panels[h.piece] = nil
+    end
+  end
+end
+
+local function clear_hides()
+  for p in pairs(hidden_panels) do
+    ui.native.hide(p, false)
+  end
+  hidden_panels = {}
+end
 
 local function dead()
   return (settings.get("deadzone") or 18) / 100
@@ -167,6 +194,7 @@ input.on_mouse(function(e)
 end)
 
 events.on("frame", function()
+  sync_hides()
   if not touch_active() then
     keys.clear_all()
     clear_sticks()
@@ -186,6 +214,7 @@ end)
 
 events.on("settings_changed", function()
   window_sig = nil
+  sync_hides()
   ensure_windows()
 end)
 
@@ -202,5 +231,6 @@ end)
 
 events.on("unload", function()
   keys.clear_all()
+  clear_hides()
   for _, w in ipairs(WINS) do ui.close(w.id) end
 end)

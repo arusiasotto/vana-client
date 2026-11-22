@@ -1,7 +1,7 @@
 name = "Touch Controls"
-version = "1.4.2"
+version = "1.5.2"
 description = "Three edge touch panels — Move stick, Cam stick, and Accept/Cancel/Menu — each draggable along the screen edge."
-permissions = ["input.capture"]
+permissions = ["input.capture", "ui.native"]
 
 [settings.on]
 type = "bool"
@@ -32,3 +32,21 @@ max = 45
 step = 2
 label = "Stick Dead Zone"
 help = "How far from centre you must push before movement or camera keys are held (percent of the stick's radius)."
+
+[settings.hide_party]
+type = "bool"
+default = false
+label = "Hide Party"
+help = "Hides the party and alliance lists (and their status icons)."
+
+[settings.hide_log]
+type = "bool"
+default = false
+label = "Hide Chat"
+help = "Hides the log windows. They still show for events, prompts, and the chat line when needed."
+
+[settings.hide_compass]
+type = "bool"
+default = false
+label = "Hide Compass"
+help = "Hides the compass (in the modern UI, the location panel)."
