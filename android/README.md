@@ -62,7 +62,7 @@ Set `VANA_ANDROID_RELEASE_TAG=android-v1.0.14-rc4` when packaging locally so the
 
 **Actions → Android → Run workflow** (default branch `android`):
 
-- **release_tag** — required, e.g. `android-v1.0.15-rc5` (sets `versionName` to `1.0.15-rc5` and names the GitHub release).
+- **release_tag** — required. Use `android-v1.0.15-rc5`, or just `1.0.15-rc5` (the workflow adds the `android-v` prefix). Sets `versionName` to match and titles the release **Android 1.0.15-rc5**.
 - **publish** — creates or updates a GitHub Release and attaches the APK (re-upload replaces the file on an existing tag).
 - **prerelease** — leave on for release candidates.
 

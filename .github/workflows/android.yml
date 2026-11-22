@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Tag and APK versionName (e.g. android-v1.0.15-rc5)"
+        description: "android-v1.0.15-rc5 (or 1.0.15-rc5 — android-v is added for you)"
         required: true
         type: string
       prerelease:
@@ -58,12 +58,26 @@ jobs:
       - name: Build the APK
         env:
           GRADLE: gradle
-          VANA_ANDROID_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || '' }}
+          RAW_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || '' }}
           KEYSTORE_BASE64: ${{ secrets.VANA_ANDROID_KEYSTORE_BASE64 }}
           VANA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.VANA_ANDROID_KEYSTORE_PASSWORD }}
           VANA_ANDROID_KEY_ALIAS: ${{ secrets.VANA_ANDROID_KEY_ALIAS }}
           VANA_ANDROID_KEY_PASSWORD: ${{ secrets.VANA_ANDROID_KEY_PASSWORD }}
         run: |
+          if [[ -n "${RAW_RELEASE_TAG:-}" ]]; then
+            tag="${RAW_RELEASE_TAG#"${RAW_RELEASE_TAG%%[![:space:]]*}"}"
+            tag="${tag%"${tag##*[![:space:]]}"}"
+            if [[ "$tag" == v* ]] && [[ "$tag" != android-v* ]]; then
+              tag="android-${tag}"
+            elif [[ "$tag" != android-v* ]]; then
+              tag="android-v$tag"
+            fi
+            if [[ ! "$tag" =~ ^android-v[0-9] ]]; then
+              echo "release_tag must look like android-v1.0.15-rc5 (got: $RAW_RELEASE_TAG)" >&2
+              exit 1
+            fi
+            export VANA_ANDROID_RELEASE_TAG="$tag"
+          fi
           if [[ -n "$KEYSTORE_BASE64" ]]; then
             export VANA_ANDROID_KEYSTORE="$RUNNER_TEMP/release.keystore"
             base64 -d <<<"$KEYSTORE_BASE64" >"$VANA_ANDROID_KEYSTORE"
@@ -84,7 +98,18 @@ jobs:
         run: |
           set -euo pipefail
           apk=target/assets/vana-client-android-aarch64.apk
-          ver="${TAG#android-v}"
+          tag="${TAG#"${TAG%%[![:space:]]*}"}"
+          tag="${tag%"${tag##*[![:space:]]}"}"
+          if [[ "$tag" == v* ]] && [[ "$tag" != android-v* ]]; then
+            tag="android-${tag}"
+          elif [[ "$tag" != android-v* ]]; then
+            tag="android-v$tag"
+          fi
+          if [[ ! "$tag" =~ ^android-v[0-9] ]]; then
+            echo "release_tag must look like android-v1.0.15-rc5 (got: $TAG)" >&2
+            exit 1
+          fi
+          ver="${tag#android-v}"
           title="Android $ver"
           body="$(cat <<EOF
           Built from \`${{ github.sha }}\` on branch \`${{ github.ref_name }}\`.
@@ -92,14 +117,15 @@ jobs:
           - \`vana-client-android-aarch64.apk\`: release-signed sideload APK (when keystore secrets are set).
           EOF
           )"
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$apk" --repo "${{ github.repository }}" --clobber
-            echo "Updated assets on existing release $TAG"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$tag" "$apk" --repo "${{ github.repository }}" --clobber
+            gh release edit "$tag" --repo "${{ github.repository }}" --title "$title"
+            echo "Updated assets on existing release $tag"
           else
             args=(--repo "${{ github.repository }}" --target "${{ github.ref_name }}" --title "$title" --notes "$body")
             if [[ "$PRERELEASE" == "true" ]]; then
               args+=(--prerelease)
             fi
-            gh release create "$TAG" "${args[@]}" "$apk"
-            echo "Published $TAG"
+            gh release create "$tag" "${args[@]}" "$apk"
+            echo "Published $tag"
           fi
