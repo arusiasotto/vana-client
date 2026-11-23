@@ -84,7 +84,7 @@ end
 local function short(text)
   local n = math.max(1, math.floor((T - 6) / (6.5 * 0.72)))
   if utf8.len(text) and utf8.len(text) > n then
-    return text:sub(1, utf8.offset(text, n) - 1) .. "…"
+    return text:sub(1, utf8.offset(text, n) - 1) .. "..."
   end
   return text
 end

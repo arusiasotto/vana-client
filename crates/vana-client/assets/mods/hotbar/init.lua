@@ -93,6 +93,12 @@ local function refresh()
 end
 
 local detect
+events.on("unload", function()
+  pcall(function()
+    require("src.overlay").clear("ovb")
+    require("src.overlay").clear("ovp")
+  end)
+end)
 events.on("job_change", changed)
 events.on("settings_changed", function(key)
   if key == "mode" then mode.use_setting() end
