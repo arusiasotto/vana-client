@@ -47,17 +47,6 @@ local function suite_on()
   return settings.get("on") ~= false
 end
 
-local function run_module(alias, dir, setting_key)
-  if not suite_on() then return end
-  if settings.get(setting_key) == false then return end
-  bootstrap(bridge, assets, {
-    prefix = alias,
-    dir = dir,
-    manifest = load_manifest(dir),
-    settings = settings_proxy.proxy(alias),
-  })
-end
-
 mods.provide("loaded", function() return true end)
 mods.provide("suite", function() return bridge.registry end)
 
@@ -94,11 +83,26 @@ enqueue("party", "modules/party", "mod_party")
 enqueue("notify", "modules/notify", "mod_notify")
 
 local next_ix = 1
+local active_loader = nil
+
 local function pump()
+  if active_loader then
+    if bootstrap.step(active_loader) then active_loader = nil end
+    return
+  end
   if next_ix > #queue then return end
   local job = queue[next_ix]
   next_ix = next_ix + 1
-  run_module(job[1], job[2], job[3])
+  active_loader = bootstrap.begin(bridge, assets, {
+    prefix = job[1],
+    dir = job[2],
+    manifest = load_manifest(job[2]),
+    settings = settings_proxy.proxy(job[1]),
+  })
+end
+
+local function load_complete()
+  return next_ix > #queue and not active_loader
 end
 
 if #queue > 0 then
@@ -106,11 +110,17 @@ if #queue > 0 then
   local function frame_hook()
     local ok, err = pcall(pump)
     if not ok then
+      if active_loader and active_loader.saved_req then
+        _ENV.require = active_loader.saved_req
+        _ENV.settings = active_loader.saved_settings
+        if active_loader.unwrap then active_loader.unwrap() end
+      end
+      active_loader = nil
       if log and log.error then log.error("XIV-UI load: " .. tostring(err)) end
       events.off(frame_id)
       return
     end
-    if next_ix > #queue then
+    if load_complete() then
       events.off(frame_id)
       publish_host_compat()
     end
