@@ -51,24 +51,37 @@ end
 mods.provide("loaded", function() return true end)
 mods.provide("suite", function() return bridge.registry end)
 
-local TARGET_COMPAT = { "layout", "cast", "casts_for", "effects" }
+local HOST_COMPAT = {
+  target = { "layout", "cast", "casts_for", "effects" },
+  player = { "layout" },
+}
 
-local function publish_target_compat()
-  local tab = bridge.registry.target
-  if not tab then return end
-  for _, name in ipairs(TARGET_COMPAT) do
-    local fn = tab[name]
-    if type(fn) == "function" then mods.provide(name, fn) end
+local function publish_host_compat()
+  for alias, names in pairs(HOST_COMPAT) do
+    local tab = bridge.registry[alias]
+    if not tab then goto continue end
+    for _, name in ipairs(names) do
+      local fn = tab[name]
+      if type(fn) == "function" then mods.provide(name, fn) end
+    end
+    ::continue::
   end
 end
 
 local queue = {}
-if suite_on() and settings.get("mod_target") ~= false then
-  queue[#queue + 1] = { "target", "modules/target", "mod_target" }
+local function enqueue(alias, dir, toggle)
+  if suite_on() and settings.get(toggle) ~= false then
+    queue[#queue + 1] = { alias, dir, toggle }
+  end
 end
-if suite_on() and settings.get("mod_focus") ~= false then
-  queue[#queue + 1] = { "focus", "modules/focus", "mod_focus" }
-end
+enqueue("target", "modules/target", "mod_target")
+enqueue("focus", "modules/focus", "mod_focus")
+enqueue("cast", "modules/cast", "mod_cast")
+enqueue("player", "modules/player", "mod_player")
+enqueue("buff", "modules/buff", "mod_buff")
+enqueue("exp", "modules/exp", "mod_exp")
+enqueue("party", "modules/party", "mod_party")
+enqueue("notify", "modules/notify", "mod_notify")
 
 local next_ix = 1
 local function pump()
@@ -89,10 +102,10 @@ if #queue > 0 then
     end
     if next_ix > #queue then
       events.off(frame_id)
-      publish_target_compat()
+      publish_host_compat()
     end
   end
   frame_id = events.on("frame", frame_hook)
 elseif suite_on() then
-  publish_target_compat()
+  publish_host_compat()
 end

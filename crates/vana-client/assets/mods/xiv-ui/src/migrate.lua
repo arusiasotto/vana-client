@@ -28,6 +28,24 @@ function M.run()
     "on", "width", "scale", "offset_x", "offset_y", "last_x", "last_y",
     "show_focus", "show_last",
   })
+  copy_legacy_values("xiv_ui_cast_v1", {
+    "on", "width", "offset_x", "offset_y", "cast", "swing", "ranged", "swing_text",
+  })
+  copy_legacy_values("xiv_ui_player_v1", {
+    "on", "scale", "offset_x", "offset_y", "compact", "avoid_cast",
+  })
+  copy_legacy_values("xiv_ui_exp_v1", {
+    "on", "mode", "scale", "offset_x", "offset_y", "dark_thin", "stats_text",
+    "attach_vitals", "attach_below",
+  })
+  copy_legacy_values("xiv_ui_party_v1", {
+    "on", "offset_x", "offset_y", "scale", "buff_count", "range", "pets", "hide_solo",
+    "hide_cutscene", "align_bottom", "single_alliance", "range_numbers", "filter_whitelist",
+  })
+  copy_legacy_values("xiv_ui_notify_v1", {
+    "on", "seconds", "scale", "offset_x", "offset_y", "party_notices", "invite_reminders",
+    "request_offset_x", "request_offset_y",
+  })
 end
 
 return M

@@ -1,6 +1,6 @@
 name = "XIV-UI"
-version = "0.1.0"
-description = "FFXIV-style HUD in one mod (phase 1: target bar and focus/last target). Turn off the standalone xiv-target-bar and xiv-focus-target mods when this is on. Later phases add party, player, cast, buff, XP and notify."
+version = "0.2.0"
+description = "FFXIV-style HUD in one mod. Phase 2 bundles target, focus, cast, player, buff, XP, party list and notify. Disable matching standalone xiv-* mods for panels you enable here."
 authors = ["Nitsu"]
 permissions = ["ui.native", "actions"]
 
@@ -8,7 +8,7 @@ permissions = ["ui.native", "actions"]
 type = "bool"
 default = false
 label = "XIV-UI"
-help = "Master switch for the XIV HUD pack. Phase 1 loads the target bar and focus/last-target readouts only. Layout positions from standalone xiv-target-bar / xiv-focus-target import on first run when possible."
+help = "Master switch for the XIV HUD pack. Use the module toggles below for each panel. Legacy layout may import from storage.account.xiv_ui_v1 on first run."
 
 [settings.mod_target]
 type = "bool"
@@ -25,33 +25,33 @@ help = "Focus and last-target bars; anchors to the target bar layout when it is 
 [settings.mod_party]
 type = "bool"
 default = false
-label = "Party list (phase 2)"
-help = "Not wired yet in XIV-UI; keep using XIV Party List mod, or wait for phase 2."
+label = "Party list"
+help = "Party, alliance and pet rows; uses in-suite target APIs for casts and effects."
 
 [settings.mod_player]
 type = "bool"
 default = false
-label = "Player bars (phase 2)"
+label = "Player bars"
 
 [settings.mod_cast]
 type = "bool"
 default = false
-label = "Cast bar (phase 2)"
+label = "Cast bar"
 
 [settings.mod_buff]
 type = "bool"
 default = false
-label = "Buff bar (phase 2)"
+label = "Buff bar"
 
 [settings.mod_exp]
 type = "bool"
 default = false
-label = "XP bar (phase 2)"
+label = "XP / limit strip"
 
 [settings.mod_notify]
 type = "bool"
 default = false
-label = "Notify (phase 2)"
+label = "Notify"
 
 # --- Target bar (was xiv-target-bar) ---
 [settings.target_on]
@@ -179,3 +179,406 @@ forms = [
   { args = "target", help = "Target your focus target." },
   { args = "last", help = "Target your last target." },
 ]
+
+# --- xiv-cast-bar (suite prefix cast_) ---
+[settings.cast_on]
+type = "bool"
+default = true
+label = "XIV Cast Bar"
+help = "Shows your casting progress as a gold-rimmed bar."
+
+[settings.cast_width]
+type = "int"
+default = 180
+min = 100
+max = 500
+step = 10
+label = "Width"
+help = "Width of the cast track in UI units. 180 matches the approved mockup."
+
+[settings.cast_offset_y]
+type = "int"
+default = 0
+min = -400
+max = 400
+step = 4
+label = "Vertical offset"
+help = "Moves the bar up or down from its default position."
+
+[commands.xcb]
+help = "Turns the XIV cast bar on or off."
+args = "[on|off|preview|reset|status]"
+
+[settings.cast_cast]
+type = "bool"
+default = true
+label = "Show Casting"
+
+[settings.cast_swing]
+type = "bool"
+default = true
+label = "Show Estimated Melee Timing"
+
+[settings.cast_ranged]
+type = "bool"
+default = true
+label = "Show Estimated Ranged Timing"
+
+[settings.cast_swing_text]
+type = "bool"
+default = false
+label = "Show Interval/Hit Labels"
+
+[settings.cast_offset_x]
+type = "int"
+default = 0
+min = -1200
+max = 1200
+step = 4
+label = "Horizontal HUD offset"
+help = "Native gauge origin, no window stacking workaround."
+
+# --- xiv-player-bars (suite prefix player_) ---
+[settings.player_on]
+type = "bool"
+default = false
+label = "XIV Player Bars"
+help = "Shows FFXIV-style HP, MP and TP bars near the bottom of the screen."
+
+[settings.player_scale]
+type = "int"
+default = 100
+min = 50
+max = 200
+step = 10
+label = "Bar Scale"
+help = "Scales the whole bar group. 100 matches the approved mockup."
+
+[settings.player_offset_y]
+type = "int"
+default = 0
+min = -400
+max = 400
+step = 10
+label = "Height"
+help = "Moves the bars up (negative) or down from their place over the hotbars' area."
+
+[settings.player_offset_x]
+type = "int"
+default = 0
+min = -800
+max = 800
+step = 10
+label = "Horizontal Offset"
+
+[settings.player_compact]
+type = "bool"
+default = false
+label = "Compact Artwork"
+
+[settings.player_avoid_cast]
+type = "bool"
+default = true
+label = "Avoid Cast/Attack Gauge Space"
+help = "Uses the cast mod's actual reserved layout when available; no guessed behind-window geometry."
+
+[commands.xpb]
+help = "Player vitals display, safe sample mode and native details."
+args = "[on|off|preview|details|status]"
+
+# --- xiv-buff-bar (suite prefix buff_) ---
+[settings.buff_on]
+type = "bool"
+default = true
+label = "XIV Buff Bar"
+help = "Hide the game's status icons and draw this bar instead. Off gives the game's own icons back."
+
+[settings.buff_size]
+type = "int"
+default = 32
+min = 16
+max = 72
+step = 1
+label = "Icon Size"
+help = "The height of one status icon in UI units. A slot is three quarters of that wide (the art is 24x32). Applies at once."
+
+[settings.buff_columns]
+type = "int"
+default = 9
+min = 1
+max = 18
+step = 1
+label = "Icons Per Row"
+help = "The game's own bar is nine to a row."
+
+[settings.buff_gap]
+type = "int"
+default = 4
+min = 0
+max = 20
+step = 1
+label = "Gap"
+help = "Space between icons, and between rows."
+
+[settings.buff_offset_x]
+type = "int"
+default = 8
+min = -2000
+max = 2000
+step = 2
+label = "Horizontal Offset"
+help = "Where the bar sits (UI units from the left). Dragging adds to this; it is the fallback if dragging does not work on your client."
+
+[settings.buff_offset_y]
+type = "int"
+default = 80
+min = -2000
+max = 2000
+step = 2
+label = "Vertical Offset"
+help = "Where the bar sits (UI units from the top). Dragging adds to this; it is the fallback if dragging does not work on your client."
+
+[settings.buff_timers]
+type = "bool"
+default = true
+label = "Show Countdowns"
+help = "A time under each timed effect, as the game's bar shows it (none at 5 seconds or less)."
+
+[settings.buff_blink]
+type = "bool"
+default = true
+label = "Blink Under 15 Seconds"
+help = "Blink an effect in its last fifteen seconds, as the game's icons do."
+
+[settings.buff_cancel_click]
+type = "bool"
+default = true
+label = "Click to Cancel"
+help = "A left click on a cancellable effect cancels it. Drag to move the bar; a press that moves 4 or more pixels is a drag, not a click."
+
+[commands.xbb]
+help = "Reports the XIV Buff Bar; 'lock' toggles dragging, 'refresh' rebuilds it."
+args = "[lock|refresh]"
+
+# --- xiv-exp-bar (suite prefix exp_) ---
+[settings.exp_on]
+type = "bool"
+default = true
+label = "XIV Points Strip"
+
+[settings.exp_mode]
+type = "int"
+default = 1
+min = 1
+max = 4
+step = 1
+label = "Display Mode: 1 Auto, 2 EXP, 3 Limit, 4 Capacity"
+help = "Display only. Auto uses level/available data; the game's allocation switch is not exposed."
+
+[settings.exp_scale]
+type = "int"
+default = 100
+min = 50
+max = 200
+step = 10
+label = "XP Strip Scale"
+
+[settings.exp_offset_x]
+type = "int"
+default = 0
+min = -800
+max = 800
+step = 10
+label = "Horizontal Offset"
+
+[settings.exp_offset_y]
+type = "int"
+default = 6
+min = 0
+max = 800
+step = 1
+label = "Vertical Offset From Top"
+
+[settings.exp_dark_thin]
+type = "bool"
+default = true
+label = "Thin Dark/Glow Artwork"
+
+[settings.exp_stats_text]
+type = "bool"
+default = false
+label = "Observed Rate / Estimated Time Text"
+
+[settings.exp_attach_vitals]
+type = "bool"
+default = false
+label = "Attach To Player Bars"
+
+[settings.exp_attach_below]
+type = "bool"
+default = true
+label = "Attach Below Player Bars (off = above)"
+help = "Only used when attached."
+
+[commands.xxp]
+help = "Real points strip, clearly labelled samples, native job/time/point details and confirmed volatile-rate reset."
+args = "[on|off|preview|details|status]"
+
+# --- xiv-party-list (suite prefix party_) ---
+[settings.party_on]
+type = "bool"
+default = true
+label = "XIV Party List"
+help = "Draws an FFXIV-style party frame on the left of the screen."
+
+[settings.party_offset_x]
+type = "int"
+default = 16
+min = 0
+max = 1200
+step = 4
+label = "Left offset"
+help = "Distance from the left edge of the screen."
+
+[settings.party_offset_y]
+type = "int"
+default = 120
+min = 0
+max = 1200
+step = 4
+label = "Top offset"
+help = "Distance from the top of the screen."
+
+[commands.xpl]
+help = "Turns the XIV party list on or off."
+args = "[on|off|details|preview|status|probe]"
+
+[settings.party_scale]
+type = "int"
+default = 100
+min = 50
+max = 150
+step = 10
+label = "Party Scale"
+
+[settings.party_buff_count]
+type = "int"
+default = 6
+min = 1
+max = 32
+step = 1
+label = "Visible Main Party Statuses"
+
+[settings.party_range]
+type = "int"
+default = 21
+min = 5
+max = 30
+step = 1
+label = "Range Marker (yalms)"
+
+[settings.party_pets]
+type = "bool"
+default = true
+label = "Show Observed Pets"
+
+[settings.party_hide_solo]
+type = "bool"
+default = false
+label = "Hide Solo"
+
+[settings.party_hide_cutscene]
+type = "bool"
+default = true
+label = "Hide During Events"
+
+[settings.party_align_bottom]
+type = "bool"
+default = false
+label = "Bottom-align Party Rows"
+
+[settings.party_single_alliance]
+type = "bool"
+default = false
+label = "Full-width Single Alliance"
+
+[settings.party_range_numbers]
+type = "bool"
+default = false
+label = "Numeric Range"
+
+[settings.party_filter_whitelist]
+type = "bool"
+default = false
+label = "Only Prioritised Statuses"
+
+# --- xiv-notify (suite prefix notify_) ---
+[settings.notify_on]
+type = "bool"
+default = true
+label = "XIV Notify"
+help = "Shows a short fading toast when you loot an item."
+
+[settings.notify_seconds]
+type = "int"
+default = 3
+min = 1
+max = 10
+step = 1
+label = "Toast Seconds"
+
+[settings.notify_scale]
+type = "int"
+default = 100
+min = 50
+max = 200
+step = 10
+label = "Notification Scale"
+
+[settings.notify_offset_x]
+type = "int"
+default = 0
+min = -600
+max = 600
+step = 10
+label = "Notification Horizontal Offset"
+
+[settings.notify_offset_y]
+type = "int"
+default = 0
+min = -300
+max = 600
+step = 10
+label = "Notification Vertical Offset"
+
+[settings.notify_party_notices]
+type = "bool"
+default = false
+label = "Observed Party Join/Leave Notices"
+
+[settings.notify_invite_reminders]
+type = "bool"
+default = true
+label = "Recent Invite Reminder"
+help = "Observed party/alliance invites. Actual pending state and responses stay in the native Party menu. Opening that menu from the reminder needs actions; no auto-accept."
+
+[settings.notify_request_offset_x]
+type = "int"
+default = 0
+min = -800
+max = 800
+step = 10
+label = "Invite Reminder Horizontal Offset"
+
+[settings.notify_request_offset_y]
+type = "int"
+default = 0
+min = -500
+max = 500
+step = 10
+label = "Invite Reminder Vertical Offset"
+
+[commands.xn]
+help = "Inventory-increase notifications, display toggle, status and clearly labelled sample mode. No automatic actions."
+args = "[on|off|preview|requests|status]"
+

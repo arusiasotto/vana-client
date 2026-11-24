@@ -51,6 +51,10 @@ local id_roots = {
   tb_ = "modules/target/",
   xtb_ = "modules/target/",
   xft_ = "modules/focus/",
+  xcb_ = "modules/cast/",
+  pb_ = "modules/player/",
+  xxp_ = "modules/exp/",
+  xpl_ = "modules/party/",
 }
 
 function M.register_root(root)

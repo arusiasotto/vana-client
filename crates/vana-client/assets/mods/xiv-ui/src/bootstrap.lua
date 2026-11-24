@@ -42,9 +42,21 @@ return function(bridge, assets, opts)
     if delay > 0 then sleep_fn(delay) end
   end
 
-  for _, label in ipairs(manifest.chunks) do
-    install_chunk(read_chunk(label), label)
-    if sleep_fn then sleep_fn(0) end
+  if manifest.source_files then
+    for _, name in ipairs(manifest.imports) do
+      local rel = mod_dir .. "/" .. name:gsub("%.", "/") .. ".lua"
+      local text = fs.read(rel)
+      if type(text) ~= "string" or text == "" then
+        error("XIV-UI missing source " .. rel, 0)
+      end
+      module_sources[prefix .. "." .. name] = text
+      if sleep_fn then sleep_fn(0) end
+    end
+  else
+    for _, label in ipairs(manifest.chunks or {}) do
+      install_chunk(read_chunk(label), label)
+      if sleep_fn then sleep_fn(0) end
+    end
   end
 
   local function req(name)
@@ -74,9 +86,12 @@ return function(bridge, assets, opts)
     if not ok then error(err, 0) end
   end
 
-  local X = module_cache[prefix .. ".src.xiv"]
-  bridge.patch_xiv(prefix .. ".src.xiv", module_cache)
-  assets.patch_xiv_module(X, asset_root)
+  local xiv_key = prefix .. ".src.xiv"
+  local X = module_cache[xiv_key]
+  if type(X) == "table" then
+    bridge.patch_xiv(xiv_key, module_cache)
+    assets.patch_xiv_module(X, asset_root)
+  end
 
   if sleep_fn and #manifest.imports > 0 then sleep_fn(0) end
 
