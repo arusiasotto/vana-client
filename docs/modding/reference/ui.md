@@ -52,7 +52,6 @@ Every element, of any type, may also have these fields:
 | `tip` | `string` | `""` | Help text shown while the cursor or the pointer is on this element (see [Tips and help](#tips-and-help)). |
 | `page` | `integer` | none | The page (from 1) of the tabs above it that this element belongs to (see [Pages](#pages-tabs)). Without it, the element shows on every page. |
 | `column` | `integer` | `1` | The side of a two-column layout: `1` (default) on the left, `2` on the right. When any element uses `2`, the window draws in two columns; if the body is taller than the screen, it scrolls (modern UI). |
-| `title_bar` | `boolean` | `false` | On a `buttons` element: draw it on the title row at the right (with the window title on the left) instead of in the body. |
 
 The keyboard cursor stops on buttons, sliders, lists, tabs, inputs, keys, choices, dropdowns, colours and sections. Texts, gauges,
 separators and canvases are not cursor stops (a canvas still takes the mouse). Tab moves the cursor as Down does,

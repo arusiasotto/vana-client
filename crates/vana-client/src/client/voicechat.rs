@@ -313,7 +313,7 @@ impl VoiceChat {
                 e = ed.clone();
             }
             elems.push(e);
-            meta.push(Meta { tip: tip.into(), page: None, hidden: false, lane: 0, title_bar: false });
+            meta.push(Meta { tip: tip.into(), page: None, hidden: false, lane: 0 });
         }
         let at = at_id.and_then(|id| elems.iter().position(|e| e.id() == Some(id.as_str())));
         (win.elems, win.meta) = (elems, meta);

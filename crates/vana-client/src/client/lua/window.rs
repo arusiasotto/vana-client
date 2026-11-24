@@ -388,8 +388,6 @@ pub struct Meta {
     pub hidden: bool,
     /// Which column of a side-by-side layout (0 left, 1 right); `column = 2` in the spec.
     pub lane: usize,
-    /// Drawn in the title row on the right (modern UI), not in the body.
-    pub title_bar: bool,
 }
 
 impl Elem {
@@ -1562,19 +1560,8 @@ impl Window {
             }
         }
         let mut ey_lane = [y + TOP, y + TOP];
-        if let Some((i, Elem::Buttons { items, .. })) = self.elems.iter().enumerate().find(|(j, _)| {
-            self.meta.get(*j).is_some_and(|m| m.title_bar) && !hidden.get(*j).copied().unwrap_or(false)
-        }) {
-            let bw = button_w(gu, items);
-            let mut bx = x + w - 16.0;
-            for c in (0..items.len()).rev() {
-                bx -= bw;
-                out.push((i, c, [bx, y + 8.0, bw, 16.0]));
-                bx -= 6.0;
-            }
-        }
         for (i, e) in self.elems.iter().enumerate() {
-            if hidden[i] || self.meta.get(i).is_some_and(|m| m.title_bar) {
+            if hidden[i] {
                 continue;
             }
             let lane = self.lane_of(i);
@@ -1896,37 +1883,8 @@ impl Window {
         if self.framed {
             gu.frame(x, y, w, h);
         }
+        gu.text(&self.title, x + 16.0, y + 10.0, 0, [0x80; 4]);
         let hidden = self.hidden();
-        let title_bar = |gu: &mut GameUi, hand: &mut Option<(f32, f32)>| {
-            let Some((i, e)) = self
-                .elems
-                .iter()
-                .enumerate()
-                .find(|(j, _)| self.meta.get(*j).is_some_and(|m| m.title_bar) && !hidden.get(*j).copied().unwrap_or(false))
-            else {
-                gu.text(&self.title, x + 16.0, y + 10.0, 0, [0x80; 4]);
-                return;
-            };
-            gu.text(&self.title, x + 16.0, y + 10.0, 0, [0x80; 4]);
-            let Elem::Buttons { items, marked, .. } = e else { return };
-            let bw = button_w(gu, items);
-            let mut bx = x + w - 16.0;
-            for (c, s) in items.iter().enumerate().rev() {
-                bx -= bw;
-                let by = y + 8.0;
-                let on = self.focus && i == self.at && c == self.col && !self.edit;
-                let d = if on { -1.0 } else { 0.0 };
-                super::super::settings::button(gu, [bx + d, by + d, bw, 16.0], if on { ON } else { N });
-                gu.label(s, bx + 5.0 + d, by + 1.0 + d, if on { ON } else { N }, true);
-                if *marked == Some(c) {
-                    super::super::settings::marker(gu, bx, by, bw);
-                }
-                if on {
-                    *hand = Some((bx, by));
-                }
-                bx -= 6.0;
-            }
-        };
         let mut ey_lane = [y + TOP, y + TOP];
         let mut hand = None;
         let bullet = |gu: &mut GameUi, ax: f32, ey: f32| {
@@ -1940,9 +1898,8 @@ impl Window {
                 gu.sprite_scaled("menu    windowps", 384, sx, sy, f, 1.0, if lit { 0xa0a0_a0a0 } else { N });
             }
         };
-        title_bar(gu, &mut hand);
         for (i, e) in self.elems.iter().enumerate() {
-            if hidden[i] || self.meta.get(i).is_some_and(|m| m.title_bar) {
+            if hidden[i] {
                 continue;
             }
             let lane = self.lane_of(i);
@@ -2762,7 +2719,7 @@ mod tests {
         let row = |s: &str, tip: &str| Row { cells: vec![s.into()], tip: tip.into(), ..Default::default() };
         let rows = vec![row("Dia", "Lowers defense."), row("Cure", "")];
         w.elems = vec![Elem::List { id: "l".into(), rows, columns: Vec::new(), at: 0, top: 0, height: 5 }];
-        w.meta = vec![Meta { tip: "Pick one.".into(), page: None, hidden: false, lane: 0, title_bar: false }];
+        w.meta = vec![Meta { tip: "Pick one.".into(), page: None, hidden: false, lane: 0 }];
         (w.open, w.focus) = (true, true);
         w.settle();
         assert_eq!(w.help_now(), "Lowers defense.");

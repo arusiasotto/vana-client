@@ -2471,7 +2471,6 @@ fn elem(t: &Table) -> mlua::Result<(super::window::Elem, super::window::Meta)> {
         page: t.get::<Option<i64>>("page")?.map(|p| (p.max(1) - 1) as usize),
         hidden: t.get::<Option<bool>>("hidden")?.unwrap_or(false),
         lane: t.get::<Option<i64>>("column")?.map(|c| (c.max(1) - 1).min(1) as usize).unwrap_or(0),
-        title_bar: t.get::<Option<bool>>("title_bar")?.unwrap_or(false),
     };
     Ok((elem_only(t)?, meta))
 }
