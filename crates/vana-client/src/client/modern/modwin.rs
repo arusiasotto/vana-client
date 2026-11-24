@@ -299,7 +299,13 @@ fn panel(
         // Wider when a list's cells need it, up to half the screen.
         let width = width.max(list_need(ctx, m, win).min(ctx.content_rect().width() * 0.5)).ceil();
         let mut clicks: Vec<Click> = Vec::new();
-        let title = (!win.title.is_empty()).then_some(Title { icon: None, text: &win.title, note: None, name: false });
+        let title_bar = win
+            .meta
+            .iter()
+            .enumerate()
+            .any(|(i, m)| m.title_bar && !win.hidden().get(i).copied().unwrap_or(false));
+        let title = (!win.title.is_empty() && !title_bar)
+            .then_some(Title { icon: None, text: &win.title, note: None, name: false });
         let frame = if win.framed { "window_normal" } else { "none" };
         // A modal window is centred (on its last height), a popup at its anchor: kept on screen, and opened upward
         // (its bottom at the pointer) when it would run past the bottom.
@@ -339,6 +345,36 @@ fn panel(
     }
 }
 
+/// Title on the left and a `title_bar` buttons element on the right (blue kit buttons).
+fn mod_title_row(ui: &mut egui::Ui, m: &super::Modern, win: &model::Window, clicks: &mut Vec<Click>) {
+    let Some((i, items, marked)) = win.elems.iter().enumerate().find_map(|(i, e)| {
+        if !win.meta.get(i).is_some_and(|m| m.title_bar) {
+            return None;
+        }
+        match e {
+            model::Elem::Buttons { items, marked, .. } => Some((i, items.as_slice(), *marked)),
+            _ => None,
+        }
+    }) else {
+        return;
+    };
+    let here = win.focus && i == win.at;
+    let cursor = (here && !win.edit).then_some(win.col);
+    let lit = marked.map_or(0, |k| 1u64 << k.min(63));
+    let gold = m.theme.color("gold");
+    let title_font = FontId::new(m.theme.title, egui::FontFamily::Name(super::theme::STRONG.into()));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(&win.title).font(title_font).color(gold));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let labels: Vec<&str> = items.iter().map(String::as_str).collect();
+            if let Some(c) = kit::buttons(ui, m, &labels, cursor, lit, 0) {
+                clicks.push(Click::Button(i, c));
+            }
+        });
+    });
+    ui.add_space(6.0);
+}
+
 /// A window's elements and its help line (in its panel, or an edge window's body); clicks into `clicks`.
 pub(super) fn body(
     ui: &mut egui::Ui,
@@ -351,6 +387,7 @@ pub(super) fn body(
     clicks: &mut Vec<Click>,
 ) {
     let hidden = win.hidden();
+    mod_title_row(ui, m, win, clicks);
     let split = win
         .meta
         .iter()
@@ -402,7 +439,7 @@ fn body_elements<'a>(
     // The cursor's element scrolls into view when it comes there, not every frame: the wheel can leave it.
     let came = win.moved("element", win.focus.then_some(win.at));
     for (i, e) in win.elems.iter().enumerate() {
-        if hidden.get(i).copied().unwrap_or(false) {
+        if hidden.get(i).copied().unwrap_or(false) || win.meta.get(i).is_some_and(|m| m.title_bar) {
             continue;
         }
         if let Some(want) = only_lane

@@ -32,7 +32,6 @@ local open_builder
 local E = { id = nil, kind = "ma", pick = nil, target = "t", line = nil, results = {}, opened = nil, auto_name = nil,
   group = nil, sticky = false }
 local BUILD_W = 860
-local HEAD_W, HEAD_H = BUILD_W - 48, 30
 local MAX_MEMBERS = 12
 -- The Keys tab's chosen slot.
 local K = { bar = 1, slot = 1 }
@@ -293,42 +292,11 @@ local function builder_entry()
   }
 end
 
-local function bhead_layout()
-  local cancel_w, save_w, sticky_w, gap, pad, bh = 72, 64, 112, 6, 2, 26
-  local x_cancel = HEAD_W - cancel_w
-  local x_save = x_cancel - gap - save_w
-  local x_sticky = x_save - gap - sticky_w
-  return {
-    sticky = { x_sticky, pad, sticky_w, bh },
-    save = { x_save, pad, save_w, bh },
-    cancel = { x_cancel, pad, cancel_w, bh },
-  }
-end
-
-local function draw_bhead()
-  local lay = bhead_layout()
-  local d, on = {}, E.sticky
-  local function add(c) d[#d + 1] = c end
-  local function btn(box, text, lit)
-    local x, y, w, h = box[1], box[2], box[3], box[4]
-    local fill = lit and { 96, 196, 186, 230 } or { 48, 58, 68, 255 }
-    add({ type = "rect", x = x, y = y, w = w, h = h, round = 5, colour = fill, line = 1 })
-    add({ type = "text", x = x + w / 2, y = y + 6, text = text, size = 0.82, align = "center",
-      colour = { 232, 238, 244, 255 } })
-    add({ type = "tip", x = x, y = y, w = w, h = h, title = text, text = on and "Every job and character."
-      or "This job only, this character only." })
-  end
-  btn(lay.sticky, on and "Sticky: On" or "Sticky: Off", on)
-  btn(lay.save, "Save", false)
-  btn(lay.cancel, "Cancel", false)
-  ui.update(WIN, "bhead", { draw = d })
-end
-
-local function bhead_hit(x, y)
-  for id, box in pairs(bhead_layout()) do
-    local bx, by, bw, bh = box[1], box[2], box[3], box[4]
-    if x >= bx and x < bx + bw and y >= by and y < by + bh then return id end
-  end
+local function refresh_bbar()
+  ui.update(WIN, "bbar", {
+    items = { E.sticky and "Sticky: On" or "Sticky: Off", "Save", "Cancel" },
+    marked = false,
+  })
 end
 
 -- Target choices for the kind and pick, plus the current target if it is not among them.
@@ -482,7 +450,7 @@ function open_builder(id)
   ui.update(WIN, "label", { text = label })
   ui.update(WIN, "extra", { text = extra })
   ui.update(WIN, "q", { text = "" })
-  draw_bhead()
+  refresh_bbar()
   ui.update(WIN, "bwhere", { text = builder_where() })
   refresh_results("")
   refresh_choice()
@@ -727,7 +695,8 @@ local function spec(drop, build)
       width = BUILD_W,
       help = "Sticky: every job and character. Save keeps the macro; Cancel goes back to the library.",
       elements = {
-        { type = "canvas", id = "bhead", w = HEAD_W, h = HEAD_H },
+        { type = "buttons", id = "bbar", items = { "Sticky: Off", "Save", "Cancel" },
+          tip = "Sticky: Off until you turn it on (every job and character). Save keeps the macro; Cancel goes back." },
         { type = "text", id = "bwhere", text = "" },
         { type = drop, id = "btype", label = "Type", items = builder.TYPE_LABELS, at = 1,
           tip = "Choose what the macro does." },
@@ -798,16 +767,6 @@ local function define()
   ui.on(WIN, function(_, e)
     if e.id == "tiles" then
       on_tiles(e)
-    elseif e.id == "bhead" and e.kind == "click" then
-      local hit = bhead_hit(e.x, e.y)
-      if hit == "sticky" then
-        E.sticky = not E.sticky
-        draw_bhead()
-      elseif hit == "save" then
-        save_builder()
-      elseif hit == "cancel" then
-        leave_builder()
-      end
     elseif e.kind == "set" then
       if e.id:match("^mod%d$") then
         keys.set_mod(tonumber(e.id:sub(4)), keys.MOD_LABELS[e.index])
@@ -864,6 +823,15 @@ local function define()
         end
       elseif e.id == "grp" then
         toggle_group()
+      elseif e.id == "bbar" then
+        if e.index == 1 then
+          E.sticky = not E.sticky
+          refresh_bbar()
+        elseif e.index == 2 then
+          save_builder()
+        else
+          leave_builder()
+        end
       elseif e.id == "kbtn" then
         keys.reset()
         keys_changed()
