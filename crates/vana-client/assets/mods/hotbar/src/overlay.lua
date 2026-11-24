@@ -260,15 +260,18 @@ local function knob(seen, id, o)
     emit(seen, "rect", id .. "_v", { x = o.cx - t / 2, y = o.cy - a, w = t, h = 2 * a, round = t / 2,
       colour = ink, layer = 4 })
   end
-  hud.on(id, function(_, e)
+  local function on_knob(_, e)
     if e.kind == "mouse_enter" then
       if o.st.hover ~= o.key then o.st.hover = o.key; o.redraw() end
     elseif e.kind == "mouse_leave" then
       if o.st.hover == o.key then o.st.hover = nil; o.redraw() end
-    elseif e.kind == "click" and e.button ~= "right" and o.live then
+    elseif e.kind == "click" and e.button ~= "right" then
       o.click()
     end
-  end)
+  end
+  local parts = { id, id .. "_e", id .. "_h" }
+  if o.plus then parts[#parts + 1] = id .. "_v" end
+  for _, part in ipairs(parts) do hud.on(part, on_knob) end
 end
 
 -- Keyboard bars, centred, bar 1 nearest the bottom. `rows` is how many to draw.

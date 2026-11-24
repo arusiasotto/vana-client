@@ -159,9 +159,10 @@ local function hit(x, y)
   local h = height(reveal or 1)
   local r = geo.btn / 2
   local cx, plus_y, minus_y = knobs(h)
+  local n, most = wanted(), geo.bars
   local function on(cy) return (x - cx) ^ 2 + (y - cy) ^ 2 <= (r + 1) ^ 2 end
-  if on(minus_y) then return "minus" end
-  if on(plus_y) then return "plus" end
+  if on(minus_y) and n > 1 then return "minus" end
+  if on(plus_y) and n < most then return "plus" end
   for b = 1, geo.bars do
     for i = 1, geo.slots do
       local sx, sy = slot_xy(b, i)
@@ -266,12 +267,16 @@ draw = function()
   local n, most = wanted(), geo.bars
   local r = geo.btn / 2
   local cx, plus_y, minus_y = knobs(h)
+  local function knob_live(name)
+    return name == "plus" and n < most or name == "minus" and n > 1
+  end
   local buttons = {
-    { "plus", plus_y, n < most, "Show another bar" },
-    { "minus", minus_y, n > 1, "Show one bar fewer" },
+    { "plus", plus_y, "Show another bar" },
+    { "minus", minus_y, "Show one bar fewer" },
   }
   for _, btn in ipairs(buttons) do
-    local name, cy, live, tip = btn[1], btn[2], btn[3], btn[4]
+    local name, cy, tip = btn[1], btn[2], btn[3]
+    local live = knob_live(name)
     local ink = not live and GOLD_OFF or (st.hover == name and INK or GOLD)
     add({ type = "circle", x = cx, y = cy, r = r, colour = KEY })
     add({ type = "circle", x = cx, y = cy, r = r - 0.75, line = 1.5, colour = ink })
@@ -329,6 +334,7 @@ function M.grow(d)
   if to == n then return end
   storage.character.hb_shown = to
   storage.save()
+  reveal = to
   animate()
   draw()
 end

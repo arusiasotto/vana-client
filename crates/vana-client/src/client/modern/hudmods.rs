@@ -59,7 +59,7 @@ pub(super) fn draw(
         let Some(r) = element(m, ctx, gu, w, &painter, &e, at, ppp) else { continue };
         rects.push((mod_id, e.id.clone(), [r.min.x * ppp, r.min.y * ppp, r.width() * ppp, r.height() * ppp]));
     }
-    host.add_hud_rects(rects);
+    host.set_hud_rects(rects);
 }
 
 /// One element at `at` (points); the rect it takes.
