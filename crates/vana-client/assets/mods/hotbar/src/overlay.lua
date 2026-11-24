@@ -28,7 +28,9 @@ local function slot_round(u, s)
 end
 
 local live = {}    -- prefix -> { id = true }
-local places = {}  -- element id -> { x, y, s }
+local places = {}  -- element id -> { x, y, s, key? }
+local drops = {}   -- slot id -> function(lib_id)
+local GLOW = { 255, 214, 120 }
 
 function M.on()
   return settings.get("display") == "Overlay"
@@ -42,6 +44,7 @@ end
 function M.clear(prefix)
   for id in pairs(live[prefix] or {}) do
     places[id] = nil
+    drops[id] = nil
     pcall(hud.off, id)
     pcall(hud.remove, id)
   end
@@ -52,11 +55,39 @@ local function finish(prefix, seen)
   for id in pairs(live[prefix] or {}) do
     if not seen[id] then
       places[id] = nil
+      drops[id] = nil
       pcall(hud.off, id)
       pcall(hud.remove, id)
     end
   end
   live[prefix] = seen
+end
+
+-- Screen-pixel hit for manager / palette drags onto overlay slots (no bars canvas).
+function M.drop_at(x, y, lib_id)
+  if not lib_id then return false end
+  for id, p in pairs(places) do
+    if x >= p.x and x < p.x + p.s and y >= p.y and y < p.y + p.s then
+      local fn = drops[id]
+      if fn then fn(lib_id); return true end
+    end
+  end
+  return false
+end
+
+function M.hover_at(x, y)
+  for _, p in pairs(places) do
+    if x >= p.x and x < p.x + p.s and y >= p.y and y < p.y + p.s then
+      return p.key
+    end
+  end
+end
+
+-- Window pixels for a canvas or HUD event; falls back to input.mouse().
+function M.screen_xy(e)
+  if e and e.sx and e.sy then return e.sx, e.sy end
+  local m = input.mouse()
+  if m and m.x and m.y then return m.x, m.y end
 end
 
 local function emit(seen, kind, id, spec)
@@ -87,7 +118,24 @@ local function slot(seen, id, cell, o)
   local lw = slotview.EDGE_W * u
   local fill = hover and slotview.KEY_HOVER or (macro and slotview.KEY or slotview.EMPTY_KEY)
   local edge = dropping and DROP or o.edge or (macro and EDGE or slotview.EMPTY_EDGE)
-  places[id] = { x = x, y = y, s = s }
+  places[id] = { x = x, y = y, s = s, key = o.key }
+  drops[id] = o.drop and function(lib_id) o.drop(cell, lib_id) end or nil
+  local glow = o.glow
+  if o.suggested and glow then
+    local depth = s * (0.22 + 0.06 * glow)
+    local rings = 8
+    local step_w = depth / rings
+    for k = 0, rings - 1 do
+      local t = k / rings
+      local inset = k * step_w
+      local ir = math.max(0, rnd - inset)
+      emit(seen, id .. "_sg" .. k, { x = x + inset, y = y + inset, w = s - 2 * inset, h = s - 2 * inset,
+        round = ir, line = step_w + 0.5, colour = { GLOW[1], GLOW[2], GLOW[3],
+        math.floor((55 + 55 * glow) * (1 - t) * (1 - t)) }, layer = 1 })
+    end
+    emit(seen, id .. "_sg_o", { x = x - 3 * u, y = y - 3 * u, w = s + 6 * u, h = s + 6 * u,
+      round = rnd + 3 * u, line = 2 * u, colour = { GLOW[1], GLOW[2], GLOW[3], math.floor(25 + 45 * glow) }, layer = 1 })
+  end
   emit(seen, "rect", id, { x = x, y = y, w = s, h = s, round = rnd, colour = fill, layer = 2,
     tip = macro and { title = data.trim(macro.name) ~= "" and macro.name or (o.fallback or ""),
       text = data.tip_text(macro) } or nil })
@@ -157,7 +205,7 @@ local function slot(seen, id, cell, o)
       local to = o.parse(e.over)
       if to and not o.same(cell, to) then o.swap(cell, to) end
     elseif e.kind == "drop" then
-      local lib = palette.dragged_id(e.from)
+      local lib = palette.dragged_id(e.from) or palette.last
       if lib then o.drop(cell, lib) end
     end
   end)
@@ -169,7 +217,8 @@ local function pocket_slot(seen, id, cell, o)
   local fill = hover and slotview.KEY_HOVER or slotview.KEY
   local edge = o.edge or EDGE
   local short = o.short or "?"
-  places[id] = { x = x, y = y, s = s }
+  places[id] = { x = x, y = y, s = s, key = o.key }
+  drops[id] = o.drop and function(lib_id) o.drop(cell, lib_id) end or nil
   emit(seen, "rect", id, { x = x, y = y, w = s, h = s, round = s / 2, colour = fill, layer = 2,
     tip = { title = short, text = o.fallback or "" } })
   emit(seen, "rect", id .. "_e", { x = x, y = y, w = s, h = s, round = s / 2, line = slotview.EDGE_W * u,
@@ -227,10 +276,13 @@ function M.bars(p)
   local scr, u = screen()
   local size = math.floor(p.size * u)
   local gap = math.floor(p.gap * u)
-  local rows = math.max(1, math.floor(p.rows))
+  local rev = math.max(p.reveal or p.rows or 1, 1)
+  local rows = math.min(p.bars or math.ceil(rev), math.max(1, math.ceil(rev)))
   local w = p.slots * size + math.max(0, p.slots - 1) * gap
   local x0 = math.floor((scr.width - w) / 2)
   local margin = math.floor(36 * u)
+  local block_h = rev * size + math.max(0, rev - 1) * gap
+  local y_base = scr.height - margin - block_h
   local seen = {}
   local function id_of(b, i) return "ovb_" .. b .. "_" .. i end
   local function parse(id)
@@ -238,17 +290,20 @@ function M.bars(p)
     if b then return { b = tonumber(b), i = tonumber(i) } end
   end
   for b = 1, rows do
-    local y = scr.height - margin - b * size - (b - 1) * gap
+    if b > math.ceil(rev) then break end
+    local y = y_base + (b - 1) * (size + gap)
     for i = 1, p.slots do
       local key = b .. ":" .. i
       local cell = p.eff[b] and p.eff[b][i]
       local macro = cell and cell.macro
+      local act = macro and actions.of(macro)
       slot(seen, id_of(b, i), { b = b, i = i }, {
         x = x0 + (i - 1) * (size + gap), y = y, s = size, u = u, up = p.top_dock,
-        macro = macro, act = macro and actions.of(macro), shade = p.shades[key],
+        macro = macro, act = act, shade = p.shades[key],
         hover = p.st.hover == key, hint = p.show_keys and p.hint(b, i) or nil, fallback = p.hint(b, i),
         edge = cell and macro and p.edge[cell.from] or nil, st = p.st, key = key, redraw = p.redraw,
         fire = p.fire, menu = p.menu, swap = p.swap, drop = p.drop,
+        suggested = p.suggested and macro and p.suggested(macro, act), glow = p.glow,
         parse = parse, same = function(a, b) return a.b == b.b and a.i == b.i end,
       })
     end
@@ -256,7 +311,6 @@ function M.bars(p)
   local pad = math.floor((p.pad or 8) * u)
   local r = math.floor((p.btn or 18) * u / 2)
   local cx = x0 + w + pad + r
-  local block_h = rows * size + math.max(0, rows - 1) * gap
   local bottom = scr.height - margin
   local plus_cy, minus_cy
   if p.top_dock then

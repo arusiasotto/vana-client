@@ -1332,14 +1332,14 @@
       "files": [
         {
           "path": "init.lua",
-          "sha256": "1e6d6f56f37036427d6f6425775109770fc7c3e651c4c3358382b56a3265ed64",
-          "size": 5823,
+          "sha256": "24fac7a8d3482533099ffa936383b6be3d75e3a4a008c9695a655fa2e97a18c1",
+          "size": 6163,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/init.lua"
         },
         {
           "path": "mod.toml",
-          "sha256": "fd3c495513f36c71698e2db3c14e665593d47cb286af635a543cbdf23c79e43f",
-          "size": 4231,
+          "sha256": "1982c6315e76d93ace1d29fb09cb3907dee1b25631242e6fc86f5e59a35ee55b",
+          "size": 4515,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/mod.toml"
         },
         {
@@ -1350,8 +1350,8 @@
         },
         {
           "path": "src/bar.lua",
-          "sha256": "ccccfaf82f239ff1d9f3cd973ad0e727749739d55c151b6385ef312815352497",
-          "size": 13705,
+          "sha256": "891c4273987b91a10f165145f327ccd8e733eb6cb434d3318fbf50dc24dd725f",
+          "size": 16313,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/src/bar.lua"
         },
         {
@@ -1392,8 +1392,8 @@
         },
         {
           "path": "src/manager.lua",
-          "sha256": "97a49c633385bb3f9baa0496b2f70f081cd683a0f26f87bd7c9e949a3616eb2f",
-          "size": 33927,
+          "sha256": "729a8dde6a141358171e073a6ed30a5bcc54ac4283036375430ecb1b52ac1bdc",
+          "size": 34504,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/src/manager.lua"
         },
         {
@@ -1409,9 +1409,15 @@
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/src/mode.lua"
         },
         {
+          "path": "src/overlay.lua",
+          "sha256": "eb4f29223ce82f952e0707b10ab085d89704af3b35bafb0eb20b499cf37d359d",
+          "size": 15747,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/src/overlay.lua"
+        },
+        {
           "path": "src/pad.lua",
-          "sha256": "724bc6238ae857ae0378e2010f7ba6be0c17c3a9582848e8beb2b6df24dd46a4",
-          "size": 17620,
+          "sha256": "8ac769d31664c60115a751140eeb3cadaf658bf80205d67038507d97fba7c1ae",
+          "size": 20732,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/src/pad.lua"
         },
         {
@@ -1428,8 +1434,8 @@
         },
         {
           "path": "src/slotview.lua",
-          "sha256": "05401d9e2ce26fb80e372f9aecc6abe4c893052f35ebb08089589a2fc205587f",
-          "size": 7986,
+          "sha256": "eafa1b77419b2ec7fef863bf977155c3285bceb170aae610a71b8b7397770a2d",
+          "size": 8132,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/src/slotview.lua"
         },
         {
@@ -1442,7 +1448,7 @@
       "id": "hotbar",
       "kind": "lua",
       "name": "Hotbars",
-      "version": "1.13.4"
+      "version": "1.13.5"
     },
     {
       "authors": [],

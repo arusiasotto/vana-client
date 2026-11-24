@@ -9,6 +9,9 @@ local builder = require("src.builder")
 local palette = require("src.palette")
 local ghost = require("src.ghost")
 local mode = require("src.mode")
+local overlay = require("src.overlay")
+local bar = require("src.bar")
+local pad = require("src.pad")
 
 local M = {}
 
@@ -167,7 +170,7 @@ local function refresh_library(select_id)
   if not still then L.sel = tiles[1] and tiles[1].id or nil end
   ui.update(WIN, "lctx", {
     text = #tiles == 0 and ("%s has no macros yet: press New."):format(S.mj)
-      or ("%s macros: drag one onto a slot of the bars."):format(S.mj),
+      or ("%s macros: drag one onto a hotbar or crossbar slot."):format(S.mj),
   })
   draw_tiles()
   show_selected()
@@ -199,17 +202,28 @@ local function on_tiles(e)
       palette.last = nil
       say(("these are %s's macros; the bars show %s's."):format(S.mj, jobs.current() or "?"))
     end
-    if e.sx then ghost.start(e.sx, e.sy, math.floor(settings.get("size") * hud.screen().ui_scale), t.act, t.label) end
+    local sx, sy = overlay.screen_xy(e)
+    if sx and sy then ghost.start(sx, sy, math.floor(settings.get("size") * hud.screen().ui_scale), t.act, t.label) end
     draw_tiles()
   elseif e.kind == "drag" and L.drag then
     -- The HUD ghost shows only outside our windows; windows draw their own copy.
     local inside = e.x >= 0 and e.y >= 0 and e.x < CW and e.y < math.max(1, math.ceil(#tiles / COLS)) * (T + TG)
     L.drag.x, L.drag.y = inside and e.x or nil, e.y
-    if e.sx then
-      if inside or e.window then ghost.move(-10000, -10000) else ghost.move(e.sx, e.sy) end
+    local sx, sy = overlay.screen_xy(e)
+    if sx then
+      if inside or e.window then ghost.move(-10000, -10000) else ghost.move(sx, sy) end
+    end
+    if overlay.on() and palette.dragging and sx and sy then
+      local key = overlay.hover_at(sx, sy)
+      if mode.is_pad() then pad.hover_overlay(key) else bar.hover_overlay(key) end
     end
     draw_tiles()
   elseif e.kind == "drag_end" and L.drag then
+    local id = palette.dragging and palette.dragging.id or palette.last
+    local sx, sy = overlay.screen_xy(e)
+    if overlay.on() and id and sx and sy then
+      overlay.drop_at(sx, sy, id)
+    end
     L.drag = nil
     ghost.stop()
     palette.end_drag()

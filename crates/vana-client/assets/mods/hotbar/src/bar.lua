@@ -88,6 +88,20 @@ local function list_place(b, i)
   return slotview.list_place(at, x, y, geo.size, top_dock)
 end
 
+local function open_group_list(bar, slot, macro, tries)
+  local function go(place) chooser.open(macro, place, function(m) return is_suggested(m, actions.of(m)) end, bar) end
+  if overlay.on() then
+    local place = overlay.list_at("ovb_" .. bar .. "_" .. slot)
+    if not place and (tries or 0) < 8 then
+      timer.after(0.03, function() open_group_list(bar, slot, macro, (tries or 0) + 1) end)
+      return
+    end
+    go(place)
+    return
+  end
+  go(list_place(bar, slot))
+end
+
 -- Runs a slot; a group opens its list. While a list is open its bar's keys pick members by number.
 function M.fire(bar, slot)
   if chooser.is_open() then
@@ -102,7 +116,7 @@ function M.fire(bar, slot)
   local macro = data.resolve(mj, sj, bar, slot)
   if not macro then return end
   if macro.group then
-    chooser.open(macro, list_place(bar, slot), function(m) return is_suggested(m, actions.of(m)) end, bar)
+    open_group_list(bar, slot, macro, 0)
   else
     runner.run_checked(macro)
   end
@@ -169,12 +183,14 @@ local open_menu
 
 local function draw_overlay()
   if not geo or not eff then return end
-  local rows = math.max(1, math.floor(eased(reveal or wanted())))
+  local rev = eased(reveal or wanted())
   overlay.bars({
-    size = geo.size, gap = geo.gap, slots = geo.slots, rows = rows, btn = geo.btn, pad = PAD,
+    size = geo.size, gap = geo.gap, slots = geo.slots, bars = geo.bars, reveal = rev, btn = geo.btn, pad = PAD,
     top_dock = top_dock,
     eff = eff, shades = shades, show_keys = geo.show_keys,
     shown = wanted(), most = geo.bars,
+    glow = 0.5 + 0.5 * math.sin(os.clock() * 3.2),
+    suggested = is_suggested,
     edge = EDGE, hint = keys.hint, st = st, redraw = draw,
     fire = function(c) M.fire(c.b, c.i) end,
     menu = function(c) open_menu(c.b, c.i) end,
@@ -467,6 +483,16 @@ function M.is_hidden() return hidden end
 function M.tile_drag_ended()
   if mode.is_pad() or st.tile_at == nil then return end
   st.tile_at = nil
+  draw()
+end
+
+function M.clear_drag()
+  slotview.reset(st)
+end
+
+function M.hover_overlay(key)
+  if not overlay.on() or key == st.hover then return end
+  st.hover = key
   draw()
 end
 

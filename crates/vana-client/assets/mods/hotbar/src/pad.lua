@@ -142,7 +142,12 @@ end
 -- Calls open(place) with where a list opens over a slot. A rebuilt window's canvas bounds lag a frame: wait for them.
 local function open_at(side, button, tries, open)
   if overlay.on() then
-    open(overlay.list_at("ovp_" .. side .. "_" .. button))
+    local place = overlay.list_at("ovp_" .. side .. "_" .. button)
+    if not place and tries < 8 then
+      timer.after(0.03, function() open_at(side, button, tries + 1, open) end)
+      return
+    end
+    open(place)
     return
   end
   local at = ui.bounds and ui.bounds(WIN, "c")
@@ -413,6 +418,16 @@ function M.tile_drag_ended()
     st.tile_at = nil
     draw()
   end
+end
+
+function M.clear_drag()
+  slotview.reset(st)
+end
+
+function M.hover_overlay(key)
+  if not overlay.on() or key == st.hover then return end
+  st.hover = key
+  draw()
 end
 
 -- ---------------------------------------------------------------------------
