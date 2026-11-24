@@ -20,7 +20,25 @@ local function copy_legacy_values(into_key, keys)
   pcall(storage.save)
 end
 
+local MODULE_BUCKETS = {
+  "xiv_ui_target_v1", "xiv_ui_focus_v1", "xiv_ui_cast_v1", "xiv_ui_player_v1",
+  "xiv_ui_exp_v1", "xiv_ui_party_v1", "xiv_ui_notify_v1",
+}
+
+local function strip_persisted_on()
+  local dirty = false
+  for _, key in ipairs(MODULE_BUCKETS) do
+    local bucket = storage.account[key]
+    if type(bucket) == "table" and type(bucket.values) == "table" and bucket.values.on ~= nil then
+      bucket.values.on = nil
+      dirty = true
+    end
+  end
+  if dirty then pcall(storage.save) end
+end
+
 function M.run()
+  strip_persisted_on()
   copy_legacy_values("xiv_ui_target_v1", {
     "on", "width", "scale", "status_count", "place_x", "place_y",
   })

@@ -3,7 +3,8 @@ local X=require('src.xiv')
 local model=require('src.vitals')
 local R=X.renderer()
 local enabled,preview=true,false
-local cfg=require('src.hud_config').new(settings,require('src.config_schema'),{
+local hud_config=require('src.hud_config')
+local cfg=hud_config.new(settings,require('src.config_schema'),{
  capture=function()return {enabled=enabled,preview=preview} end,
  preview=function(on)enabled=true;preview=on end,
  restore=function(s)enabled=s.enabled;preview=s.preview end,
@@ -50,7 +51,7 @@ local function details()
   ui.open(WIN);detail_refresh()
 end
 ui.on(WIN,function(_,e)if e.kind=='press' and e.id=='buttons' then if e.index==1 then detail_refresh() else ui.close(WIN) end end end)
-mods.provide('busy',function()return require('src.hud_config').active() or ui.is_open(WIN) end)
+mods.provide('busy',function()return hud_config.active() or ui.is_open(WIN) end)
 mods.provide('layout',function()return layout end)
 local function draw(dt)
   local active=enabled and settings.get('on')
@@ -131,6 +132,13 @@ commands.register('xpb',function(arg)
   if arg=='on' then enabled=true elseif arg=='off' then enabled=false;preview=false;layout=nil;last_presentation=nil;R:hide();ui.close(WIN)
   elseif arg=='preview' then preview=not preview;smooth={}
   elseif arg=='details' then details()
-  elseif arg=='status' then chat.add('XIV Player Bars: '..(enabled and 'on' or 'off')..'; real TP readiness / MP-less layout')
+  elseif arg=='status' then
+    chat.add(('XIV Player Bars: %s (panel %s); try //xpb preview'):format(
+      enabled and 'on' or 'off', settings.get('on') and 'on' or 'off'))
+  elseif arg=='debug' then
+    local p=game.player();local v=p and model.read(p)
+    chat.add(('XIV player debug: panel=%s vitals=%s hp=%s/%s'):format(
+      tostring(settings.get('on')), v and 'ok' or 'nil',
+      p and tostring(p.hp), p and tostring(p.hp_max)))
   else chat.add('Usage: //xpb [on|off|preview|details|status]') end
 end)

@@ -1,10 +1,12 @@
 -- XIV Buff Bar: entry. Hides the game's own status icons and runs the bar.
 local bar = require("src.bar")
+local panel_settings = settings
+bar.bind_settings(panel_settings)
 
 local function apply_hide()
   -- While this mod is loaded and on, the game's own status icons stay hidden.
   -- (Not while the bar has stopped on an error: then the native icons must stay visible.)
-  pcall(ui.native.hide, "buffs", settings.get("on") ~= false and not bar.failed())
+  pcall(ui.native.hide, "buffs", panel_settings.get("on") == true and not bar.failed())
 end
 
 apply_hide()
@@ -32,10 +34,14 @@ commands.register("xbb", function(arg)
     bar.reset()
     apply_hide()
     chat.add("XIV Buff Bar: rebuilt.")
+  elseif arg == "resetpos" then
+    bar.resetpos()
+    apply_hide()
+    chat.add("XIV Buff Bar: position reset to top-left default (8, 80 UI units). Drag the bar to move it.")
   else
     local n = bar.count()
     chat.add(string.format("XIV Buff Bar: %s, %d effect%s, %s",
-      settings.get("on") ~= false and "on" or "off", n, n == 1 and "" or "s",
+      panel_settings.get("on") == true and "on" or "off", n, n == 1 and "" or "s",
       bar.locked() and "locked" or "unlocked"))
   end
 end)

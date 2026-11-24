@@ -5,7 +5,8 @@ local requests=require('src.requests')
 local tracker=inventory.new()
 local R=X.renderer()
 local enabled,preview=true,false
-local cfg=require('src.hud_config').new(settings,require('src.config_schema'),{
+local hud_config=require('src.hud_config')
+local cfg=hud_config.new(settings,require('src.config_schema'),{
  capture=function()return {enabled=enabled,preview=preview} end,
  preview=function(on)enabled=true;preview=on;requests.preview(on) end,
  restore=function(s)enabled=s.enabled;preview=s.preview;requests.preview(s.preview) end,

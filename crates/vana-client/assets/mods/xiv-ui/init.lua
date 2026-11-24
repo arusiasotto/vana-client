@@ -43,12 +43,29 @@ local function load_manifest(dir)
   return f()
 end
 
+local PANEL_TOGGLES = {
+  "mod_target", "mod_focus", "mod_cast", "mod_player", "mod_buff", "mod_exp", "mod_party", "mod_notify",
+}
+
+local function any_panel_enabled()
+  for _, key in ipairs(PANEL_TOGGLES) do
+    if settings.get(key) == true then return true end
+  end
+  return false
+end
+
+-- Master off still allows loading when at least one panel toggle is on; master on with all
+-- panels off loads an idle suite (no submodule queue).
 local function suite_on()
-  return settings.get("on") ~= false
+  if settings.get("on") == false and not any_panel_enabled() then return false end
+  return true
 end
 
 mods.provide("loaded", function() return true end)
 mods.provide("suite", function() return bridge.registry end)
+mods.provide("xiv_config", function(op, panel, ...)
+  return bridge.config_dispatch(op, panel, ...)
+end)
 
 local HOST_COMPAT = {
   target = { "layout", "cast", "casts_for", "effects" },
@@ -69,7 +86,7 @@ end
 
 local queue = {}
 local function enqueue(alias, dir, toggle)
-  if suite_on() and settings.get(toggle) ~= false then
+  if suite_on() and settings.get(toggle) == true then
     queue[#queue + 1] = { alias, dir, toggle }
   end
 end
@@ -129,3 +146,25 @@ if #queue > 0 then
 elseif suite_on() then
   publish_host_compat()
 end
+
+local TOGGLE_ALIAS = {
+  mod_target = "target", mod_focus = "focus", mod_cast = "cast", mod_player = "player",
+  mod_buff = "buff", mod_exp = "exp", mod_party = "party", mod_notify = "notify",
+}
+local last_panels = {}
+for _, toggle in ipairs(PANEL_TOGGLES) do
+  last_panels[toggle] = settings.get(toggle) == true
+end
+events.on("settings_changed", function()
+  for _, toggle in ipairs(PANEL_TOGGLES) do
+    local now = settings.get(toggle) == true
+    local was = last_panels[toggle]
+    last_panels[toggle] = now
+    if now and not was then
+      local alias = TOGGLE_ALIAS[toggle]
+      if alias and not bridge.registry[alias] then
+        chat.add("XIV-UI: " .. toggle .. " is on — /lua reload xiv-ui to load that panel.")
+      end
+    end
+  end
+end)

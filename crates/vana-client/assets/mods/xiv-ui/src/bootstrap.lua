@@ -161,7 +161,7 @@ function M.step(state)
     local xiv_key = prefix .. ".src.xiv"
     local X = state.module_cache[xiv_key]
     if type(X) == "table" then
-      state.bridge.patch_xiv(xiv_key, state.module_cache)
+      state.bridge.patch_xiv(xiv_key, state.module_cache, state.req)
       state.assets.patch_xiv_module(X, state.asset_root)
     end
     if sleep_fn then sleep_fn(0) end
@@ -171,6 +171,8 @@ function M.step(state)
 
   if state.phase == "entry" then
     _ENV.settings = state.opts.settings
+    _ENV.bridge = state.bridge
+    _ENV.__xiv_panel_alias = prefix
     if sleep_fn then sleep_fn(0) end
     local ok, run_err = pcall(function()
       local text = fs.read(mod_dir .. "/entry.lua")
@@ -180,7 +182,15 @@ function M.step(state)
     end)
     _ENV.require = state.saved_req
     _ENV.settings = state.saved_settings
+    _ENV.__xiv_panel_alias = nil
     if state.unwrap then state.unwrap(); state.unwrap = nil end
+    if ok and state.bridge.get_config then
+      local api = state.bridge.get_config(prefix)
+      if api and mods and mods.provide then
+        pcall(mods.provide, "xiv_ui_" .. prefix .. "_config", api)
+      end
+    end
+    _ENV.bridge = nil
     if not ok then error(run_err, 0) end
     state.done = true
     return true

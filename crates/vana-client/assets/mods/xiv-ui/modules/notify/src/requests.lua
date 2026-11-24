@@ -1,8 +1,9 @@
 -- Recent invite reminders, not a claim about native pending-request state.
 -- Respond only through the native Party menu; never call join/decline directly.
 local X=require('src.xiv')
+local hud_config=require('src.hud_config')
 local base_settings=settings
-local settings={get=function(key)return require('src.hud_config').read(key,base_settings) end}
+local settings={get=function(key)return hud_config.read(key,base_settings) end}
 local R=X.renderer()
 local M={window='xn_requests'}
 local latest,sequence,hovered=nil,0,false

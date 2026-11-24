@@ -18,8 +18,17 @@ function X.fmt_time(seconds)
   else return tostring(math.floor(n)) end
 end
 function X.id(v) return type(v) == "number" and v >= 0 and v < 65535 and v % 1 == 0 end
+local function hud_config_active()
+  local req = X._module_require
+  if type(req) == "function" then
+    local m = req("src.hud_config")
+    if type(m) == "table" and type(m.active) == "function" then return m.active() end
+  end
+  local ok, m = pcall(require, "src.hud_config")
+  return ok and type(m) == "table" and type(m.active) == "function" and m.active()
+end
 function X.target(id)
-  if require('src.hud_config').active() then return false end
+  if hud_config_active() then return false end
   if type(id)~='number' or id<=0 or id>4294967295 or id%1~=0 then return false end
   local entity=game.entity(id)
   if not entity or entity.id~=id or entity.hidden or entity.targetable==false then return false end

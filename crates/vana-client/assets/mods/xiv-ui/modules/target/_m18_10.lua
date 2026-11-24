@@ -1,7 +1,6 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.xiv"]=[=[
--- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
+["src.xiv"]=[=[-- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
 local X = { version = 7 }
 local status_png = require("src.status_png")
 X.text_colour = { 240, 255, 255, 255 }
@@ -21,8 +20,17 @@ function X.fmt_time(seconds)
   else return tostring(math.floor(n)) end
 end
 function X.id(v) return type(v) == "number" and v >= 0 and v < 65535 and v % 1 == 0 end
+local function hud_config_active()
+  local req = X._module_require
+  if type(req) == "function" then
+    local m = req("src.hud_config")
+    if type(m) == "table" and type(m.active) == "function" then return m.active() end
+  end
+  local ok, m = pcall(require, "src.hud_config")
+  return ok and type(m) == "table" and type(m.active) == "function" and m.active()
+end
 function X.target(id)
-  if require('src.hud_config').active() then return false end
+  if hud_config_active() then return false end
   if type(id)~='number' or id<=0 or id>4294967295 or id%1~=0 then return false end
   local entity=game.entity(id)
   if not entity or entity.id~=id or entity.hidden or entity.targetable==false then return false end
@@ -44,8 +52,18 @@ local files = {}
 local warnings = {}
 local native_state={}
 for _,event in ipairs({'zone_change','settings_changed'}) do events.on(event,function()native_state={} end) end
+local stall_since = {}
 function X.native(piece, hidden, force)
-  if hidden and X.active_renderer and X.active_renderer.incomplete then hidden=false end
+  -- Do not show the native piece just because a frame has not finished yet: that flashed the
+  -- native window for a frame when a new target appeared. Only fall back after 500 ms of stall.
+  if hidden and X.active_renderer and X.active_renderer.incomplete then
+    local now = clock()
+    local since = stall_since[piece]
+    if not since then stall_since[piece] = now; since = now end
+    if now - since >= 0.5 then hidden = false end
+  else
+    stall_since[piece] = nil
+  end
   local old=native_state[piece]
   if not force and old and old.hidden==hidden and clock()-old.at<1 then return old.ok end
   local ok = pcall(function() ui.native.hide(piece, hidden) end)

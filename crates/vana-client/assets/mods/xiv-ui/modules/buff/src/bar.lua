@@ -12,6 +12,15 @@ local status_png = require("src.status_png")
 
 local M = {}
 
+-- XIV-UI passes the buff settings proxy at entry; global settings is the suite after bootstrap.
+local bound_settings
+
+function M.bind_settings(s) bound_settings = s end
+
+local function cfg()
+  return bound_settings or settings
+end
+
 local MAX = 36              -- the game draws up to 36 (4 rows of 9)
 local slots = {}            -- i -> {id, name, desc, art, square, cancellable, has_img, has_ico, has_txt}
 local cur_ids = ""          -- signature of the statuses currently drawn
@@ -25,15 +34,24 @@ local fail_ticks = 0
 local logged = false       -- log the first error once
 local created = {}         -- element id -> true once hud.image/icon/text created it
 local bound = {}           -- element id -> true once hud.on bound its handler
+local applied_x, applied_y -- last place() in UI units (reposition when offsets change)
 
 -- Create an element on first use and update it with hud.set afterwards, the way the
 -- other XIV mods do. (hud.on replaces a same-id handler, so binding once is not needed
 -- for correctness; it just avoids rebinding on every rebuild.)
 local function put(kind, id, spec)
   if created[id] then
-    hud.set(id, spec)
+    local ok, err = pcall(hud.set, id, spec)
+    if not ok then
+      created[id] = nil
+      if hud.remove then pcall(hud.remove, id) end
+      ok, err = pcall(hud[kind], id, spec)
+      if not ok then error(err) end
+      created[id] = true
+    end
   else
-    hud[kind](id, spec)
+    local ok, err = pcall(hud[kind], id, spec)
+    if not ok then error(err) end
     created[id] = true
   end
 end
@@ -54,40 +72,75 @@ local function try(fn, ...)
   return ok
 end
 
-local function on() return settings.get("on") ~= false end
-local function size() return settings.get("size") or 32 end
-local function cols() return math.max(1, math.floor(settings.get("columns") or 9)) end
-local function gap() return settings.get("gap") or 4 end
-local function show_timers() return settings.get("timers") ~= false end
-local function blink_on() return settings.get("blink") ~= false end
-local function cancel_on() return settings.get("cancel_click") ~= false end
+local function on() return cfg().get("on") == true end
+local function size() return cfg().get("size") or 32 end
+local function cols() return math.max(1, math.floor(cfg().get("columns") or 9)) end
+local function gap() return cfg().get("gap") or 4 end
+local function show_timers() return cfg().get("timers") ~= false end
+local function blink_on() return cfg().get("blink") ~= false end
+local function cancel_on() return cfg().get("cancel_click") ~= false end
 
--- The bar's place: the two offsets from the mod settings, plus the delta a drag saved.
-local function base_pos()
-  return tonumber(settings.get("offset_x")) or 8, tonumber(settings.get("offset_y")) or 80
+-- ui_scale; icon height, slot width (3:4), x step, y step (room for the label) all in UI
+-- units, then the countdown text size.
+local function geom()
+  local u = hud.screen().ui_scale
+  local h = size()
+  local sw = math.max(1, math.floor(h * 0.75 + 0.5))
+  local g = gap()
+  local k = h / 32
+  return u, h, sw, sw + g, h + g + math.floor(9 * k + 0.5), math.max(0.5, 0.8 * k)
 end
-local function delta()
+
+local DEFAULT_X, DEFAULT_Y = 8, 80
+
+-- Bar position: drag saves absolute UI units in account storage (no mod setting sliders).
+local function read_saved_pos()
   local d = type(storage) == "table" and storage.account and storage.account.xbb
-  if type(d) == "table" then return tonumber(d.dx) or 0, tonumber(d.dy) or 0 end
-  return 0, 0
+  if type(d) ~= "table" then return DEFAULT_X, DEFAULT_Y end
+  if d.x ~= nil or d.y ~= nil then
+    return tonumber(d.x) or DEFAULT_X, tonumber(d.y) or DEFAULT_Y
+  end
+  -- Legacy drag delta (before offsets were removed from settings).
+  return DEFAULT_X + (tonumber(d.dx) or 0), DEFAULT_Y + (tonumber(d.dy) or 0)
 end
+
+local function save_pos(x, y)
+  if type(storage) ~= "table" or type(storage.account) ~= "table" then return end
+  storage.account.xbb = { x = math.floor(x + 0.5), y = math.floor(y + 0.5) }
+  if storage.save then pcall(storage.save) end
+end
+
+-- Keep the bar on screen; full width/height use current layout (slots may be empty during clamp).
+local function clamp_pos(x, y)
+  local ok, scr = pcall(hud.screen)
+  if not ok or type(scr) ~= "table" then return x, y end
+  local u = tonumber(scr.ui_scale) or 1
+  local sw = (tonumber(scr.width) or 0) / u
+  local sh = (tonumber(scr.height) or 0) / u
+  if sw < 64 or sh < 64 then return x, y end
+  local _, _, _, stepx, stepy = geom()
+  local cl = cols()
+  local used = 0
+  for i = 1, MAX do
+    if slots[i] and slots[i].id then used = i end
+  end
+  if used == 0 then used = 1 end
+  local bw = math.min(used, cl) * stepx
+  local bh = math.ceil(used / cl) * stepy
+  local margin = 8
+  x = math.max(margin - bw, math.min(x, sw - margin))
+  y = math.max(margin, math.min(y, sh - math.max(margin, bh)))
+  return x, y
+end
+
 local function stored_pos()
-  local bx, by = base_pos()
-  local dx, dy = delta()
-  return bx + dx, by + dy
+  return clamp_pos(read_saved_pos())
 end
 -- Where the bar is right now: the in-progress drag position while dragging (so a status
 -- change mid-drag does not snap it back), otherwise the saved place.
 local function cur_pos()
   if drag and drag.cx then return drag.cx, drag.cy end
   return stored_pos()
-end
--- Save the drag as a delta from the configured offsets, so the offsets stay the base.
-local function save_delta(dx, dy)
-  if type(storage) == "table" and type(storage.account) == "table" then
-    storage.account.xbb = { dx = math.floor(dx + 0.5), dy = math.floor(dy + 0.5) }
-    if storage.save then pcall(storage.save) end
-  end
 end
 
 -- The countdown: hours, minutes, seconds; shown down to 1 s.
@@ -125,18 +178,6 @@ local function signature(list)
   return table.concat(t, ",")
 end
 
--- ui_scale; icon height, slot width (3:4), x step, y step (room for the label) all in UI
--- units, then the countdown text size. The label and its row reserve scale with the icon
--- (they were fixed, so a small icon size made the labels collide and a large one left them tiny).
-local function geom()
-  local u = hud.screen().ui_scale
-  local h = size()
-  local sw = math.max(1, math.floor(h * 0.75 + 0.5))
-  local g = gap()
-  local k = h / 32
-  return u, h, sw, sw + g, h + g + math.floor(9 * k + 0.5), math.max(0.5, 0.8 * k)
-end
-
 local function text_spec(label, bx, by, u, h, sw, tsize)
   return { x = bx + sw * u / 2, y = by + h * u, text = label, size = tsize, align = "center",
     font = "game", colour = { 216, 214, 208, 255 }, outline = { 0, 0, 0, 220 }, layer = 32, visible = true }
@@ -166,17 +207,17 @@ function M.place(x, y)
         if s.square then
           local pad = math.max(1, math.floor(h * 0.06))
           local side = sw + pad * 2
-          pcall(hud.set, "bbp" .. i, { x = bx - pad * u, y = by + (h - side) / 2 * u })
+          pcall(hud.set, "bbp" .. i, { x = bx - pad * u, y = by + (h - side) / 2 * u, visible = true })
         else
-          pcall(hud.set, "bbp" .. i, { x = bx, y = by })
+          pcall(hud.set, "bbp" .. i, { x = bx, y = by, visible = true })
         end
       end
-      if s.has_ico then pcall(hud.set, "bbi" .. i, { x = bx, y = by + (h - sw) / 2 * u }) end
-      if s.has_hit then pcall(hud.set, "bbh" .. i, { x = bx, y = by }) end
-      if s.has_txt then pcall(hud.set, "bbt" .. i, { x = bx + sw * u / 2, y = by + h * u }) end
+      if s.has_ico then pcall(hud.set, "bbi" .. i, { x = bx, y = by + (h - sw) / 2 * u, visible = true }) end
+      if s.has_hit then pcall(hud.set, "bbh" .. i, { x = bx, y = by, visible = true }) end
+      if s.has_txt then pcall(hud.set, "bbt" .. i, { x = bx + sw * u / 2, y = by + h * u, visible = true }) end
     end
   end
-  if bg_on then pcall(hud.set, "bbbg", { x = x * u - 3, y = y * u - 3 }) end
+  if bg_on then pcall(hud.set, "bbbg", { x = x * u - 3, y = y * u - 3, visible = true }) end
 end
 
 -- Drag core shared by the slots and the full-bar area.
@@ -195,8 +236,7 @@ local function drag_core(e)
     drag.cx, drag.cy = nx, ny
     M.place(nx, ny)
     if e.kind == "drag_end" then
-      local bx, by = base_pos()
-      save_delta(nx - bx, ny - by)
+      save_pos(clamp_pos(nx, ny))
       drag = nil
     end
     return true
@@ -226,6 +266,8 @@ end
 local function bg_handler(_, e) return drag_core(e) end
 
 local function build(list, x, y)
+  x, y = clamp_pos(x, y)
+  applied_x, applied_y = x, y
   local u, h, sw, stepx, stepy, tsize = geom()
   local cl = cols()
   -- A full-bar drag area, so a press between icons or on the label strip still moves the bar.
@@ -343,13 +385,10 @@ local function refresh_labels(list)
 end
 
 local function clear_all()
-  if hud.clear and pcall(hud.clear) then
-    created, bound = {}, {}
-  else
-    -- No hud.clear: the elements still exist, so hide them and keep the bookkeeping,
-    -- otherwise the next build would create the same ids a second time.
-    for id in pairs(created) do pcall(hud.set, id, { visible = false }) end
-  end
+  -- Never hud.clear() in XIV-UI: it removes every panel's elements in this mod VM
+  -- (player bars, target, focus, …) while other modules still hold stale ids.
+  for id in pairs(created) do pcall(hud.set, id, { visible = false }) end
+  created, bound = {}, {}
   slots, cur_ids, drag = {}, "", nil
   bg_on, bg_w, bg_h = false, 0, 0
 end
@@ -373,13 +412,18 @@ function M.tick()
       if next(slots) == nil and s == "" then return end
       build(list, cur_pos())
     else
+      local x, y = cur_pos()
+      if x ~= applied_x or y ~= applied_y then
+        applied_x, applied_y = x, y
+        if next(slots) ~= nil then M.place(x, y) end
+      end
       refresh_labels(list)
     end
   end)
   if ok then
     if failed then
       -- The retry worked: take the bar back and hide the native icons again.
-      failed, fail_ticks = false, 0
+      failed, fail_ticks, logged = false, 0, false
       pcall(ui.native.hide, "buffs", true)
     end
   else
@@ -393,8 +437,9 @@ function M.tick()
       failed, fail_ticks = true, 0
       pcall(clear_all)
       pcall(ui.native.hide, "buffs", false)
+      local detail = tostring(err or "")
       local msg = "XIV Buff Bar hit an error (see log); native icons restored, retrying."
-      if type(err) == "string" and err ~= "" then msg = msg .. " [" .. err .. "]" end
+      if detail ~= "" then msg = msg .. " [" .. detail .. "]" end
       if chat and chat.add then pcall(chat.add, msg) end
     end
   end
@@ -402,6 +447,13 @@ end
 
 function M.rebuild() cur_ids = "-"; M.tick() end
 function M.reset() failed, fail_ticks, logged = false, 0, false; clear_all(); M.tick() end
+function M.resetpos()
+  failed, fail_ticks, logged = false, 0, false
+  save_pos(DEFAULT_X, DEFAULT_Y)
+  cur_ids = "-"
+  clear_all()
+  M.tick()
+end
 function M.failed() return failed end
 function M.clear() clear_all() end
 function M.count() return #buff_list() end

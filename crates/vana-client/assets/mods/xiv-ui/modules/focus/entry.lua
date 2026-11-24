@@ -4,7 +4,8 @@ local X = require("src.xiv")
 local built, enabled, last = false, true, nil
 local preview=false
 local shown=false
-local cfg=require('src.hud_config').new(settings,require('src.config_schema'),{
+local hud_config=require('src.hud_config')
+local cfg=hud_config.new(settings,require('src.config_schema'),{
  capture=function()return {enabled=enabled,preview=preview} end,
  preview=function(on)enabled=true;preview=on;last=nil end,
  restore=function(s)enabled=s.enabled;preview=s.preview;last=nil end,
@@ -12,7 +13,7 @@ local cfg=require('src.hud_config').new(settings,require('src.config_schema'),{
 local settings=cfg.settings
 local move_units=1
 local draggers={focus=require('src.hud_drag').new(cfg,'offset_x','offset_y',function()return move_units end),last=require('src.hud_drag').new(cfg,'last_x','last_y',function()return move_units end)}
-mods.provide('busy',function()return require('src.hud_config').active() end)
+mods.provide('busy',function()return hud_config.active() end)
 local suffixes = { "track", "fill", "border", "name", "hpp", "grip" }
 local kinds = { { "focus", "Focus", "focus_target" }, { "last", "Last", "last_target" } }
 
@@ -35,13 +36,13 @@ local function ensure()
   for _, row in ipairs(kinds) do
     local id, field = "xft_" .. row[1], row[3]
     for i, part in ipairs({ { "track", "bar_track" }, { "fill", "fill_white" }, { "border", "bar_border" } }) do
-      hud.image(id .. "_" .. part[1], { path = "img/" .. part[2] .. ".png", x = 0, y = 0, w = 300, h = 12, layer = 9 + i, visible = false })
+      hud.image(id .. "_" .. part[1], { path = "img/" .. part[2] .. ".png", x = 0, y = 0, w = 300, h = 12, layer = 54 + i, visible = false })
     end
     for _, part in ipairs({ "name", "hpp" }) do
       hud.text(id .. "_" .. part, { x = 0, y = 0, text = "", size = 1, font = "regular",
-        align = part == "hpp" and "right" or "left", outline = { 0, 0, 0, 210 }, layer = 13, visible = false })
+        align = part == "hpp" and "right" or "left", outline = { 0, 0, 0, 210 }, layer = 58, visible = false })
     end
-    hud.rect(id .. "_grip", { x = 0, y = 0, w = 300, h = 34, colour = { 0, 0, 0, 1 }, layer = 14, visible = false })
+    hud.rect(id .. "_grip", { x = 0, y = 0, w = 300, h = 34, colour = { 0, 0, 0, 1 }, layer = 59, visible = false })
     hud.on(id .. "_grip", function(_, e)
       if draggers[row[1]](e) then return end
       if e.kind == "click" and (not e.button or e.button=='left') then
@@ -65,11 +66,10 @@ events.on("frame", function()
   if preview and on then me={focus_target=-1,last_target=-2} end
   if not me then hide(); last = nil; return end
   local rows, sig = {}, {}
-  local looked,entity
   for _, row in ipairs(kinds) do
     if show_kind(row[1]) then
       local key = me[row[3]]
-      if key and key~=looked and not preview then entity=game.entity(key);looked=key end
+      local entity = (key and not preview) and game.entity(key) or nil
       local t = preview and {id=key,name='PREVIEW '..row[2],kind='mob',hpp=73,targetable=true} or (key and entity)
       if t and not t.hidden and t.targetable ~= false then
         local colours=palette(t)
@@ -113,10 +113,7 @@ events.on("frame", function()
     local dy=row[1]=='last' and settings.get('last_y') or settings.get('offset_y')
     x=X.clamp(x+(dx or 0)*u,0,math.max(0,scr.width-w))
     y=X.clamp(y+(dy or 0)*u,22*u,math.max(22*u,scr.height-12*u))
-    if y + 12 * u > scr.height then
-      X.native("focus", false)
-      break
-    end
+    if y + 12 * u > scr.height then goto next_row end
     local frac = math.max(0, math.min(1, (t.hpp or 0) / 100))
     hud.set(id .. "_track", { x = x, y = y, w = w, h = 12 * u, colour = p.track, visible = true })
     hud.set(id .. "_fill", { x = x, y = y, w = math.max(1, frac * w), h = 12 * u, colour = p.fill, visible = frac > 0 })
@@ -125,9 +122,13 @@ events.on("frame", function()
     hud.set(id .. "_hpp", { x = x + w, y = y - 20 * u, size = sc, text = tostring(t.hpp or 0) .. "%", colour = p.text, visible = true })
     hud.set(id .. "_grip", { x = x, y = y - 22 * u, w = w, h = 34 * u, visible = true })
     shown=true
+    ::next_row::
   end
+  if #rows == 0 then hide() end
   last = key
 end)
+
+events.on("target_change", function() last = nil end)
 
 commands.register("xft", function(arg)
   local want = tostring(arg or ""):lower():gsub("%s+", "")
@@ -155,7 +156,27 @@ commands.register("xft", function(arg)
   end
   if want == "on" then enabled = true
   elseif want == "off" then enabled = false
-  elseif want == "status" then chat.add("XIV Focus and Last Target: " .. (enabled and "on." or "off.")); return
+  elseif want == "status" then
+    local panel = settings.get("on")
+    chat.add(("XIV Focus and Last Target: %s (panel %s)."):format(
+      enabled and "on" or "off", panel and "on" or "off"))
+    return
+  elseif want == "preview" then
+    preview = not preview
+    last = nil
+    chat.add("XIV focus preview: " .. (preview and "on." or "off."))
+    return
+  elseif want == "debug" then
+    local me = game.player()
+    local lt = me and me.last_target
+    local ft = me and me.focus_target
+    local ent = lt and game.entity(lt)
+    chat.add(("XIV focus debug: panel=%s enabled=%s show_last=%s last_id=%s entity=%s (need prev target != current).")
+      :format(tostring(settings.get("on")), tostring(enabled), tostring(settings.get("show_last")),
+        tostring(lt), ent and (ent.name or "ok") or "nil"))
+    chat.add(("  focus_id=%s target_id=%s"):format(tostring(ft), tostring(game.target() and game.target().id)))
+    last = nil
+    return
   elseif want == "" then enabled = not enabled
   else chat.add("Usage: //xft [on|off|status|focus|target|last]"); return end
   if not enabled then hide(); X.native("focus", false) end

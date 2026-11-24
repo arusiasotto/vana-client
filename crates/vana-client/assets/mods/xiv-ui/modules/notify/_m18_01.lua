@@ -1,7 +1,6 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.xiv"]=[=[
--- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
+["src.xiv"]=[=[-- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
 local X = { version = 7 }
 X.text_colour = { 240, 255, 255, 255 }
 X.stroke = { 6, 45, 84, 210 }
@@ -20,8 +19,17 @@ function X.fmt_time(seconds)
   else return tostring(math.floor(n)) end
 end
 function X.id(v) return type(v) == "number" and v >= 0 and v < 65535 and v % 1 == 0 end
+local function hud_config_active()
+  local req = X._module_require
+  if type(req) == "function" then
+    local m = req("src.hud_config")
+    if type(m) == "table" and type(m.active) == "function" then return m.active() end
+  end
+  local ok, m = pcall(require, "src.hud_config")
+  return ok and type(m) == "table" and type(m.active) == "function" and m.active()
+end
 function X.target(id)
-  if require('src.hud_config').active() then return false end
+  if hud_config_active() then return false end
   if type(id)~='number' or id<=0 or id>4294967295 or id%1~=0 then return false end
   local entity=game.entity(id)
   if not entity or entity.id~=id or entity.hidden or entity.targetable==false then return false end
@@ -216,12 +224,12 @@ function R:status(id, row, x, y, size, scale, layer, enemy, show_time)
 end
 return X
 ]=],
-["src.requests"]=[=[
--- Recent invite reminders, not a claim about native pending-request state.
+["src.requests"]=[=[-- Recent invite reminders, not a claim about native pending-request state.
 -- Respond only through the native Party menu; never call join/decline directly.
 local X=require('src.xiv')
+local hud_config=require('src.hud_config')
 local base_settings=settings
-local settings={get=function(key)return require('src.hud_config').read(key,base_settings) end}
+local settings={get=function(key)return hud_config.read(key,base_settings) end}
 local R=X.renderer()
 local M={window='xn_requests'}
 local latest,sequence,hovered=nil,0,false

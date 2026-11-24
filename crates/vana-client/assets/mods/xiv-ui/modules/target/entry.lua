@@ -4,7 +4,8 @@ local C = require("src.combat")
 local palette = require("src.target_palette")
 local R = X.renderer()
 local enabled, preview, layout, dragging = true, false, nil, nil
-local cfg=require('src.hud_config').new(settings,require('src.config_schema'),{
+local hud_config=require('src.hud_config')
+local cfg=hud_config.new(settings,require('src.config_schema'),{
   capture=function()return {enabled=enabled,preview=preview} end,
   preview=function(on)enabled=true;preview=on end,
   restore=function(s)enabled=s.enabled;preview=s.preview end,
@@ -204,7 +205,7 @@ local function draw(dt)
     R:grip('tb_grip',x,y-22*u,w,35*u,17,function(_,e)
       local current=game.target()
       if preview or not current or current.id~=identity or current.hidden then return end
-      if require('src.hud_config').active() then return end
+      if hud_config.active() then return end
       if e.kind=='drag_start' then local place=storage.account.place or {};dragging={place.x or 0,place.y or 0}
       elseif (e.kind=='drag' or e.kind=='drag_end') and dragging then
         storage.account.place={x=dragging[1]+e.dx,y=dragging[2]+e.dy}

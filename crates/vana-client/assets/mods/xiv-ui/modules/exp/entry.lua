@@ -5,7 +5,8 @@ local tracker=points.new()
 local R=X.renderer()
 local WIN='xxp_details'
 local enabled,preview,reset_armed=true,false,false
-local cfg=require('src.hud_config').new(settings,require('src.config_schema'),{
+local hud_config=require('src.hud_config')
+local cfg=hud_config.new(settings,require('src.config_schema'),{
  capture=function()return {enabled=enabled,preview=preview} end,
  preview=function(on)enabled=true;preview=on;reset_armed=false end,
  restore=function(s)enabled=s.enabled;preview=s.preview end,
@@ -105,7 +106,7 @@ ui.on(WIN,function(_,e)
   elseif reset_armed then reset_armed=false;ui.update(WIN,'buttons',{items={'Reset rates','Close'}})
   else ui.close(WIN) end
 end)
-mods.provide('busy',function()return require('src.hud_config').active() or ui.is_open(WIN) end)
+mods.provide('busy',function()return hud_config.active() or ui.is_open(WIN) end)
 mods.provide('points',function()local r=reading();return r and selected(r) end)
 local function draw()
   if not enabled or not settings.get('on') then last_presentation=nil;X.native('experience',false);R:hide();return end

@@ -37,7 +37,10 @@ function M.new(base,schema,hooks)
   end
   function A.get(key)
     if not bykey[key] then return base.get(key) end
-    if key=='on' and A.session and A.session.preview then return true end
+    if key == 'on' then
+      if A.session and A.session.preview then return true end
+      return native_value('on')
+    end
     local values=A.session and A.session.draft or saved()
     if valid(key,values[key]) then return values[key] end
     return native_value(key) -- one native accessor, not a full-schema scan per HUD field.
@@ -97,7 +100,8 @@ function M.new(base,schema,hooks)
     if type(storage.account.xiv_ui_exp_v1)=='table' and storage.account.xiv_ui_exp_v1.version~=nil and storage.account.xiv_ui_exp_v1.version~=1 then
       return {ok=false,reason='Unrecognised owner config version; preserving it'}
     end
-    local bucket=copy(storage.account.xiv_ui_exp_v1 or {});bucket.version=1;bucket.values=copy(s.draft)
+    local draft=copy(s.draft);draft.on=nil
+    local bucket=copy(storage.account.xiv_ui_exp_v1 or {});bucket.version=1;bucket.values=draft
     local old=copy(storage.account.xiv_ui_exp_v1);storage.account.xiv_ui_exp_v1=bucket
     local ok=pcall(storage.save)
     if not ok then storage.account.xiv_ui_exp_v1=old;return {ok=false,reason='Owner save failed; draft retained'} end

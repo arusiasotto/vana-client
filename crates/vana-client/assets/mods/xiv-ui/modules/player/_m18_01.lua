@@ -1,7 +1,6 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.xiv"]=[=[
--- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
+["src.xiv"]=[=[-- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
 local X = { version = 7 }
 X.text_colour = { 240, 255, 255, 255 }
 X.stroke = { 6, 45, 84, 210 }
@@ -20,8 +19,17 @@ function X.fmt_time(seconds)
   else return tostring(math.floor(n)) end
 end
 function X.id(v) return type(v) == "number" and v >= 0 and v < 65535 and v % 1 == 0 end
+local function hud_config_active()
+  local req = X._module_require
+  if type(req) == "function" then
+    local m = req("src.hud_config")
+    if type(m) == "table" and type(m.active) == "function" then return m.active() end
+  end
+  local ok, m = pcall(require, "src.hud_config")
+  return ok and type(m) == "table" and type(m.active) == "function" and m.active()
+end
 function X.target(id)
-  if require('src.hud_config').active() then return false end
+  if hud_config_active() then return false end
   if type(id)~='number' or id<=0 or id>4294967295 or id%1~=0 then return false end
   local entity=game.entity(id)
   if not entity or entity.id~=id or entity.hidden or entity.targetable==false then return false end
@@ -102,7 +110,10 @@ function R:put(kind, id, spec)
     -- one slow creation per draw; the rest wait for the next draw like any budget miss.
     if kind=='image' and (self.heavy or 0)>=1 then self.waiting=self.waiting or {};self.waiting[id]=true;self.incomplete=true;return end
     if not self:create(id) then return end
-    local t0=clock();hud[kind](id, spec); self.state[id] = copy(spec)
+    local t0=clock()
+    local ok, err = pcall(hud[kind], id, spec)
+    if not ok then self.state[id] = nil; return end
+    self.state[id] = copy(spec)
     if kind=='image' and clock()-t0>=.0006 then self.heavy=(self.heavy or 0)+1 end
     return
   end
@@ -113,7 +124,17 @@ function R:put(kind, id, spec)
   if kind == "image" and old.path ~= spec.path and spec.w and spec.h then
     delta.w, delta.h = spec.w, spec.h
   end
-  if next(delta) then if not self:allow(id) then return end;hud.set(id, delta); for k, v in pairs(delta) do old[k] = copy(v) end elseif self.retry then self.retry[id]=nil end
+  if next(delta) then
+    if not self:allow(id) then return end
+    local ok = pcall(hud.set, id, delta)
+    if not ok and kind == "image" and delta.path and pcall(hud.image, id, spec) then
+      for k, v in pairs(spec) do old[k] = copy(v) end
+    elseif ok then
+      for k, v in pairs(delta) do old[k] = copy(v) end
+    else
+      self.state[id] = nil
+    end
+  elseif self.retry then self.retry[id] = nil end
 end
 function R:finish()
   for id, s in pairs(self.state) do

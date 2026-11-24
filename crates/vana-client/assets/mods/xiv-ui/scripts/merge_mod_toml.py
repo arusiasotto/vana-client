@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Append prefixed settings/commands from standalone xiv mod.toml files into xiv-ui/mod.toml."""
+"""Append prefixed settings/commands from standalone xiv mod.toml files into xiv-ui/mod.toml.
+
+After merging, run regroup_mod_toml.py so the Settings tab stays grouped by panel.
+"""
 from __future__ import annotations
 
 import re
@@ -78,7 +81,7 @@ def main() -> None:
             if block.strip():
                 out.append(block + "\n")
     UI_TOML.write_text("".join(out), encoding="utf-8")
-    print("updated", UI_TOML)
+    print("updated", UI_TOML, "(run scripts/regroup_mod_toml.py to restore panel grouping)")
 
 
 if __name__ == "__main__":

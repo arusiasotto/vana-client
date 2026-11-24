@@ -79,7 +79,8 @@ do
   end
 end
 local enabled, preview = true, false
-local cfg=require('src.hud_config').new(settings,require('src.config_schema'),{
+local hud_config=require('src.hud_config')
+local cfg=hud_config.new(settings,require('src.config_schema'),{
  capture=function()return {enabled=enabled,preview=preview} end,
  preview=function(on)enabled=true;preview=on end,
  restore=function(s)enabled=s.enabled;preview=s.preview end,
@@ -204,7 +205,7 @@ local status_cache={}
 local status_fast={}
 local status_prepared={}
 local self_buffs
-local generation,roster_key,layout_key,layout_revision=0,nil,nil,0
+local generation,roster_key,layout_key,layout_revision,presenting=0,nil,nil,0,false
 local roster,layout
 local pet_task,pet_fallback
 -- Visibility only needs settings, event state and (for Hide Solo) membership.
@@ -235,7 +236,14 @@ events.on('zone_change',function()
 end)
 events.on('buff_gain',function()self_buffs=nil end)
 events.on('buff_lose',function()self_buffs=nil end)
-events.on('settings_changed',function()set_pet_demand(false);invalidate_casts();status_fast={}end)
+events.on('settings_changed',function()
+  set_pet_demand(false);invalidate_casts();status_fast={}
+  if not settings.get('on') then
+    generation=generation+1;roster_key=nil;layout_key=nil;presenting=false;current={}
+    invalidate_casts();smooth={};self_buffs=nil
+    R:hide();ui.close(WIN);X.native('party',false)
+  end
+end)
 -- Only DRG, BST, SMN, PUP and GEO bring pets (job ids by job_names order).
 local PET_JOBS={[9]=true,[14]=true,[15]=true,[18]=true,[21]=true}
 local pet_idle=0
@@ -500,11 +508,11 @@ ui.on(WIN, function(_, e)
     elseif e.index == 4 then ui.close(WIN) end
   end
 end)
-mods.provide("busy", function() return require('src.hud_config').active() or ui.is_open(WIN) end)
+mods.provide("busy", function() return hud_config.active() or ui.is_open(WIN) end)
 local function grip(slot, x, y, w, h)
   R:grip("xpl" .. slot .. "_grip", x, y, w, h, 35, function(_, e)
     if e.kind ~= "click" or preview or not enabled or not settings.get('on') then return end
-    if require('src.hud_config').active() then return end
+    if hud_config.active() then return end
     local m = current[slot]
     if not m then return end
     local members=visible_members()
@@ -781,7 +789,7 @@ local function prepare_layout(members,pets,s)
   end
   return layout
 end
-local casts_active,presenting
+local casts_active
 local next_stage,stage_at,entity_samples,base_prepared=1,{1,1,1,1,1},{},{}
 local samples_generation
 local function resolve_row(m,row,slot)
@@ -996,7 +1004,9 @@ commands.register("xpl", function(arg)
   elseif arg == "preview" then preview = not preview
   elseif arg == "on" then enabled = true
   elseif arg == "off" then enabled = false
-  elseif arg == "status" then chat.add("XIV Party List: " .. (enabled and "on" or "off"))
+  elseif arg == "status" then
+    chat.add(("XIV Party List: %s (panel %s)"):format(
+      enabled and "on" or "off", settings.get("on") and "on" or "off"))
   elseif arg == "" then enabled = not enabled
   else chat.add("Usage: //xpl [on|off|details|preview|status|probe]") end
   if arg=="preview" or not enabled then invalidate_casts();demand_pets(false);current={};self_buffs=nil end

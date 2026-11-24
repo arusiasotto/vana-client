@@ -2,14 +2,15 @@
 local X = require("src.xiv")
 local R = X.renderer()
 local enabled, preview, preview_at = true, false, 0
-local cfg=require('src.hud_config').new(settings,require('src.config_schema'),{
+local hud_config=require('src.hud_config')
+local cfg=hud_config.new(settings,require('src.config_schema'),{
  capture=function()return {enabled=enabled,preview=preview,at=preview_at} end,
  preview=function(on)enabled=true;preview=on;preview_at=clock() end,
  restore=function(s)enabled=s.enabled;preview=s.preview;preview_at=s.at end,
 })
 local settings=cfg.settings
 R.drag=require('src.hud_drag').new(cfg,'offset_x','offset_y',function()return R.move_units or 1 end)
-mods.provide('busy',function()return require('src.hud_config').active() end)
+mods.provide('busy',function()return hud_config.active() end)
 local swing, ranged = {}, {}
 local last_live, interrupted_until, complete_until = nil, 0, 0
 local weapon_key
