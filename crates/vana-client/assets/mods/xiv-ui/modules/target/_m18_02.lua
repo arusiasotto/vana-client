@@ -1,0 +1,116 @@
+-- M18 bundled sources; generated from stage sources. Do not edit.
+return {
+["src.budget_data.src_status_map_008"]=[=[
+-- Static facts, bounded compile unit; derived byte-for-value from B20.
+return {
+{[1]="actions",[2]="ability",[3]=330,[4]={[1]={["effect"]=497,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=331,[4]={[1]={["effect"]=498,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=332,[4]={[1]={["effect"]=499,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=333,[4]={[1]={["effect"]=500,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=334,[4]={[1]={["effect"]=501,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=335,[4]={[1]={["effect"]=502,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=336,[4]={[1]={["effect"]=503,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=337,[4]={[1]={["effect"]=504,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=338,[4]={[1]={["effect"]=505,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=341,[4]={[1]={["effect"]=507,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=343,[4]={[1]={["effect"]=513,["formula"]="JA_BOLSTER",["landed"]={[0]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=350,[4]={[1]={["effect"]=569,["formula"]="FIXED",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=351,[4]={[1]={["effect"]=518,["formula"]="FIXED",["landed"]={[319]=true},["param"]="E",["target"]="luopan"}}},
+{[1]="actions",[2]="ability",[3]=352,[4]={[1]={["effect"]=519,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=356,[4]={[1]={["effect"]=522,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=358,[4]={[1]={["effect"]=523,["formula"]="RUNE",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=359,[4]={[1]={["effect"]=524,["formula"]="RUNE",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=360,[4]={[1]={["effect"]=525,["formula"]="RUNE",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=361,[4]={[1]={["effect"]=526,["formula"]="RUNE",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=362,[4]={[1]={["effect"]=527,["formula"]="RUNE",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=363,[4]={[1]={["effect"]=528,["formula"]="RUNE",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=364,[4]={[1]={["effect"]=529,["formula"]="RUNE",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=365,[4]={[1]={["effect"]=530,["formula"]="RUNE",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=366,[4]={[1]={["effect"]=531,["formula"]="VALLATION",["landed"]={[668]=true},["param"]="E",["target"]="self"},[2]={["effect"]=574,["formula"]="VALLATION",["landed"]={},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=367,[4]={[1]={["effect"]=532,["formula"]="FIXED",["landed"]={[667]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=369,[4]={[1]={["effect"]=533,["formula"]="FIXED",["landed"]={[671]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=370,[4]={[1]={["effect"]=534,["formula"]="FIXED",["landed"]={[100]=true},["param"]="0",["target"]="self"}}}
+}
+]=],
+["src.budget_data.src_status_map_009"]=[=[
+-- Static facts, bounded compile unit; derived byte-for-value from B20.
+return {
+{[1]="actions",[2]="ability",[3]=371,[4]={[1]={["effect"]=535,["formula"]="VALIANCE",["landed"]={[668]=true,[669]=true},["param"]="V",["target"]="party_aoe"},[2]={["effect"]=574,["formula"]="VALIANCE",["landed"]={},["param"]="0",["target"]="self_and_party"}}},
+{[1]="actions",[2]="ability",[3]=372,[4]={[1]={["effect"]=536,["formula"]="GAMBIT",["landed"]={[672]=true},["param"]="E",["target"]="enemy"}}},
+{[1]="actions",[2]="ability",[3]=373,[4]={[1]={["effect"]=537,["formula"]="LIEMENT",["landed"]={[670]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=374,[4]={[1]={["effect"]=538,["formula"]="OFA",["landed"]={[100]=true},["param"]="0",["target"]="party_aoe"}}},
+{[1]="actions",[2]="ability",[3]=375,[4]={[1]={["effect"]=571,["formula"]="RAYKE",["landed"]={[320]=true},["param"]="E",["target"]="enemy"}}},
+{[1]="actions",[2]="ability",[3]=376,[4]={[1]={["effect"]=570,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=377,[4]={[1]={["effect"]=508,["formula"]="FIXED",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=381,[4]={[1]={["effect"]=176,["formula"]="JIG",["landed"]={[126]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="ability",[3]=384,[4]={[1]={["effect"]=582,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=385,[4]={[1]={["effect"]=583,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=386,[4]={[1]={["effect"]=584,["formula"]="FIXED",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=388,[4]={[1]={["effect"]=598,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=389,[4]={[1]={["effect"]=599,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=390,[4]={[1]={["effect"]=339,["formula"]="ROLL",["landed"]={[420]=true,[421]=true,[424]=true},["param"]="R",["target"]="self_and_party"}}},
+{[1]="actions",[2]="ability",[3]=391,[4]={[1]={["effect"]=600,["formula"]="ROLL",["landed"]={[420]=true,[421]=true,[424]=true},["param"]="R",["target"]="self_and_party"}}},
+{[1]="actions",[2]="ability",[3]=392,[4]={[1]={["effect"]=601,["formula"]="FIXED",["landed"]={[100]=true},["param"]="0",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=393,[4]={[1]={["effect"]=619,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="ability",[3]=394,[4]={[1]={["effect"]=621,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
+{[1]="actions",[2]="pet",[3]=514,[4]={[1]={["effect"]=154,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=515,[4]={[1]={["effect"]=80,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"},[2]={["effect"]=81,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"},[3]={["effect"]=82,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"},[4]={["effect"]=83,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"},[5]={["effect"]=84,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"},[6]={["effect"]=85,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"},[7]={["effect"]=86,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=522,[4]={[1]={["effect"]=2,["formula"]="MOB_STATUS_EX",["landed"]={[127]=true},["param"]="E",["target"]="enemy_aoe"}}}
+}
+]=],
+["src.budget_data.src_status_map_010"]=[=[
+-- Static facts, bounded compile unit; derived byte-for-value from B20.
+return {
+{[1]="actions",[2]="pet",[3]=523,[4]={[1]={["effect"]=6,["formula"]="MOB_STATUS_EX",["landed"]={[127]=true},["param"]="E",["target"]="enemy"},[2]={["effect"]=16,["formula"]="MOB_STATUS_EX",["landed"]={[127]=true},["param"]="E",["target"]="enemy"}}},
+{[1]="actions",[2]="pet",[3]=526,[4]={[1]={["effect"]=113,["formula"]="FIXED",["landed"]={[319]=true},["param"]="E",["target"]="any_pc"}}},
+{[1]="actions",[2]="pet",[3]=527,[4]={[1]={["effect"]=113,["formula"]="FIXED",["landed"]={[266]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=530,[4]={[1]={["effect"]=146,["formula"]="BP_WARD*R",["landed"]={[144]=true},["param"]="E",["target"]="enemy"},[2]={["effect"]=148,["formula"]="BP_WARD*R",["landed"]={[144]=true},["param"]="E",["target"]="enemy"}}},
+{[1]="actions",[2]="pet",[3]=532,[4]={[1]={["effect"]=80,["formula"]="BP_WARD",["landed"]={[364]=true,[365]=true},["param"]="0",["target"]="party_aoe"},[2]={["effect"]=81,["formula"]="BP_WARD",["landed"]={[364]=true,[365]=true},["param"]="0",["target"]="party_aoe"},[3]={["effect"]=82,["formula"]="BP_WARD",["landed"]={[364]=true,[365]=true},["param"]="0",["target"]="party_aoe"},[4]={["effect"]=83,["formula"]="BP_WARD",["landed"]={[364]=true,[365]=true},["param"]="0",["target"]="party_aoe"},[5]={["effect"]=84,["formula"]="BP_WARD",["landed"]={[364]=true,[365]=true},["param"]="0",["target"]="party_aoe"},[6]={["effect"]=85,["formula"]="BP_WARD",["landed"]={[364]=true,[365]=true},["param"]="0",["target"]="party_aoe"},[7]={["effect"]=86,["formula"]="BP_WARD",["landed"]={[364]=true,[365]=true},["param"]="0",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=533,[4]={[1]={["effect"]=90,["formula"]="BP_WARD",["landed"]={[146]=true,[147]=true},["param"]="0",["target"]="party_aoe"},[2]={["effect"]=92,["formula"]="BP_WARD",["landed"]={[146]=true,[147]=true},["param"]="0",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=548,[4]={[1]={["effect"]=68,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=564,[4]={[1]={["effect"]=37,["formula"]="FIXED",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=580,[4]={[1]={["effect"]=13,["formula"]="BP_WARD*R",["landed"]={[127]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=585,[4]={[1]={["effect"]=147,["formula"]="BP_WARD*R",["landed"]={[127]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=586,[4]={[1]={["effect"]=586,["formula"]="FIXED",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=595,[4]={[1]={["effect"]=33,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=596,[4]={[1]={["effect"]=36,["formula"]="FIXED",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=610,[4]={[1]={["effect"]=35,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=611,[4]={[1]={["effect"]=2,["formula"]="MOB_STATUS_EX",["landed"]={[127]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=626,[4]={[1]={["effect"]=98,["formula"]="BP_WARD",["landed"]={[267]=true,[320]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=628,[4]={[1]={["effect"]=38,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=658,[4]={[1]={["effect"]=2,["formula"]="BP_NIGHTMARE",["landed"]={[266]=true},["param"]="E",["target"]="enemy_aoe"},[2]={["effect"]=135,["formula"]="BP_NIGHTMARE",["landed"]={[266]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=660,[4]={[1]={["effect"]=116,["formula"]="BP_WARD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}}
+}
+]=],
+["src.budget_data.src_status_map_011"]=[=[
+-- Static facts, bounded compile unit; derived byte-for-value from B20.
+return {
+{[1]="actions",[2]="pet",[3]=661,[4]={[1]={["effect"]=190,["formula"]="BP_WARD",["landed"]={[414]=true,[415]=true},["param"]="0",["target"]="party_aoe"},[2]={["effect"]=191,["formula"]="BP_WARD",["landed"]={[414]=true,[415]=true},["param"]="0",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=671,[4]={[1]={["effect"]=283,["formula"]="BP_PD",["landed"]={[266]=true,[319]=true},["param"]="E",["target"]="party_aoe"}}},
+{[1]="actions",[2]="pet",[3]=1946,[4]={[1]={["effect"]=37,["formula"]="FIXED",["landed"]={[186]=true},["param"]="E",["target"]="pet"}}},
+{[1]="actions",[2]="pet",[3]=1947,[4]={[1]={["effect"]=156,["formula"]="MOB_STATUS",["landed"]={[242]=true},["param"]="E",["target"]="enemy"}}},
+{[1]="actions",[2]="pet",[3]=1948,[4]={[1]={["effect"]=43,["formula"]="FIXED",["landed"]={[186]=true},["param"]="E",["target"]="pet"}}},
+{[1]="actions",[2]="pet",[3]=2031,[4]={[1]={["effect"]=34,["formula"]="FIXED",["landed"]={[186]=true},["param"]="E",["target"]="pet"}}},
+{[1]="actions",[2]="pet",[3]=2132,[4]={[1]={["effect"]=66,["formula"]="FIXED",["landed"]={[186]=true},["param"]="E",["target"]="pet"}}},
+{[1]="actions",[2]="pet",[3]=2939,[4]={[1]={["effect"]=44,["formula"]="FIXED",["landed"]={[101]=true},["param"]="E",["target"]="pet"}}},
+{[1]="actions",[2]="pet",[3]=2940,[4]={[1]={["effect"]=50,["formula"]="FIXED",["landed"]={[101]=true},["param"]="E",["target"]="pet"}}},
+{[1]="actions",[2]="pet",[3]=2942,[4]={[1]={["effect"]=48,["formula"]="FIXED",["landed"]={[101]=true},["param"]="E",["target"]="pet"}}},
+{[1]="actions",[2]="pet",[3]=2944,[4]={[1]={["effect"]=47,["formula"]="FIXED",["landed"]={[101]=true},["param"]="E",["target"]="pet"}}},
+{[1]="actions",[2]="pet",[3]=3844,[4]={[1]={["effect"]=2,["formula"]="MOB_STATUS",["landed"]={[242]=true,[277]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=3847,[4]={[1]={["effect"]=141,["formula"]="MOB_STATUS",["landed"]={[242]=true,[277]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=3848,[4]={[1]={["effect"]=4,["formula"]="MOB_STATUS",["landed"]={[242]=true,[277]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=3855,[4]={[1]={["effect"]=148,["formula"]="MOB_STATUS",["landed"]={[242]=true,[277]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=3856,[4]={[1]={["effect"]=92,["formula"]="FIXED",["landed"]={[186]=true,[266]=true},["param"]="E",["target"]="pet+master"}}},
+{[1]="actions",[2]="pet",[3]=3858,[4]={[1]={["effect"]=56,["formula"]="FIXED",["landed"]={[186]=true,[266]=true},["param"]="E",["target"]="pet+master"}}},
+{[1]="actions",[2]="pet",[3]=3860,[4]={[1]={["effect"]=2,["formula"]="MOB_STATUS",["landed"]={[242]=true,[277]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=3862,[4]={[1]={["effect"]=41,["formula"]="FIXED",["landed"]={[186]=true,[266]=true},["param"]="E",["target"]="pet+master"}}},
+{[1]="actions",[2]="pet",[3]=3864,[4]={[1]={["effect"]=93,["formula"]="FIXED",["landed"]={[186]=true,[266]=true},["param"]="E",["target"]="pet+master"}}},
+{[1]="actions",[2]="pet",[3]=3865,[4]={[1]={["effect"]=37,["formula"]="FIXED",["landed"]={[186]=true,[266]=true},["param"]="E",["target"]="pet+master"}}},
+{[1]="actions",[2]="pet",[3]=3869,[4]={[1]={["effect"]=4,["formula"]="MOB_STATUS",["landed"]={[242]=true},["param"]="E",["target"]="enemy"}}},
+{[1]="actions",[2]="pet",[3]=3876,[4]={[1]={["effect"]=148,["formula"]="MOB_STATUS",["landed"]={[242]=true,[277]=true},["param"]="E",["target"]="enemy_aoe"}}},
+{[1]="actions",[2]="pet",[3]=3878,[4]={[1]={["effect"]=92,["formula"]="MOB_TP_SCALED",["landed"]={[186]=true},["param"]="E",["target"]="pet"}}},
+{[1]="actions",[2]="pet",[3]=3879,[4]={[1]={["effect"]=136,["formula"]="MOB_TP_SCALED",["landed"]={[242]=true},["param"]="E",["target"]="enemy"}}},
+{[1]="actions",[2]="pet",[3]=3882,[4]={[1]={["effect"]=5,["formula"]="MOB_STATUS",["landed"]={[242]=true,[277]=true},["param"]="E",["target"]="enemy_aoe"}}}
+}
+]=]
+}

@@ -1,0 +1,181 @@
+name = "XIV-UI"
+version = "0.1.0"
+description = "FFXIV-style HUD in one mod (phase 1: target bar and focus/last target). Turn off the standalone xiv-target-bar and xiv-focus-target mods when this is on. Later phases add party, player, cast, buff, XP and notify."
+authors = ["Nitsu"]
+permissions = ["ui.native", "actions"]
+
+[settings.on]
+type = "bool"
+default = false
+label = "XIV-UI"
+help = "Master switch for the XIV HUD pack. Phase 1 loads the target bar and focus/last-target readouts only. Layout positions from standalone xiv-target-bar / xiv-focus-target import on first run when possible."
+
+[settings.mod_target]
+type = "bool"
+default = true
+label = "Target bar"
+help = "FFXIV-style target HP, weakness row and cast strip."
+
+[settings.mod_focus]
+type = "bool"
+default = true
+label = "Focus and last target"
+help = "Focus and last-target bars; anchors to the target bar layout when it is enabled."
+
+[settings.mod_party]
+type = "bool"
+default = false
+label = "Party list (phase 2)"
+help = "Not wired yet in XIV-UI; keep using XIV Party List mod, or wait for phase 2."
+
+[settings.mod_player]
+type = "bool"
+default = false
+label = "Player bars (phase 2)"
+
+[settings.mod_cast]
+type = "bool"
+default = false
+label = "Cast bar (phase 2)"
+
+[settings.mod_buff]
+type = "bool"
+default = false
+label = "Buff bar (phase 2)"
+
+[settings.mod_exp]
+type = "bool"
+default = false
+label = "XP bar (phase 2)"
+
+[settings.mod_notify]
+type = "bool"
+default = false
+label = "Notify (phase 2)"
+
+# --- Target bar (was xiv-target-bar) ---
+[settings.target_on]
+type = "bool"
+default = true
+label = "Target bar: show"
+help = "Shows the FFXIV-style target bar. Drag it to move it."
+
+[settings.target_width]
+type = "int"
+default = 420
+min = 200
+max = 900
+step = 20
+label = "Target bar: width"
+
+[settings.target_scale]
+type = "int"
+default = 100
+min = 50
+max = 200
+step = 10
+label = "Target bar: scale (%)"
+
+[settings.target_status_count]
+type = "int"
+default = 12
+min = 1
+max = 32
+step = 1
+label = "Target bar: visible statuses"
+
+[settings.target_place_x]
+type = "int"
+default = 0
+min = -2400
+max = 2400
+step = 4
+label = "Target bar: X offset (px)"
+
+[settings.target_place_y]
+type = "int"
+default = 0
+min = -1600
+max = 1600
+step = 4
+label = "Target bar: Y offset (px)"
+
+[commands.xtb]
+help = "XIV target display, status details and preview."
+args = "[on|off|details|preview|status]"
+
+# --- Focus / last (was xiv-focus-target) ---
+[settings.focus_on]
+type = "bool"
+default = true
+label = "Focus bars: show"
+
+[settings.focus_show_focus]
+type = "bool"
+default = true
+label = "Focus bars: show focus target"
+
+[settings.focus_show_last]
+type = "bool"
+default = true
+label = "Focus bars: show last target"
+
+[settings.focus_width]
+type = "int"
+default = 300
+min = 160
+max = 600
+step = 20
+label = "Focus bars: width"
+
+[settings.focus_scale]
+type = "int"
+default = 100
+min = 50
+max = 200
+step = 10
+label = "Focus bars: own scale (%)"
+
+[settings.focus_offset_x]
+type = "int"
+default = 0
+min = -1200
+max = 1200
+step = 4
+label = "Focus bars: focus X offset (px)"
+
+[settings.focus_offset_y]
+type = "int"
+default = 0
+min = -800
+max = 800
+step = 4
+label = "Focus bars: focus Y offset (px)"
+
+[settings.focus_last_x]
+type = "int"
+default = 0
+min = -1200
+max = 1200
+step = 4
+label = "Focus bars: last-target X offset (px)"
+
+[settings.focus_last_y]
+type = "int"
+default = 0
+min = -800
+max = 800
+step = 4
+label = "Focus bars: last-target Y offset (px)"
+
+[commands.xft]
+help = "XIV focus/last bars: on/off/status, focus, target, last."
+args = "[on|off|status|focus|target|last]"
+forms = [
+  { args = "on", help = "Show the bars." },
+  { args = "off", help = "Hide the bars." },
+  { args = "status", help = "Report whether the bars are on." },
+  { args = "focus", help = "Set the focus target to your current target (a party member)." },
+  { args = "target", help = "Target your focus target." },
+  { args = "last", help = "Target your last target." },
+]
