@@ -8,65 +8,61 @@ permissions = ["ui.native", "actions"]
 type = "bool"
 default = false
 label = "XIV-UI"
-help = "Master switch for the XIV HUD pack. Use the module toggles below for each panel. Legacy layout may import from storage.account.xiv_ui_v1 on first run."
+help = "Master switch. Enable each panel below; turn off the matching standalone xiv-* mod when a panel is on here. //xtb, //xft, etc. still hide a panel until the next reload without changing these toggles."
 
+# —— Panels (one toggle each: load + show) ——
 [settings.mod_target]
 type = "bool"
-default = true
+default = false
 label = "Target bar"
-help = "FFXIV-style target HP, weakness row and cast strip."
+help = "HP, weaknesses, cast strip. Required for party cast/status integration."
 
 [settings.mod_focus]
 type = "bool"
-default = true
+default = false
 label = "Focus and last target"
-help = "Focus and last-target bars; anchors to the target bar layout when it is enabled."
-
-[settings.mod_party]
-type = "bool"
-default = false
-label = "Party list"
-help = "Party, alliance and pet rows; uses in-suite target APIs for casts and effects."
-
-[settings.mod_player]
-type = "bool"
-default = false
-label = "Player bars"
+help = "Anchors below the target bar when it is enabled."
 
 [settings.mod_cast]
 type = "bool"
 default = false
 label = "Cast bar"
 
+[settings.mod_player]
+type = "bool"
+default = false
+label = "Player bars"
+
 [settings.mod_buff]
 type = "bool"
 default = false
 label = "Buff bar"
+help = "Replaces the native status icon row."
 
 [settings.mod_exp]
 type = "bool"
 default = false
 label = "XP / limit strip"
 
+[settings.mod_party]
+type = "bool"
+default = false
+label = "Party list"
+help = "Party, alliance, pets. Keep target enabled for casts and debuff icons."
+
 [settings.mod_notify]
 type = "bool"
 default = false
 label = "Notify"
 
-# --- Target bar (was xiv-target-bar) ---
-[settings.target_on]
-type = "bool"
-default = true
-label = "Target bar: show"
-help = "Shows the FFXIV-style target bar. Drag it to move it."
-
+# —— Target bar ——
 [settings.target_width]
 type = "int"
 default = 420
 min = 200
 max = 900
 step = 20
-label = "Target bar: width"
+label = "Width"
 
 [settings.target_scale]
 type = "int"
@@ -74,7 +70,7 @@ default = 100
 min = 50
 max = 200
 step = 10
-label = "Target bar: scale (%)"
+label = "Scale (%)"
 
 [settings.target_status_count]
 type = "int"
@@ -82,7 +78,7 @@ default = 12
 min = 1
 max = 32
 step = 1
-label = "Target bar: visible statuses"
+label = "Visible statuses"
 
 [settings.target_place_x]
 type = "int"
@@ -90,7 +86,7 @@ default = 0
 min = -2400
 max = 2400
 step = 4
-label = "Target bar: X offset (px)"
+label = "X offset (px)"
 
 [settings.target_place_y]
 type = "int"
@@ -98,27 +94,22 @@ default = 0
 min = -1600
 max = 1600
 step = 4
-label = "Target bar: Y offset (px)"
+label = "Y offset (px)"
 
 [commands.xtb]
 help = "XIV target display, status details and preview."
 args = "[on|off|details|preview|status]"
 
-# --- Focus / last (was xiv-focus-target) ---
-[settings.focus_on]
-type = "bool"
-default = true
-label = "Focus bars: show"
-
+# —— Focus and last target ——
 [settings.focus_show_focus]
 type = "bool"
 default = true
-label = "Focus bars: show focus target"
+label = "Show focus target"
 
 [settings.focus_show_last]
 type = "bool"
 default = true
-label = "Focus bars: show last target"
+label = "Show last target"
 
 [settings.focus_width]
 type = "int"
@@ -126,7 +117,7 @@ default = 300
 min = 160
 max = 600
 step = 20
-label = "Focus bars: width"
+label = "Width"
 
 [settings.focus_scale]
 type = "int"
@@ -134,7 +125,7 @@ default = 100
 min = 50
 max = 200
 step = 10
-label = "Focus bars: own scale (%)"
+label = "Scale (%)"
 
 [settings.focus_offset_x]
 type = "int"
@@ -142,7 +133,7 @@ default = 0
 min = -1200
 max = 1200
 step = 4
-label = "Focus bars: focus X offset (px)"
+label = "Focus X offset (px)"
 
 [settings.focus_offset_y]
 type = "int"
@@ -150,7 +141,7 @@ default = 0
 min = -800
 max = 800
 step = 4
-label = "Focus bars: focus Y offset (px)"
+label = "Focus Y offset (px)"
 
 [settings.focus_last_x]
 type = "int"
@@ -158,7 +149,7 @@ default = 0
 min = -1200
 max = 1200
 step = 4
-label = "Focus bars: last-target X offset (px)"
+label = "Last-target X offset (px)"
 
 [settings.focus_last_y]
 type = "int"
@@ -166,7 +157,7 @@ default = 0
 min = -800
 max = 800
 step = 4
-label = "Focus bars: last-target Y offset (px)"
+label = "Last-target Y offset (px)"
 
 [commands.xft]
 help = "XIV focus/last bars: on/off/status, focus, target, last."
@@ -180,13 +171,7 @@ forms = [
   { args = "last", help = "Target your last target." },
 ]
 
-# --- xiv-cast-bar (suite prefix cast_) ---
-[settings.cast_on]
-type = "bool"
-default = true
-label = "XIV Cast Bar"
-help = "Shows your casting progress as a gold-rimmed bar."
-
+# —— Cast bar ——
 [settings.cast_width]
 type = "int"
 default = 180
@@ -238,13 +223,7 @@ step = 4
 label = "Horizontal HUD offset"
 help = "Native gauge origin, no window stacking workaround."
 
-# --- xiv-player-bars (suite prefix player_) ---
-[settings.player_on]
-type = "bool"
-default = false
-label = "XIV Player Bars"
-help = "Shows FFXIV-style HP, MP and TP bars near the bottom of the screen."
-
+# —— Player bars ——
 [settings.player_scale]
 type = "int"
 default = 100
@@ -286,13 +265,7 @@ help = "Uses the cast mod's actual reserved layout when available; no guessed be
 help = "Player vitals display, safe sample mode and native details."
 args = "[on|off|preview|details|status]"
 
-# --- xiv-buff-bar (suite prefix buff_) ---
-[settings.buff_on]
-type = "bool"
-default = true
-label = "XIV Buff Bar"
-help = "Hide the game's status icons and draw this bar instead. Off gives the game's own icons back."
-
+# —— Buff bar ——
 [settings.buff_size]
 type = "int"
 default = 32
@@ -360,12 +333,7 @@ help = "A left click on a cancellable effect cancels it. Drag to move the bar; a
 help = "Reports the XIV Buff Bar; 'lock' toggles dragging, 'refresh' rebuilds it."
 args = "[lock|refresh]"
 
-# --- xiv-exp-bar (suite prefix exp_) ---
-[settings.exp_on]
-type = "bool"
-default = true
-label = "XIV Points Strip"
-
+# —— XP / limit strip ——
 [settings.exp_mode]
 type = "int"
 default = 1
@@ -424,13 +392,7 @@ help = "Only used when attached."
 help = "Real points strip, clearly labelled samples, native job/time/point details and confirmed volatile-rate reset."
 args = "[on|off|preview|details|status]"
 
-# --- xiv-party-list (suite prefix party_) ---
-[settings.party_on]
-type = "bool"
-default = true
-label = "XIV Party List"
-help = "Draws an FFXIV-style party frame on the left of the screen."
-
+# —— Party list ——
 [settings.party_offset_x]
 type = "int"
 default = 16
@@ -512,13 +474,7 @@ type = "bool"
 default = false
 label = "Only Prioritised Statuses"
 
-# --- xiv-notify (suite prefix notify_) ---
-[settings.notify_on]
-type = "bool"
-default = true
-label = "XIV Notify"
-help = "Shows a short fading toast when you loot an item."
-
+# —— Notify ——
 [settings.notify_seconds]
 type = "int"
 default = 3

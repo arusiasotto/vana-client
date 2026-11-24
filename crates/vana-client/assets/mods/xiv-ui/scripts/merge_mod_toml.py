@@ -37,7 +37,7 @@ def transform_block(header: str, body: str, prefix: str) -> str:
     if not m:
         return header + "\n" + body
     key = m.group(1)
-    if key in SKIP_KEYS or any(key.startswith(p) for p in SKIP_PREFIXES):
+    if key == "on" or key in SKIP_KEYS or any(key.startswith(p) for p in SKIP_PREFIXES):
         return ""
     new_header = f"[settings.{prefix}_{key}]"
     return new_header + "\n" + body
