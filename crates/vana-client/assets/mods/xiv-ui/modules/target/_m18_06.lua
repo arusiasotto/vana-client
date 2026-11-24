@@ -1,6 +1,6 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.budget_data.src_status_map_024"]=[=[
+["src.budget_data.src_status_map_024"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="spell",[3]=503,[4]={[1]={["effect"]=136,["formula"]="IMPACT",["landed"]={[2]=true,[7]=true,[85]=true,[252]=true},["param"]="D",["target"]="enemy"},[2]={["effect"]=137,["formula"]="IMPACT",["landed"]={[2]=true,[7]=true,[85]=true,[252]=true},["param"]="D",["target"]="enemy"},[3]={["effect"]=138,["formula"]="IMPACT",["landed"]={[2]=true,[7]=true,[85]=true,[252]=true},["param"]="D",["target"]="enemy"},[4]={["effect"]=139,["formula"]="IMPACT",["landed"]={[2]=true,[7]=true,[85]=true,[252]=true},["param"]="D",["target"]="enemy"},[5]={["effect"]=140,["formula"]="IMPACT",["landed"]={[2]=true,[7]=true,[85]=true,[252]=true},["param"]="D",["target"]="enemy"},[6]={["effect"]=141,["formula"]="IMPACT",["landed"]={[2]=true,[7]=true,[85]=true,[252]=true},["param"]="D",["target"]="enemy"},[7]={["effect"]=142,["formula"]="IMPACT",["landed"]={[2]=true,[7]=true,[85]=true,[252]=true},["param"]="D",["target"]="enemy"}}},
@@ -24,8 +24,8 @@ return {
 {[1]="actions",[2]="spell",[3]=561,[4]={[1]={["effect"]=149,["formula"]="BLU_ENF",["landed"]={[236]=true,[271]=true,[277]=true},["param"]="E",["target"]="enemy_aoe"}}},
 {[1]="actions",[2]="spell",[3]=572,[4]={[1]={["effect"]=140,["formula"]="BLU_ENF",["landed"]={[236]=true,[271]=true,[277]=true},["param"]="E",["target"]="enemy_aoe"}}}
 }
-]=],
-["src.budget_data.src_status_map_025"]=[=[
+]],
+["src.budget_data.src_status_map_025"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="spell",[3]=574,[4]={[1]={["effect"]=92,["formula"]="BLU_BUFF",["landed"]={[230]=true,[266]=true},["param"]="E",["target"]="self"}}},
@@ -49,8 +49,8 @@ return {
 {[1]="actions",[2]="spell",[3]=636,[4]={[1]={["effect"]=90,["formula"]="BLU_BUFF",["landed"]={[230]=true,[266]=true},["param"]="E",["target"]="self_and_party"},[2]={["effect"]=92,["formula"]="BLU_BUFF",["landed"]={[230]=true,[266]=true},["param"]="E",["target"]="self_and_party"}}},
 {[1]="actions",[2]="spell",[3]=642,[4]={[1]={["effect"]=190,["formula"]="BLU_BUFF",["landed"]={[230]=true,[266]=true},["param"]="E",["target"]="self_and_party"},[2]={["effect"]=191,["formula"]="BLU_BUFF",["landed"]={[230]=true,[266]=true},["param"]="E",["target"]="self_and_party"}}}
 }
-]=],
-["src.budget_data.src_status_map_026"]=[=[
+]],
+["src.budget_data.src_status_map_026"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="spell",[3]=647,[4]={[1]={["effect"]=36,["formula"]="BLU_BUFF",["landed"]={[230]=true,[266]=true},["param"]="E",["target"]="self_and_party"}}},
@@ -79,8 +79,8 @@ return {
 {[1]="actions",[2]="spell",[3]=781,[4]={[1]={["effect"]=612,["formula"]="INDI",["landed"]={[0]=true},["param"]="G",["target"]="self_entrust"}}},
 {[1]="actions",[2]="spell",[3]=782,[4]={[1]={["effect"]=612,["formula"]="INDI",["landed"]={[0]=true},["param"]="G",["target"]="self_entrust"}}}
 }
-]=],
-["src.budget_data.src_status_map_027"]=[=[
+]],
+["src.budget_data.src_status_map_027"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="spell",[3]=783,[4]={[1]={["effect"]=612,["formula"]="INDI",["landed"]={[0]=true},["param"]="G",["target"]="self_entrust"}}},
@@ -110,5 +110,5 @@ return {
 {[1]="actions",[2]="spell",[3]=872,[4]={[1]={["effect"]=217,["formula"]="ENF_SONG",["landed"]={[237]=true,[268]=true},["param"]="E",["target"]="enemy"}}},
 {[1]="actions",[2]="spell",[3]=873,[4]={[1]={["effect"]=217,["formula"]="ENF_SONG",["landed"]={[237]=true,[268]=true},["param"]="E",["target"]="enemy"}}}
 }
-]=]
+]],
 }

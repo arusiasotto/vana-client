@@ -1,5 +1,9 @@
 # XIV-UI maintenance scripts
 
+The suite **`mod.toml` at the xiv-ui root** is the only settings manifest panels use (via `settings_proxy`). Per-panel `modules/*/mod.toml` files are not loaded — remove if found after integration.
+
+Shared Lua used by all panels: `src/hud_drag.lua`, `src/hud_config_factory.lua` (injected at bootstrap, also embedded in M18 chunks for `src.hud_drag`).
+
 ## Authoritative runtime sources
 
 | Panel | Loaded from |

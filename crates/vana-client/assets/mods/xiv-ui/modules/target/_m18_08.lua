@@ -1,6 +1,6 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.budget_data.src_status_map_032"]=[=[
+["src.budget_data.src_status_map_032"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="ws",[3]=224,[4]={[1]={["effect"]=146,["formula"]="WS_TPR",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"}}},
@@ -58,8 +58,8 @@ return {
 {[1]="ends",[2]=105,[3]={[1]=100,[2]=101,[3]=102,[4]=103,[5]=104}},
 {[1]="ends",[2]=106,[3]={[1]=107,[2]=108,[3]=109,[4]=110,[5]=111,[6]=112,[7]=286}}
 }
-]=],
-["src.budget_data.src_status_map_033"]=[=[
+]],
+["src.budget_data.src_status_map_033"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="ends",[2]=107,[3]={[1]=106,[2]=108,[3]=109,[4]=110,[5]=111,[6]=112,[7]=286}},
@@ -116,8 +116,8 @@ return {
 {[1]="ends",[2]=246,[3]={[1]=235,[2]=236,[3]=237,[4]=238,[5]=239,[6]=240,[7]=241,[8]=242,[9]=243,[10]=244,[11]=245,[12]=247,[13]=248}},
 {[1]="ends",[2]=247,[3]={[1]=235,[2]=236,[3]=237,[4]=238,[5]=239,[6]=240,[7]=241,[8]=242,[9]=243,[10]=244,[11]=245,[12]=246,[13]=248}}
 }
-]=],
-["src.budget_data.src_status_map_034"]=[=[
+]],
+["src.budget_data.src_status_map_034"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="ends",[2]=248,[3]={[1]=235,[2]=236,[3]=237,[4]=238,[5]=239,[6]=240,[7]=241,[8]=242,[9]=243,[10]=244,[11]=245,[12]=246,[13]=247}},
@@ -153,5 +153,5 @@ return {
 {[1]="ends",[2]=607,[3]={[1]=34,[2]=35,[3]=38,[4]=153,[5]=173,[6]=403,[7]=573,[8]=605,[9]=606}},
 {[1]="ends",[2]=628,[3]={[1]=482}}
 }
-]=]
+]],
 }

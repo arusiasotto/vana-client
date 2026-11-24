@@ -1,6 +1,6 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.budget_data.src_status_map_028"]=[=[
+["src.budget_data.src_status_map_028"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="spell",[3]=874,[4]={[1]={["effect"]=217,["formula"]="ENF_SONG",["landed"]={[237]=true,[268]=true},["param"]="E",["target"]="enemy"}}},
@@ -31,8 +31,8 @@ return {
 {[1]="actions",[2]="ws",[3]=26,[4]={[1]={["effect"]=273,["formula"]="SELF_EXACT",["landed"]={},["param"]="D",["target"]="self"}}},
 {[1]="actions",[2]="ws",[3]=27,[4]={[1]={["effect"]=273,["formula"]="SELF_EXACT",["landed"]={},["param"]="D",["target"]="self"}}}
 }
-]=],
-["src.budget_data.src_status_map_029"]=[=[
+]],
+["src.budget_data.src_status_map_029"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="ws",[3]=28,[4]={[1]={["effect"]=12,["formula"]="WS_CHANCE_R",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"},[2]={["effect"]=273,["formula"]="SELF_EXACT",["landed"]={},["param"]="D",["target"]="self"}}},
@@ -58,8 +58,8 @@ return {
 {[1]="actions",[2]="ws",[3]=83,[4]={[1]={["effect"]=149,["formula"]="WS_TPR",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"}}},
 {[1]="actions",[2]="ws",[3]=85,[4]={[1]={["effect"]=147,["formula"]="WS_TP_PART_R",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"}}}
 }
-]=],
-["src.budget_data.src_status_map_030"]=[=[
+]],
+["src.budget_data.src_status_map_030"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="ws",[3]=87,[4]={[1]={["effect"]=147,["formula"]="WS_TP_PART_R",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"},[2]={["effect"]=149,["formula"]="WS_TP_PART_R",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"},[3]={["effect"]=146,["formula"]="WS_TP_PART_R",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"},[4]={["effect"]=148,["formula"]="WS_TP_PART_R",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"}}},
@@ -86,8 +86,8 @@ return {
 {[1]="actions",[2]="ws",[3]=150,[4]={[1]={["effect"]=5,["formula"]="WS_R",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"}}},
 {[1]="actions",[2]="ws",[3]=151,[4]={[1]={["effect"]=6,["formula"]="WS_R",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"}}}
 }
-]=],
-["src.budget_data.src_status_map_031"]=[=[
+]],
+["src.budget_data.src_status_map_031"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="ws",[3]=152,[4]={[1]={["effect"]=4,["formula"]="WS_R",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"}}},
@@ -116,5 +116,5 @@ return {
 {[1]="actions",[2]="ws",[3]=219,[4]={[1]={["effect"]=4,["formula"]="WS_TPR",["landed"]={[185]=true,[264]=true},["param"]="D",["target"]="enemy"}}},
 {[1]="actions",[2]="ws",[3]=220,[4]={[1]={["effect"]=273,["formula"]="SELF_EXACT",["landed"]={},["param"]="D",["target"]="self"}}}
 }
-]=]
+]],
 }

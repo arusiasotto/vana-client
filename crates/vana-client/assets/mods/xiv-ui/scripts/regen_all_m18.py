@@ -20,6 +20,10 @@ import sys
 from pathlib import Path
 
 UI = Path(__file__).resolve().parents[1]
+SUITE_SRC = {
+    "src.hud_drag": UI / "src" / "hud_drag.lua",
+    "src.hud_config_factory": UI / "src" / "hud_config_factory.lua",
+}
 HEADER = "-- M18 bundled sources; generated from stage sources. Do not edit.\n"
 KEY_RE = re.compile(r'\["([^"]+)"\]\s*=\s*\[(?:=*)\[', re.MULTILINE)
 MANIFEST_CHUNKS_RE = re.compile(r"chunks\s*=\s*\{([^}]+)\}", re.DOTALL)
@@ -71,6 +75,8 @@ def extract_bodies(chunk_path: Path) -> dict[str, str]:
 
 
 def src_path(mod_dir: Path, import_key: str) -> Path:
+    if import_key in SUITE_SRC:
+        return SUITE_SRC[import_key]
     return mod_dir / (import_key.replace(".", "/") + ".lua")
 
 

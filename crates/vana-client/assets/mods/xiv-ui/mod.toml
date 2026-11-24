@@ -8,7 +8,7 @@ permissions = ["ui.native", "actions"]
 type = "bool"
 default = false
 label = "XIV-UI"
-help = "Optional kill switch (off by default is fine). Enable each panel below, then /lua reload xiv-ui so loads pick up toggles. Master off does not block panels that are on here. Turn off matching standalone xiv-* mods for panels you enable. //xtb, //xft hide until reload without changing panel toggles."
+help = "Optional kill switch (off by default is fine). Turning a panel on only takes effect after /lua reload xiv-ui if that panel was off when the mod last loaded; turning a panel off hides it without reload. Master off does not block panels that stay enabled below. Disable matching standalone xiv-* mods for panels you enable here. //xtb, //xft only hide until reload—they do not change panel toggles."
 
 # Panel toggles and settings are grouped by panel. hdr_* rows are section labels only (not read by Lua).
 
@@ -24,7 +24,7 @@ help = "HP, weaknesses, cast strip. Toggle + reload to load; //xtb for temp hide
 type = "bool"
 default = false
 label = "Enable panel"
-help = "HP, weaknesses, cast strip. Required for party cast/status integration. Drag the bar to move it (//xtb)."
+help = "HP, weaknesses, cast strip. Required for party cast/status integration. If this was off at last reload, turn on then /lua reload xiv-ui before it appears. Drag the bar to move it (//xtb)."
 [settings.target_scale]
 type = "int"
 default = 100
@@ -59,7 +59,7 @@ help = "Requires panel on and /lua reload. Last target needs switching away from
 type = "bool"
 default = false
 label = "Enable panel"
-help = "Loads focus/last HUD (required for Show last target). Last appears only after you switch away from a mob; use Show focus target off if you only want last. Reload after toggling. Drag each bar to move it."
+help = "Loads focus/last HUD (required for Show last target). Last appears only after you switch away from a mob. If this was off at last reload, turn on then /lua reload xiv-ui. Drag each bar to move it."
 [settings.focus_scale]
 type = "int"
 default = 100
@@ -95,7 +95,7 @@ help = "Player cast / swing / ranged gauges."
 type = "bool"
 default = false
 label = "Enable panel"
-help = "Drag the cast bar to move it."
+help = "Cast and swing timing bar. If this was off at last reload, turn on then /lua reload xiv-ui. Drag the bar to move it."
 [settings.cast_cast]
 type = "bool"
 default = true
@@ -133,7 +133,7 @@ help = "HP / MP / TP near hotbars."
 type = "bool"
 default = false
 label = "Enable panel"
-help = "Drag the vitals bars to move them."
+help = "Player HP/MP bars. If this was off at last reload, turn on then /lua reload xiv-ui. Drag the vitals bars to move them."
 [settings.player_avoid_cast]
 type = "bool"
 default = true
@@ -164,7 +164,7 @@ help = "Replaces native status icons when on."
 type = "bool"
 default = false
 label = "Enable panel"
-help = "Replaces the native status icon row."
+help = "Replaces the native status icon row. If this was off at last reload, turn on then /lua reload xiv-ui."
 [settings.buff_blink]
 type = "bool"
 default = true
@@ -217,6 +217,7 @@ help = "Top-of-screen points strip."
 type = "bool"
 default = false
 label = "Enable panel"
+help = "Experience bar. If this was off at last reload, turn on then /lua reload xiv-ui. Drag to move when detached from player bars."
 [settings.exp_attach_below]
 type = "bool"
 default = true
@@ -263,7 +264,7 @@ help = "Loads last in queue; keep target on for casts/status."
 type = "bool"
 default = false
 label = "Enable panel"
-help = "Party, alliance, pets. Keep target enabled for casts and debuff icons. Turning this on needs /lua reload xiv-ui; turning off hides immediately. Drag the list to move it."
+help = "Party, alliance, pets. Keep target enabled for casts and debuff icons. If this was off at last reload, turn on then /lua reload xiv-ui; turning off hides without reload. Drag the list to move it."
 [settings.party_align_bottom]
 type = "bool"
 default = false
@@ -328,6 +329,7 @@ help = "Toasts and invite reminders."
 type = "bool"
 default = false
 label = "Enable panel"
+help = "Toasts and party invite reminders. If this was off at last reload, turn on then /lua reload xiv-ui."
 
 # —— Target bar ——
 [settings.notify_invite_reminders]

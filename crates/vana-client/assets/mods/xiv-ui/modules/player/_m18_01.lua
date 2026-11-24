@@ -1,6 +1,7 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.xiv"]=[=[-- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
+["src.xiv"]=[[
+-- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
 local X = { version = 7 }
 X.text_colour = { 240, 255, 255, 255 }
 X.stroke = { 6, 45, 84, 210 }
@@ -236,5 +237,5 @@ function R:status(id, row, x, y, size, scale, layer, enemy, show_time)
     8, scale, layer + 1, nil, "right", true) end
 end
 return X
-]=]
+]],
 }

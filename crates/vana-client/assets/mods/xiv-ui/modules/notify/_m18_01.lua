@@ -1,6 +1,7 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.xiv"]=[=[-- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
+["src.xiv"]=[[
+-- Shared, vendored HUD primitives. No cross-mod file reads or automatic saves.
 local X = { version = 7 }
 X.text_colour = { 240, 255, 255, 255 }
 X.stroke = { 6, 45, 84, 210 }
@@ -223,8 +224,9 @@ function R:status(id, row, x, y, size, scale, layer, enemy, show_time)
     8, scale, layer + 1, nil, "right", true) end
 end
 return X
-]=],
-["src.requests"]=[=[-- Recent invite reminders, not a claim about native pending-request state.
+]],
+["src.requests"]=[[
+-- Recent invite reminders, not a claim about native pending-request state.
 -- Respond only through the native Party menu; never call join/decline directly.
 local X=require('src.xiv')
 local hud_config=require('src.hud_config')
@@ -322,5 +324,5 @@ function M.draw(show,scale)
   last_presentation=R:ready() and key or nil
 end
 return M
-]=]
+]],
 }

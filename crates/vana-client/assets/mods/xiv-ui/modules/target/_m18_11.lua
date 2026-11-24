@@ -1,6 +1,6 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.combat"]=[=[
+["src.combat"]=[[
 -- Observed cast/status adapter. Timers remains the authoritative shared tracker.
 local X = require("src.xiv")
 local observer = require("src.status_observer")
@@ -215,8 +215,8 @@ function C.casts_for(ids)
   return out
 end
 return C
-]=],
-["src.config_schema"]=[=[
+]],
+["src.config_schema"]=[[
 -- Generated whitelist from owning mod settings + explicit native layout fields.
 return {
   {key="on",type="bool",label="XIV Target Bar",help="Shows an FFXIV-style target bar. Drag it to move it.",default=true},
@@ -226,8 +226,8 @@ return {
   {key="place_x",type="int",min=-2400,max=2400,step=4,default=0,label="X offset (screen pixels)",help="Owner-native geometry; not a renderer/window stacking workaround."},
   {key="place_y",type="int",min=-1600,max=1600,step=4,default=0,label="Y offset (screen pixels)",help="Owner-native geometry; not a renderer/window stacking workaround."},
 }
-]=],
-["src.target_palette"]=[=[
+]],
+["src.target_palette"]=[[
 -- The FFXIV-style reference target palette, shared verbatim with Focus/Last XIV.
 -- Colour is based on target type, not remaining HP.
 local P = {
@@ -242,5 +242,5 @@ return function(t)
   if t.gauge == false or t.walks == false then return P.object end
   return P.npc
 end
-]=]
+]],
 }

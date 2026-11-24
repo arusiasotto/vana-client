@@ -1,6 +1,6 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.status_png"]=[=[
+["src.status_png"]=[[
 -- Generated from xi-xiv-status-pngs-by-category (xi_to_xiv_png.tsv). Do not hand-edit.
 -- Categories shown by this mod: enemy-buffs, enemy-debuffs, player-buffs, player-debuffs.
 -- ids: XI status id -> XIV icon number; the art is img/status/<icon>.png. Several XI
@@ -81,5 +81,5 @@ local M = {}
 -- path, is_square for a status id; nil when this mod has no replacement for it.
 function M.lookup(id) return paths[id], squares[id] end
 return M
-]=]
+]],
 }

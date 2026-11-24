@@ -28,6 +28,21 @@ local function install_chunk(state, t, label)
   end
 end
 
+local SUITE_SHARED = {
+  ["src.hud_drag"] = "src/hud_drag.lua",
+  ["src.hud_config_factory"] = "src/hud_config_factory.lua",
+}
+
+local function inject_suite_shared(state)
+  for name, rel in pairs(SUITE_SHARED) do
+    local text = fs and fs.read and fs.read(rel)
+    if type(text) ~= "string" or text == "" then
+      error("XIV-UI missing suite source " .. rel, 0)
+    end
+    state.module_sources[state.prefix .. "." .. name] = text
+  end
+end
+
 local function make_req(state)
   local native_require = state.native_require
   local function req(name)
@@ -131,6 +146,7 @@ function M.step(state)
   end
 
   if state.phase == "imports_init" then
+    inject_suite_shared(state)
     state.req = make_req(state)
     state.saved_req, state.saved_settings = require, settings
     _ENV.require = state.req

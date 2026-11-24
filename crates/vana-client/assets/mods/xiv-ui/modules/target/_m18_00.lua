@@ -1,6 +1,6 @@
 -- M18 bundled sources; generated from stage sources. Do not edit.
 return {
-["src.budget_data.src_status_map_000"]=[=[
+["src.budget_data.src_status_map_000"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="ability",[3]=16,[4]={[1]={["effect"]=44,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
@@ -31,8 +31,8 @@ return {
 {[1]="actions",[2]="ability",[3]=49,[4]={[1]={["effect"]=63,["formula"]="PLUS_JP",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
 {[1]="actions",[2]="ability",[3]=50,[4]={[1]={["effect"]=75,["formula"]="PLUS_MOD",["landed"]={[134]=true,[287]=true},["param"]="E",["target"]="party_aoe"}}}
 }
-]=],
-["src.budget_data.src_status_map_001"]=[=[
+]],
+["src.budget_data.src_status_map_001"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="ability",[3]=51,[4]={[1]={["effect"]=64,["formula"]="FIXED",["landed"]={[115]=true},["param"]="E",["target"]="self"}}},
@@ -62,8 +62,8 @@ return {
 {[1]="actions",[2]="ability",[3]=99,[4]={[1]={["effect"]=311,["formula"]="ROLL",["landed"]={[420]=true,[421]=true,[424]=true},["param"]="R",["target"]="self_and_party"}}},
 {[1]="actions",[2]="ability",[3]=100,[4]={[1]={["effect"]=312,["formula"]="ROLL",["landed"]={[420]=true,[421]=true,[424]=true},["param"]="R",["target"]="self_and_party"}}}
 }
-]=],
-["src.budget_data.src_status_map_002"]=[=[
+]],
+["src.budget_data.src_status_map_002"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="ability",[3]=101,[4]={[1]={["effect"]=313,["formula"]="ROLL",["landed"]={[420]=true,[421]=true,[424]=true},["param"]="R",["target"]="self_and_party"}}},
@@ -90,8 +90,8 @@ return {
 {[1]="actions",[2]="ability",[3]=122,[4]={[1]={["effect"]=334,["formula"]="ROLL",["landed"]={[420]=true,[421]=true,[424]=true},["param"]="R",["target"]="self_and_party"}}},
 {[1]="actions",[2]="ability",[3]=123,[4]={[1]={["effect"]=309,["formula"]="BUST",["landed"]={[426]=true,[427]=true},["param"]="0",["target"]="self"}}}
 }
-]=],
-["src.budget_data.src_status_map_003"]=[=[
+]],
+["src.budget_data.src_status_map_003"]=[[
 -- Static facts, bounded compile unit; derived byte-for-value from B20.
 return {
 {[1]="actions",[2]="ability",[3]=131,[4]={[1]={["effect"]=2,["formula"]="QD_SLEEP",["landed"]={[127]=true},["param"]="E",["target"]="enemy"}}},
@@ -120,5 +120,5 @@ return {
 {[1]="actions",[2]="ability",[3]=164,[4]={[1]={["effect"]=348,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}},
 {[1]="actions",[2]="ability",[3]=165,[4]={[1]={["effect"]=350,["formula"]="FIXED",["landed"]={[100]=true},["param"]="E",["target"]="self"}}}
 }
-]=]
+]],
 }
