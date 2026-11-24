@@ -1,5 +1,5 @@
 name = "XIV-UI"
-version = "0.2.0"
+version = "0.3.0"
 description = "FFXIV-style HUD suite (target, focus, cast, player, buff, XP, party, notify). Replaces standalone xiv-* panel mods when enabled; disable those to avoid duplicate HUD. Saves migrate from legacy xiv_ui_v1 buckets on first load."
 authors = ["Nitsu"]
 permissions = ["ui.native", "actions"]
@@ -383,8 +383,6 @@ label = "Toast Seconds"
 help = "XIV target display, status details and preview."
 args = "[on|off|details|preview|status]"
 
-# —— Focus and last target ——
-
 [commands.xft]
 help = "XIV focus/last bars: on/off/status, focus, target, last."
 args = "[on|off|status|focus|target|last]"
@@ -397,8 +395,6 @@ forms = [
   { args = "last", help = "Target your last target." },
 ]
 
-# —— Cast bar ——
-
 [commands.xcb]
 help = "Turns the XIV cast bar on or off."
 args = "[on|off|preview|reset|status]"
@@ -407,19 +403,13 @@ args = "[on|off|preview|reset|status]"
 help = "Player vitals display, safe sample mode and native details."
 args = "[on|off|preview|details|status]"
 
-# —— Buff bar ——
-
 [commands.xbb]
 help = "Reports the XIV Buff Bar; 'lock' toggles dragging, 'refresh' rebuilds it, 'resetpos' moves it back to the default spot."
 args = "[lock|refresh|resetpos]"
 
-# —— XP / limit strip ——
-
 [commands.xxp]
 help = "Real points strip, clearly labelled samples, native job/time/point details and confirmed volatile-rate reset."
 args = "[on|off|preview|details|status]"
-
-# —— Party list ——
 
 [commands.xpl]
 help = "Turns the XIV party list on or off."

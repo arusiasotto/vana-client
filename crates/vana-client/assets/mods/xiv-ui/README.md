@@ -27,3 +27,14 @@ One mod loads the FFXIV-style HUD panels that used to ship as separate **`xiv-*`
 | `scripts/` | Integration and M18 maintenance — see `scripts/README.md` |
 
 There is **no** `modules/*/init.lua`; standalone `init.lua` files are not loaded by the suite (integration copies body into `entry.lua` only).
+
+## Native HUD coverage (what this replaces)
+
+With the matching `mod_*` toggles on, panels hide or redraw the usual combat HUD pieces: **target** (incl. status/debuff strip), **focus/last**, **cast**, **party/alliance**, **your buff row**, and the **experience** strip. **Player bars** draw custom vitals over the hotbar area. **Notify** adds toasts; it does not replace a large native window.
+
+The client **Timers** edge window (especially **recast** lists) is **not** replaced — keep Timers or another mod if you want recasts. Effect timing on target/party/self is covered by the suite panels above.
+
+## Before you open a PR / ship
+
+- Run `python3 scripts/regen_all_m18.py --check` after any `modules/*/src/` edit (buff uses live `src/`).
+- See `cursor/stores/self/docs/xiv-ui-audit.md` and `xiv-ui-client-pass.md` for runtime checklist history.

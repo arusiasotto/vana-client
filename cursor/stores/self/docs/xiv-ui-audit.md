@@ -121,7 +121,7 @@ No large **commented-out code blocks** flagged in suite `entry.lua` files; stand
 1. ~~**High — M18 sync:**~~ **Done:** `scripts/regen_all_m18.py` + `scripts/README.md`; run after `src/` edits (or migrate panels to `source_files`).  
 2. ~~**High — Document** load order~~ **Done:** `scripts/README.md`.  
 3. ~~**Medium — `xiv_config`:**~~ **Done:** bridge registry + per-panel host provides (see §4).  
-4. **Medium — Phase 3 ship:** Catalogue entry, deprecate standalone `xiv-*` folders in assets, PR from `xiv-ui` branch.  
+4. **Medium — Phase 3 ship:** Catalogue entry, deprecate standalone `xiv-*` folders in assets — **PR-ready on branch** (see `xiv-ui-pr.md`).  
 5. ~~**Low — Dedupe** `mod.toml` comments; orphan `mod.toml`~~ **Done** (49433096 + c66f5817). `hdr_*` **skipped** by design.  
 6. ~~**Low — Refactor** shared `hud_config` / `hud_drag`~~ **Done (49433096)**; optional `xiv.lua` merge still open.
 
