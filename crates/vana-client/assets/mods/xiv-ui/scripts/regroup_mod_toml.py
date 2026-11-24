@@ -37,6 +37,16 @@ def extract_manifest_header(text: str) -> str:
     return ""
 
 
+SECTION_COMMENT = re.compile(r"^# --- .+ ---\s*$")
+
+
+def clean_section_body(body: str) -> str:
+    lines = [ln for ln in body.splitlines() if not SECTION_COMMENT.match(ln)]
+    if not lines:
+        return ""
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def parse_sections(text: str):
     parts = re.split(r"(?=^\[)", text, flags=re.MULTILINE)
     sections: dict[str, str] = {}
@@ -47,7 +57,7 @@ def parse_sections(text: str):
             continue
         lines = part.split("\n", 1)
         header = lines[0].strip()
-        body = (lines[1] if len(lines) > 1 else "").rstrip() + "\n"
+        body = clean_section_body(lines[1] if len(lines) > 1 else "")
         if header.startswith("[commands."):
             commands.append(part + "\n")
         elif header.startswith("[settings."):

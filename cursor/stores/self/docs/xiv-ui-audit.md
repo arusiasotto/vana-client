@@ -36,12 +36,12 @@ Phase 2 integration is **functionally coherent**: one VM, staggered bootstrap, i
 | **High** | **M18 chunks vs on-disk `src/`** — runtime loads **embedded chunk sources**, not `src/*.lua`, for all panels except buff (`source_files = true`). `entry.lua` is always read from disk. | All `modules/*/manifest.lua` with `chunks = { "_m18_*" }` | **Mitigated (49433096):** full regen + `--check` green; `regen_all_m18.py` resolves suite shared `src.hud_drag` from root `src/` |
 | **Medium** | **Orphan standalone `mod.toml`** in suite tree (not used by suite manifest) | `modules/focus/mod.toml`, `modules/target/mod.toml` | **Fixed (49433096):** deleted; `scripts/README.md` notes root `mod.toml` is sole manifest |
 | **Medium** | **`hdr_*` settings** (8× single-option enums) — UI section hacks; Lua never reads them | `mod.toml` `[settings.hdr_*]` | **Fix** or **accept:** remove when client supports sections or keep as UX affordance |
-| **Medium** | **Duplicate section comments** in `mod.toml` (regroup artifacts) | e.g. duplicate `# --- Focus ---`, `# --- Notify ---`, mixed `——` vs `---` | **Fix:** run `scripts/regroup_mod_toml.py` after cleaning regroup script to emit one header each |
-| **Low** | **`scripts/merge_mod_toml.py`** — can truncate suite `mod.toml` on re-run (`# --- Cast` split) | `scripts/merge_mod_toml.py` | **Accept** with warning in script; do not run in CI without regroup |
+| **Medium** | **Duplicate section comments** in `mod.toml` (regroup artifacts) | e.g. duplicate `# --- Focus ---`, `# --- Notify ---`, mixed `——` vs `---` | **Fixed (755f793e):** `regroup_mod_toml.py` strips stray `# ---` from section bodies; regrouped manifest |
+| **Low** | **`scripts/merge_mod_toml.py`** — can truncate suite `mod.toml` on re-run (`# --- Cast` split) | `scripts/merge_mod_toml.py` | **Documented (755f793e):** `scripts/README.md` workflow + manifest warnings |
 | **Low** | **Layout keys still in `config_schema`** but removed from suite `mod.toml` | All schemas still define `offset_x`/`offset_y`/`place_*`/`last_*` | **Accept** — intentional; values live in storage buckets |
-| **Low** | **`//xui` mentioned, not registered** | `modules/exp/entry.lua` (attach drag guard); `modules/cast/entry.lua` grip tip | **Fix:** point help text at real commands or add suite `//xui status` later |
+| **Low** | **`//xui` mentioned, not registered** | `modules/exp/entry.lua` (attach drag guard); `modules/cast/entry.lua` grip tip | **Fixed (755f793e):** grip/chat strings reference Mods / `//xcb` |
 
-No **dead Lua entry files** found; every queued panel has `entry.lua` + `manifest.lua`. `init.lua` at suite root is the only loader (no parallel `modules/*/init.lua`).
+No **dead Lua entry files** found; every queued panel has `entry.lua` + `manifest.lua`. **Verified:** no `modules/*/init.lua`; suite root `init.lua` is the only loader (**755f793e:** `README.md` + `scripts/README.md`).
 
 ---
 
@@ -90,7 +90,7 @@ No large **commented-out code blocks** flagged in suite `entry.lua` files; stand
 | `scripts/merge_mod_toml.py` | Append standalone settings | **Medium** — destructive trim if re-run |
 | `scripts/regroup_mod_toml.py` | Panel-group manifest | **Low** — requires full manifest header |
 
-**Fixed in `xiv-ui` (2026-11):** `scripts/regen_all_m18.py` + `scripts/README.md` (authoritative runtime table, regen + `--check` drift).
+**Fixed in `xiv-ui` (49433096+):** `scripts/regen_all_m18.py` + expanded **`scripts/README.md`** (when to use each script, manifest/permissions warnings) (**755f793e**).
 
 ---
 
@@ -105,13 +105,14 @@ No large **commented-out code blocks** flagged in suite `entry.lua` files; stand
 
 ---
 
-## 7. Trivial fixes (not applied in this pass)
+## 7. Trivial fixes
 
 | Item | Action |
 |------|--------|
-| Delete `modules/focus/mod.toml`, `modules/target/mod.toml` | Safe if no tool reads them (**low**; confirm with user) |
-| Dedupe duplicate `# --- … ---` lines in `mod.toml` | Safe cosmetic (**low**) |
-| Cast/exp help: replace `//xui` with `//xcb` / attach wording | Copy-only (**low**) |
+| Delete `modules/focus/mod.toml`, `modules/target/mod.toml` | **Done (49433096)** |
+| Dedupe duplicate `# --- … ---` lines in `mod.toml` | **Done (755f793e)** via regroup + body sanitizer |
+| Cast/exp help: replace `//xui` with `//xcb` / attach wording | **Done (755f793e)** |
+| Standalone deprecation README | **Done (755f793e):** `xiv-ui/README.md` + `mod.toml` description |
 
 ---
 
@@ -121,8 +122,8 @@ No large **commented-out code blocks** flagged in suite `entry.lua` files; stand
 2. ~~**High — Document** load order~~ **Done:** `scripts/README.md`.  
 3. ~~**Medium — `xiv_config`:**~~ **Done:** bridge registry + per-panel host provides (see §4).  
 4. **Medium — Phase 3 ship:** Catalogue entry, deprecate standalone `xiv-*` folders in assets, PR from `xiv-ui` branch.  
-5. **Low — Dedupe** `mod.toml` comments; remove orphan module `mod.toml`; trim `hdr_*` when UX allows.  
-6. **Low — Refactor** (user-driven): shared `hud_config` / `hud_drag` / base `xiv.lua`.
+5. ~~**Low — Dedupe** `mod.toml` comments; orphan `mod.toml`~~ **Done** (49433096 + 755f793e). `hdr_*` **skipped** by design.  
+6. ~~**Low — Refactor** shared `hud_config` / `hud_drag`~~ **Done (49433096)**; optional `xiv.lua` merge still open.
 
 ---
 

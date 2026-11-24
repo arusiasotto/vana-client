@@ -1,6 +1,6 @@
 name = "XIV-UI"
 version = "0.2.0"
-description = "FFXIV-style HUD in one mod. Phase 2 bundles target, focus, cast, player, buff, XP, party list and notify. Disable matching standalone xiv-* mods for panels you enable here."
+description = "FFXIV-style HUD suite (target, focus, cast, player, buff, XP, party, notify). Replaces standalone xiv-* panel mods when enabled; disable those to avoid duplicate HUD. Saves migrate from legacy xiv_ui_v1 buckets on first load."
 authors = ["Nitsu"]
 permissions = ["ui.native", "actions"]
 
@@ -47,7 +47,6 @@ max = 900
 step = 20
 label = "Width"
 # --- Focus and last target ---
-# --- Focus and last target ---
 [settings.hdr_focus]
 type = "enum"
 default = "—"
@@ -82,7 +81,6 @@ min = 160
 max = 600
 step = 20
 label = "Width"
-# --- Cast bar ---
 # --- Cast bar ---
 [settings.hdr_cast]
 type = "enum"
@@ -121,7 +119,6 @@ step = 10
 label = "Width"
 help = "Width of the cast track in UI units. 180 matches the approved mockup."
 # --- Player bars ---
-# --- Player bars ---
 [settings.hdr_player]
 type = "enum"
 default = "—"
@@ -151,7 +148,6 @@ max = 200
 step = 10
 label = "Bar Scale"
 help = "Scales the whole bar group. 100 matches the approved mockup."
-# --- Buff bar ---
 # --- Buff bar ---
 [settings.hdr_buff]
 type = "enum"
@@ -205,7 +201,6 @@ default = true
 label = "Show Countdowns"
 help = "A time under each timed effect, as the game's bar shows it (none at 5 seconds or less)."
 # --- XP / limit strip ---
-# --- XP / limit strip ---
 [settings.hdr_exp]
 type = "enum"
 default = "—"
@@ -251,7 +246,6 @@ label = "XP Strip Scale"
 type = "bool"
 default = false
 label = "Observed Rate / Estimated Time Text"
-# --- Party list ---
 # --- Party list ---
 [settings.hdr_party]
 type = "enum"
@@ -316,7 +310,6 @@ label = "Party Scale"
 type = "bool"
 default = false
 label = "Full-width Single Alliance"
-# --- Notify ---
 # --- Notify ---
 [settings.hdr_notify]
 type = "enum"
@@ -383,8 +376,6 @@ min = 1
 max = 10
 step = 1
 label = "Toast Seconds"
-
-# --- Commands (separate tab in Mods window) ---
 
 # --- Commands (separate tab in Mods window) ---
 

@@ -13,7 +13,7 @@ local cfg=hud_config.new(settings,require('src.config_schema'),{
  busy=function()return ui.is_open('xxp_details') end,
 })
 local settings=cfg.settings
-R.drag=require('src.hud_drag').new(cfg,'offset_x','offset_y',function()return R.move_units or 1 end,function()if settings.get('attach_vitals') then chat.add('XIV XP: attached to Player Bars; move those or detach XP in //xui.');return false end;return true end)
+R.drag=require('src.hud_drag').new(cfg,'offset_x','offset_y',function()return R.move_units or 1 end,function()if settings.get('attach_vitals') then chat.add('XIV XP: attached to Player Bars; move player bars or turn off Attach to vitals in Mods.');return false end;return true end)
 local choices={'auto','exp','limit','capacity'}
 local cached_reading,read_at
 local cached_row,row_at

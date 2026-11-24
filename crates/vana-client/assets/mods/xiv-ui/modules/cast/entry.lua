@@ -165,7 +165,7 @@ local function draw()
   if rf and ranged_on then gauge("xcb_ranged", ranged, rf, x + 90 * u,
      y - 38 * u, 90 * u, 5 * u, u, sc, "img/ranged_fill.png") end
   if (data and settings.get('cast')~=false) or (sf and settings.get('swing')~=false) or (rf and settings.get('ranged')~=false) then
-    R:grip('xcb_move_grip',x,top,w,bottom-top,30,function()end,'Drag to move cast/attack HUD; //xui for controller positioning')
+    R:grip('xcb_move_grip',x,top,w,bottom-top,30,function()end,'Drag to move cast/attack HUD; use Mods settings or //xcb')
   end
   R:finish()
   last_presentation=R:ready() and presentation or nil
