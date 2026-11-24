@@ -69,6 +69,8 @@ end
 function M.resolve_path(path, hud_id)
   if type(path) ~= "string" or path:find("^modules/", 1) then return path end
   if type(hud_id) == "string" then
+    -- Buff bar slots: bbp#, bbi#, bbh#, bbt#, bbbg (no trailing underscore).
+    if hud_id:find("^bb", 1) then return M.prefix_path("modules/buff/", path) end
     for prefix, root in pairs(id_roots) do
       if hud_id:find("^" .. prefix, 1) then return M.prefix_path(root, path) end
     end
