@@ -350,16 +350,64 @@ pub(super) fn body(
     win: &model::Window,
     clicks: &mut Vec<Click>,
 ) {
+    let hidden = win.hidden();
+    let split = win
+        .meta
+        .iter()
+        .enumerate()
+        .any(|(i, m)| m.lane > 0 && !hidden.get(i).copied().unwrap_or(false));
+    let max_h = ctx.content_rect().height() * 0.85;
+    let mut row_tip = None;
+    let mut hover_tip = None;
+    if split {
+        super::kit::scroll(ui, ("mod body", pid), max_h, |ui| {
+            ui.horizontal_top(|ui| {
+                let half = (ui.available_width() - 8.0) / 2.0;
+                ui.vertical(|ui| {
+                    ui.set_width(half);
+                    body_elements(
+                        ui, m, ctx, gu, world, pid, win, clicks, &hidden, Some(0), &mut row_tip, &mut hover_tip,
+                    );
+                });
+                ui.vertical(|ui| {
+                    ui.set_width(half);
+                    body_elements(
+                        ui, m, ctx, gu, world, pid, win, clicks, &hidden, Some(1), &mut row_tip, &mut hover_tip,
+                    );
+                });
+            });
+        });
+    } else {
+        body_elements(ui, m, ctx, gu, world, pid, win, clicks, &hidden, None, &mut row_tip, &mut hover_tip);
+    }
+    body_help(ui, m, pid, win, row_tip, hover_tip);
+}
+
+fn body_elements<'a>(
+    ui: &mut egui::Ui,
+    m: &super::Modern,
+    ctx: &egui::Context,
+    gu: Option<&super::super::game_ui::GameUi>,
+    world: Option<&super::super::World>,
+    pid: &str,
+    win: &'a model::Window,
+    clicks: &mut Vec<Click>,
+    hidden: &[bool],
+    only_lane: Option<usize>,
+    row_tip: &mut Option<&'a str>,
+    hover_tip: &mut Option<&'a str>,
+) {
     let small = FontId::proportional(m.theme.small);
     let (text_c, muted) = (m.theme.color("text"), m.theme.color("muted"));
-    let mut hover_tip: Option<&str> = None;
-    // A list row's tip under the pointer: before its element's.
-    let mut row_tip: Option<&str> = None;
-    let hidden = win.hidden();
     // The cursor's element scrolls into view when it comes there, not every frame: the wheel can leave it.
     let came = win.moved("element", win.focus.then_some(win.at));
     for (i, e) in win.elems.iter().enumerate() {
-        if hidden[i] {
+        if hidden.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        if let Some(want) = only_lane
+            && win.meta.get(i).map(|m| m.lane.min(1)).unwrap_or(0) != want
+        {
             continue;
         }
         let here = win.focus && i == win.at;
@@ -498,7 +546,7 @@ pub(super) fn body(
                     clicks.push(Click::Row(i, k));
                 }
                 if let Some(t) = pointed.and_then(|k| rows.get(k)).map(|r| r.tip.as_str()).filter(|t| !t.is_empty()) {
-                    row_tip = Some(t);
+                    *row_tip = Some(t);
                 }
                 ui.add_space(6.0);
             }
@@ -756,9 +804,22 @@ pub(super) fn body(
         if let Some(t) = win.meta.get(i).map(|m| m.tip.as_str()).filter(|t| !t.is_empty())
             && ui.rect_contains_pointer(span)
         {
-            hover_tip = Some(t);
+            if hover_tip.is_none() {
+                *hover_tip = Some(t);
+            }
         }
     }
+}
+
+fn body_help(
+    ui: &mut egui::Ui,
+    m: &super::Modern,
+    pid: &str,
+    win: &model::Window,
+    row_tip: Option<&str>,
+    hover_tip: Option<&str>,
+) {
+    let muted = m.theme.color("muted");
     // The last input picks the help: after a key the cursor's, after the pointer moves what it rests on.
     let keys_id = egui::Id::unique(("mod help by keys", pid, &win.id));
     let (moved, keyed) = ui.input(|i| {
@@ -769,7 +830,11 @@ pub(super) fn body(
     });
     let by_keys = keyed || (!moved && ui.data(|d| d.get_temp::<bool>(keys_id)).unwrap_or(false));
     ui.data_mut(|d| d.insert_temp(keys_id, by_keys));
-    let pointed = if by_keys && win.focus { None } else { row_tip.or(hover_tip) };
+    let pointed = if by_keys && win.focus {
+        None
+    } else {
+        row_tip.or(hover_tip)
+    };
     let help = pointed.unwrap_or(if win.focus { win.help_now() } else { &win.help });
     if !help.is_empty() {
         ui.label(RichText::new(help).size(m.theme.small).color(muted));

@@ -31,7 +31,8 @@ local open_builder
 -- player's line over the built one; opened: {list, name} of an opener shown; group: members ({name, action}).
 local E = { id = nil, kind = "ma", pick = nil, target = "t", line = nil, results = {}, opened = nil, auto_name = nil,
   group = nil, sticky = false }
-local STICKY_ITEMS = { "This job only", "Every job and character" }
+local BUILD_W = 860
+local HEAD_W, HEAD_H = BUILD_W - 48, 30
 local MAX_MEMBERS = 12
 -- The Keys tab's chosen slot.
 local K = { bar = 1, slot = 1 }
@@ -292,16 +293,42 @@ local function builder_entry()
   }
 end
 
-local function refresh_preview()
-  if E.group then
-    ui.update(WIN, "preview", { text = "Runs: the member picked from its list (Up / Down, Enter).", dim = false })
-    return
+local function bhead_layout()
+  local cancel_w, save_w, sticky_w, gap, pad, bh = 72, 64, 112, 6, 2, 26
+  local x_cancel = HEAD_W - cancel_w
+  local x_save = x_cancel - gap - save_w
+  local x_sticky = x_save - gap - sticky_w
+  return {
+    sticky = { x_sticky, pad, sticky_w, bh },
+    save = { x_save, pad, save_w, bh },
+    cancel = { x_cancel, pad, cancel_w, bh },
+  }
+end
+
+local function draw_bhead()
+  local lay = bhead_layout()
+  local d, on = {}, E.sticky
+  local function add(c) d[#d + 1] = c end
+  local function btn(box, text, lit)
+    local x, y, w, h = box[1], box[2], box[3], box[4]
+    local fill = lit and { 96, 196, 186, 230 } or { 48, 58, 68, 255 }
+    add({ type = "rect", x = x, y = y, w = w, h = h, round = 5, colour = fill, line = 1 })
+    add({ type = "text", x = x + w / 2, y = y + 6, text = text, size = 0.82, align = "center",
+      colour = { 232, 238, 244, 255 } })
+    add({ type = "tip", x = x, y = y, w = w, h = h, title = text, text = on and "Every job and character."
+      or "This job only, this character only." })
   end
-  local lines = data.entry_lines(builder_entry())
-  ui.update(WIN, "preview", {
-    text = #lines == 0 and "Runs: (nothing yet)" or ("Runs: " .. table.concat(lines, "  |  ")),
-    dim = #lines == 0,
-  })
+  btn(lay.sticky, on and "Sticky: On" or "Sticky: Off", on)
+  btn(lay.save, "Save", false)
+  btn(lay.cancel, "Cancel", false)
+  ui.update(WIN, "bhead", { draw = d })
+end
+
+local function bhead_hit(x, y)
+  for id, box in pairs(bhead_layout()) do
+    local bx, by, bw, bh = box[1], box[2], box[3], box[4]
+    if x >= bx and x < bx + bw and y >= by and y < by + bh then return id end
+  end
 end
 
 -- Target choices for the kind and pick, plus the current target if it is not among them.
@@ -335,22 +362,6 @@ local GROUP_TIP = "One slot for all of them: pressing it opens a list over it to
 local UNGROUP_TIP = "Undoes the group: the slot holds one action again, picked from the results."
 
 local function refresh_choice()
-  local t = type_def()
-  local text
-  if not E.kind then
-    text = "Macro: type every line below."
-  elseif E.pick then
-    text = ("%s: %s"):format(t.label, E.pick.name)
-  else
-    text = ("%s: none yet. Search, then pick one from the list."):format(t.label)
-  end
-  if E.group then
-    local names = {}
-    for k, m in ipairs(E.group) do names[k] = m.name end
-    text = #names == 0 and "Group: no members yet. Search, then click to add."
-      or ("Group of %d: %s."):format(#names, table.concat(names, ", "))
-  end
-  ui.update(WIN, "picked", { text = text, dim = not E.group and (not E.kind or not E.pick) })
   ui.update(WIN, "grp", { items = { E.group and "Ungroup These" or "Make a Group of These" },
     tip = E.group and UNGROUP_TIP or GROUP_TIP })
   ui.update(WIN, "btype", { at = builder.type_index(E.kind) })
@@ -432,7 +443,6 @@ local function set_kind(kind)
   E.target = kind == "equip" and "main" or kind == "cmd" and "" or "t"
   refresh_results(ui.get(WIN, "q").text)
   refresh_choice()
-  refresh_preview()
 end
 
 -- On library entry `id`, or a new macro.
@@ -472,11 +482,10 @@ function open_builder(id)
   ui.update(WIN, "label", { text = label })
   ui.update(WIN, "extra", { text = extra })
   ui.update(WIN, "q", { text = "" })
-  ui.update(WIN, "sticky", { at = E.sticky and 2 or 1 })
+  draw_bhead()
   ui.update(WIN, "bwhere", { text = builder_where() })
   refresh_results("")
   refresh_choice()
-  refresh_preview()
 end
 
 -- Into an opener's list (`e`), or back out (nil).
@@ -530,7 +539,6 @@ local function pick(index)
   end
   E.pick = { name = e.name }
   refresh_choice()
-  refresh_preview()
 end
 
 local function set_target(index)
@@ -545,7 +553,6 @@ local function set_target(index)
     end
   end
   refresh_choice()
-  refresh_preview()
 end
 
 -- Makes the results a group, or a group back into one action.
@@ -554,7 +561,6 @@ local function toggle_group()
     E.group = nil
     refresh_results(ui.get(WIN, "q").text)
     refresh_choice()
-    refresh_preview()
     return
   end
   if not E.kind or E.kind == "cmd" then
@@ -582,14 +588,12 @@ local function toggle_group()
   ui.update(WIN, "q", { text = "" })
   refresh_results("")
   refresh_choice()
-  refresh_preview()
 end
 
 local function line_edited(text)
   if not E.kind then return end
   text = data.trim(text)
   E.line = (text ~= "" and text ~= built_line()) and text or nil
-  refresh_preview()
 end
 
 local function save_builder()
@@ -720,18 +724,18 @@ local function spec(drop, build)
   if build then
     return {
       title = "Hotbars",
-      width = 520,
-      help = "Save keeps the macro in the library; Cancel goes back to it.",
+      width = BUILD_W,
+      help = "Sticky: every job and character. Save keeps the macro; Cancel goes back to the library.",
       elements = {
+        { type = "canvas", id = "bhead", w = HEAD_W, h = HEAD_H },
         { type = "text", id = "bwhere", text = "" },
         { type = drop, id = "btype", label = "Type", items = builder.TYPE_LABELS, at = 1,
           tip = "Choose what the macro does." },
         { type = "input", id = "q", label = "Search", text = "", max = 32, tip = "Part of a name, e.g. cure." },
-        { type = "list", id = "found", rows = {}, height = 7, columns = builder.columns("ma"),
+        { type = "list", id = "found", rows = {}, height = 4, columns = builder.columns("ma"),
           tip = "Enter or click one to build the macro on it." },
         { type = "text", id = "fcount", text = "", dim = true },
         { type = "buttons", id = "grp", items = { "Make a Group of These" }, tip = GROUP_TIP },
-        { type = "text", id = "picked", text = "" },
         { type = drop, id = "target", label = "Target", items = { "<t> Current target" }, at = 1 },
         { type = "input", id = "line", label = "Line it builds (type over it to change it)", text = "", max = 256,
           tip = "What the macro runs first. Type your line in its place if the built one is not right; clear "
@@ -740,12 +744,6 @@ local function spec(drop, build)
         { type = "input", id = "label", label = "Button text (blank = from the name)", text = "", max = 14 },
         { type = "input", id = "extra", label = "Lines after it (| between lines, optional)", text = "", max = 1024,
           tip = 'Example: /p Casting <t> | /wait 2 | /echo done' },
-        { type = "choice", id = "sticky", label = "Sticky", items = STICKY_ITEMS, at = 1,
-          tip = "Every job and character: the macro shows in every job's library, on every character." },
-        { type = "text", id = "preview", text = "" },
-        { type = "text", id = "tip", text = "Waits: /wait 2 alone on a line, or <wait 2> at the end of one.",
-          dim = true },
-        { type = "buttons", id = "bbtn", items = { "Save", "Cancel" } },
       },
     }
   end
@@ -800,6 +798,16 @@ local function define()
   ui.on(WIN, function(_, e)
     if e.id == "tiles" then
       on_tiles(e)
+    elseif e.id == "bhead" and e.kind == "click" then
+      local hit = bhead_hit(e.x, e.y)
+      if hit == "sticky" then
+        E.sticky = not E.sticky
+        draw_bhead()
+      elseif hit == "save" then
+        save_builder()
+      elseif hit == "cancel" then
+        leave_builder()
+      end
     elseif e.kind == "set" then
       if e.id:match("^mod%d$") then
         keys.set_mod(tonumber(e.id:sub(4)), keys.MOD_LABELS[e.index])
@@ -814,8 +822,6 @@ local function define()
         set_kind(builder.TYPES[e.index].kind)
       elseif e.id == "target" then
         set_target(e.index)
-      elseif e.id == "sticky" then
-        E.sticky = e.index == 2
       end
     elseif (e.kind == "change" and e.id == "skey") or (e.kind == "press" and e.id == "skeyb") then
       keys.set_slot(K.bar, K.slot, e.id == "skey" and e.text or nil)
@@ -826,8 +832,6 @@ local function define()
       elseif e.id == "line" then
         line_edited(e.text)
         if e.kind == "change" then refresh_line() end
-      elseif e.id == "extra" or e.id == "name" then
-        refresh_preview()
       end
     elseif e.kind == "change" and e.id == "job" then
       local job = jobs.parse(e.text)
@@ -860,12 +864,6 @@ local function define()
         end
       elseif e.id == "grp" then
         toggle_group()
-      elseif e.id == "bbtn" then
-        if e.index == 1 then
-          save_builder()
-        else
-          leave_builder()
-        end
       elseif e.id == "kbtn" then
         keys.reset()
         keys_changed()

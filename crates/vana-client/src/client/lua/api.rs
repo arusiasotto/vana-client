@@ -2470,6 +2470,7 @@ fn elem(t: &Table) -> mlua::Result<(super::window::Elem, super::window::Meta)> {
         tip: t.get::<Option<String>>("tip")?.unwrap_or_default(),
         page: t.get::<Option<i64>>("page")?.map(|p| (p.max(1) - 1) as usize),
         hidden: t.get::<Option<bool>>("hidden")?.unwrap_or(false),
+        lane: t.get::<Option<i64>>("column")?.map(|c| (c.max(1) - 1).min(1) as usize).unwrap_or(0),
     };
     Ok((elem_only(t)?, meta))
 }

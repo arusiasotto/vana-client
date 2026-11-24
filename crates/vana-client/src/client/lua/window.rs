@@ -386,6 +386,8 @@ pub struct Meta {
     pub page: Option<usize>,
     /// The mod hid it (`hidden = true`).
     pub hidden: bool,
+    /// Which column of a side-by-side layout (0 left, 1 right); `column = 2` in the spec.
+    pub lane: usize,
 }
 
 impl Elem {
@@ -1557,71 +1559,74 @@ impl Window {
                 out.push((i, 1 + k, [b[0], b[1] + LINE * (k - self.drop_top.get()) as f32, b[2], LINE]));
             }
         }
-        let mut ey = y + TOP;
+        let mut ey_lane = [y + TOP, y + TOP];
         for (i, e) in self.elems.iter().enumerate() {
             if hidden[i] {
                 continue;
             }
+            let lane = self.lane_of(i);
+            let (lx, lw) = self.lane_place(x, w, lane);
+            let ey = ey_lane[lane];
             match e {
                 Elem::Buttons { items, .. } => {
                     let bw = button_w(gu, items);
                     for c in 0..items.len() {
-                        out.push((i, c, [x + 32.0 + (bw + 8.0) * c as f32, ey + 14.0, bw, 16.0]));
+                        out.push((i, c, [lx + 32.0 + (bw + 8.0) * c as f32, ey + 14.0, bw, 16.0]));
                     }
                 }
                 Elem::Slider { .. } => {
-                    out.push((i, 0, [x + SLIDER_X, ey + 14.0, (w - SLIDER_X - 48.0).max(96.0), 16.0]))
+                    out.push((i, 0, [lx + SLIDER_X, ey + 14.0, (lw - SLIDER_X - 48.0).max(96.0), 16.0]))
                 }
                 Elem::List { rows, columns, top, height, .. } => {
                     let mut ry = ey;
                     if has_header(columns) {
-                        let lw = self.classic_list_w(rows.len(), *height);
+                        let list_w = self.classic_list_w(rows.len(), *height);
                         for (c, (cx, cw, _)) in
-                            self::columns(&classic_columns(gu, columns, rows, lw), lw).into_iter().enumerate()
+                            self::columns(&classic_columns(gu, columns, rows, list_w), list_w).into_iter().enumerate()
                         {
-                            out.push((i, 1000 + c, [x + 32.0 + cx, ey, cw, LINE]));
+                            out.push((i, 1000 + c, [lx + 32.0 + cx, ey, cw, LINE]));
                         }
                         ry += LINE;
                     }
                     for k in (*top..rows.len()).take(*height) {
-                        out.push((i, k, [x + 32.0, ry + LINE * (k - *top) as f32, w - 64.0, LINE]));
+                        out.push((i, k, [lx + 32.0, ry + LINE * (k - *top) as f32, lw - 64.0, LINE]));
                     }
                 }
                 Elem::Tabs { .. } => {
-                    out.push((i, 0, [x + 5.0, ey - 3.0, 26.0, 17.0]));
-                    out.push((i, 1, [x + w - 27.0, ey - 3.0, 26.0, 17.0]));
-                    out.push((i, 2, [x + 40.0, ey, w - 80.0, LINE]));
+                    out.push((i, 0, [lx + 5.0, ey - 3.0, 26.0, 17.0]));
+                    out.push((i, 1, [lx + lw - 27.0, ey - 3.0, 26.0, 17.0]));
+                    out.push((i, 2, [lx + 40.0, ey, lw - 80.0, LINE]));
                 }
-                Elem::Choice { drop: true, .. } => out.push((i, 0, [x + 32.0, ey + 14.0, w - 64.0, 16.0])),
+                Elem::Choice { drop: true, .. } => out.push((i, 0, [lx + 32.0, ey + 14.0, lw - 64.0, 16.0])),
                 Elem::Choice { .. } => {
-                    let bw = w - 64.0;
-                    out.push((i, 0, [x + 32.0, ey + 14.0, 24.0, 16.0]));
-                    out.push((i, 1, [x + 32.0 + bw - 24.0, ey + 14.0, 24.0, 16.0]));
-                    out.push((i, 2, [x + 56.0, ey + 14.0, bw - 48.0, 16.0]));
+                    let bw = lw - 64.0;
+                    out.push((i, 0, [lx + 32.0, ey + 14.0, 24.0, 16.0]));
+                    out.push((i, 1, [lx + 32.0 + bw - 24.0, ey + 14.0, 24.0, 16.0]));
+                    out.push((i, 2, [lx + 56.0, ey + 14.0, bw - 48.0, 16.0]));
                 }
-                Elem::Input { .. } => out.push((i, 0, [x + 32.0, ey + 14.0, w - 64.0, 16.0])),
+                Elem::Input { .. } => out.push((i, 0, [lx + 32.0, ey + 14.0, lw - 64.0, 16.0])),
                 Elem::Colour { alpha, .. } => {
-                    out.push((i, 0, [x + 32.0, ey + 14.0, 64.0, 16.0]));
+                    out.push((i, 0, [lx + 32.0, ey + 14.0, 64.0, 16.0]));
                     if self.edit && self.at == i {
                         for c in 0..if *alpha { 4 } else { 3 } {
                             out.push((
                                 i,
                                 1 + c,
                                 [
-                                    x + SLIDER_X,
+                                    lx + SLIDER_X,
                                     ey + PITCH + CHAN_H * c as f32 + 4.0,
-                                    (w - SLIDER_X - 48.0).max(96.0),
+                                    (lw - SLIDER_X - 48.0).max(96.0),
                                     16.0,
                                 ],
                             ));
                         }
                     }
                 }
-                Elem::Section { .. } => out.push((i, 0, [x + 20.0, ey, w - 40.0, LINE])),
-                Elem::Canvas { w: cw, h: ch, .. } => out.push((i, 0, [x + 20.0, ey, *cw, *ch])),
+                Elem::Section { .. } => out.push((i, 0, [lx + 20.0, ey, lw - 40.0, LINE])),
+                Elem::Canvas { w: cw, h: ch, .. } => out.push((i, 0, [lx + 20.0, ey, *cw, *ch])),
                 _ => {}
             }
-            ey += self.elem_h(i);
+            ey_lane[lane] += self.elem_h(i);
         }
         out
     }
@@ -1760,6 +1765,32 @@ impl Window {
         (true, ev, se)
     }
 
+    /// Whether any visible element sits in the right-hand column (`column = 2`).
+    fn split_lanes(&self) -> bool {
+        let hidden = self.hidden();
+        self.meta
+            .iter()
+            .enumerate()
+            .any(|(i, m)| m.lane > 0 && !hidden.get(i).copied().unwrap_or(false))
+    }
+
+    fn lane_of(&self, i: usize) -> usize {
+        self.meta.get(i).map(|m| m.lane.min(1)).unwrap_or(0)
+    }
+
+    /// Where a column draws in the classic page: (left, inner width).
+    fn lane_place(&self, x: f32, w: f32, lane: usize) -> (f32, f32) {
+        if !self.split_lanes() {
+            return (x, w);
+        }
+        let half = w * 0.5;
+        if lane == 0 {
+            (x, half - 4.0)
+        } else {
+            (x + half, half - 4.0)
+        }
+    }
+
     /// Element `i`'s height on the classic page (0 hidden).
     fn elem_h(&self, i: usize) -> f32 {
         if self.hidden().get(i).copied().unwrap_or(false) {
@@ -1786,7 +1817,23 @@ impl Window {
     pub fn classic_size(&self) -> (f32, f32) {
         let w = if self.width > 0.0 { self.width } else { CLASSIC_W };
         let w = w.max(self.fit_w.get());
-        (w, TOP + (0..self.elems.len()).map(|i| self.elem_h(i)).sum::<f32>() + 12.0)
+        let hidden = self.hidden();
+        let h = if self.split_lanes() {
+            let mut tall = [0.0f32; 2];
+            for i in 0..self.elems.len() {
+                if hidden.get(i).copied().unwrap_or(false) {
+                    continue;
+                }
+                tall[self.lane_of(i)] += self.elem_h(i);
+            }
+            tall[0].max(tall[1])
+        } else {
+            (0..self.elems.len())
+                .filter(|i| !hidden.get(*i).copied().unwrap_or(false))
+                .map(|i| self.elem_h(i))
+                .sum()
+        };
+        (w, TOP + h + 12.0)
     }
 
     /// The open dropdown and its list's rect on the classic page at (x, y): the rows under its field, as the login
@@ -1795,8 +1842,15 @@ impl Window {
         let i = self.drop_open()?;
         let Some(Elem::Choice { items, .. }) = self.elems.get(i) else { return None };
         let (w, _) = self.classic_size();
-        let ey = y + TOP + (0..i).map(|j| self.elem_h(j)).sum::<f32>();
-        Some((i, [x + 32.0, ey + 30.0, w - 64.0, LINE * items.len().min(DROP_ROWS) as f32]))
+        let hidden = self.hidden();
+        let lane = self.lane_of(i);
+        let (lx, lw) = self.lane_place(x, w, lane);
+        let ey = y + TOP
+            + (0..i)
+                .filter(|j| !hidden.get(*j).copied().unwrap_or(false) && self.lane_of(*j) == lane)
+                .map(|j| self.elem_h(j))
+                .sum::<f32>();
+        Some((i, [lx + 32.0, ey + 30.0, lw - 64.0, LINE * items.len().min(DROP_ROWS) as f32]))
     }
 
     /// The open dropdown's items in view (at most DROP_ROWS), moved to keep its highlight among them.
@@ -1831,11 +1885,11 @@ impl Window {
         }
         gu.text(&self.title, x + 16.0, y + 10.0, 0, [0x80; 4]);
         let hidden = self.hidden();
-        let mut ey = y + TOP;
+        let mut ey_lane = [y + TOP, y + TOP];
         let mut hand = None;
-        let bullet = |gu: &mut GameUi, ey: f32| {
+        let bullet = |gu: &mut GameUi, ax: f32, ey: f32| {
             if let Some(b) = gu.cell_bounds("menu    windowps", 465, 2) {
-                gu.sprite_cells("menu    windowps", 465, 2..3, x + 20.0 - b[0], ey + 2.0 - b[1], N);
+                gu.sprite_cells("menu    windowps", 465, 2..3, ax + 20.0 - b[0], ey + 2.0 - b[1], N);
             }
         };
         let slider = |gu: &mut GameUi, sx: f32, sy: f32, f: f32, lit: bool| {
@@ -1848,25 +1902,28 @@ impl Window {
             if hidden[i] {
                 continue;
             }
+            let lane = self.lane_of(i);
+            let (lx, lw) = self.lane_place(x, w, lane);
+            let ey = ey_lane[lane];
             let here = self.focus && i == self.at;
             match e {
                 Elem::Timers { .. } | Elem::Map { .. } | Elem::Targets { .. } | Elem::Chip { .. } => {}
                 Elem::Lines { lines, .. } => {
                     let mut ly = ey;
                     for l in lines {
-                        draw_classic_line(gu, l, x + 20.0, ly, w - 40.0);
+                        draw_classic_line(gu, l, lx + 20.0, ly, lw - 40.0);
                         ly += classic_line_h(l);
                     }
                 }
                 Elem::Text { text, dim, colour, .. } => {
-                    gu.text_fit(text, x + 20.0, ey, w - 40.0, colour.map_or(if *dim { DIM } else { N }, tint));
+                    gu.text_fit(text, lx + 20.0, ey, lw - 40.0, colour.map_or(if *dim { DIM } else { N }, tint));
                 }
                 Elem::Buttons { label, items, marked, .. } => {
-                    bullet(gu, ey);
-                    gu.label(label, x + 32.0, ey, N, false);
+                    bullet(gu, lx, ey);
+                    gu.label(label, lx + 32.0, ey, N, false);
                     let bw = button_w(gu, items);
                     for (c, s) in items.iter().enumerate() {
-                        let bx = x + 32.0 + (bw + 8.0) * c as f32;
+                        let bx = lx + 32.0 + (bw + 8.0) * c as f32;
                         let by = ey + 14.0;
                         let on = here && c == self.col && !self.edit;
                         let d = if on { -1.0 } else { 0.0 };
@@ -1881,12 +1938,12 @@ impl Window {
                     }
                 }
                 Elem::Slider { label, n, at, shown, .. } => {
-                    bullet(gu, ey);
-                    gu.label(label, x + 32.0, ey, N, false);
-                    let sw = (w - SLIDER_X - 48.0).max(96.0);
+                    bullet(gu, lx, ey);
+                    gu.label(label, lx + 32.0, ey, N, false);
+                    let sw = (lw - SLIDER_X - 48.0).max(96.0);
                     let vw = gu.label_width(shown);
-                    gu.label(shown, x + SLIDER_X + sw - vw, ey, N, false);
-                    let (sx, sy) = (x + SLIDER_X, ey + 14.0);
+                    gu.label(shown, lx + SLIDER_X + sw - vw, ey, N, false);
+                    let (sx, sy) = (lx + SLIDER_X, ey + 14.0);
                     let f = if *n > 1 { *at as f32 / (*n - 1) as f32 } else { 1.0 };
                     slider(gu, sx, sy, f, self.edit && here);
                     if here && !self.edit {
@@ -1903,9 +1960,9 @@ impl Window {
                         for (c, &(cx, cw, right)) in cols.iter().enumerate() {
                             let t = &columns[c].title;
                             let tx = if right {
-                                (x + 32.0 + cx + cw - gu.text_width(t) - 4.0).max(x + 32.0 + cx)
+                                (lx + 32.0 + cx + cw - gu.text_width(t) - 4.0).max(lx + 32.0 + cx)
                             } else {
-                                x + 32.0 + cx
+                                lx + 32.0 + cx
                             };
                             gu.text_fit(t, tx, ey, cw, DIM);
                         }
@@ -1916,30 +1973,30 @@ impl Window {
                         let ink = row.colour.map_or(N, tint);
                         let mut ix = 0.0;
                         if let Some(i) = row.icon {
-                            icon(gu, world, i, x + 32.0, ry + 1.0, 16.0, [255; 4]);
+                            icon(gu, world, i, lx + 32.0, ry + 1.0, 16.0, [255; 4]);
                             ix = 18.0;
                         }
                         if cols.is_empty() {
-                            gu.text_fit(&row.cells.join("  "), x + 32.0 + ix, ry, lw - ix, ink);
+                            gu.text_fit(&row.cells.join("  "), lx + 32.0 + ix, ry, lw - ix, ink);
                         } else {
                             for (c, &(cx, cw, right)) in cols.iter().enumerate() {
                                 let Some(cell) = row.cells.get(c) else { continue };
                                 let (cx, cw) = if c == 0 { (cx + ix, cw - ix) } else { (cx, cw) };
                                 let ink = row.cell_colours.get(c).copied().flatten().map_or(ink, tint);
                                 if right {
-                                    let tx = (x + 32.0 + cx + cw - gu.text_width(cell) - 4.0).max(x + 32.0 + cx);
-                                    gu.text_fit(cell, tx, ry, x + 32.0 + cx + cw - tx + 16.0, ink);
+                                    let tx = (lx + 32.0 + cx + cw - gu.text_width(cell) - 4.0).max(lx + 32.0 + cx);
+                                    gu.text_fit(cell, tx, ry, lx + 32.0 + cx + cw - tx + 16.0, ink);
                                 } else {
-                                    gu.text_fit(cell, x + 32.0 + cx, ry, cw - 4.0, ink);
+                                    gu.text_fit(cell, lx + 32.0 + cx, ry, cw - 4.0, ink);
                                 }
                             }
                         }
                         if here && k == *at {
-                            hand = Some((x + 32.0, ry));
+                            hand = Some((lx + 32.0, ry));
                         }
                     }
                     if rows.len() > *height {
-                        gu.scroll_bar(x + w - 20.0, ry0, LINE * *height as f32, rows.len(), *height, *top);
+                        gu.scroll_bar(lx + lw - 20.0, ry0, LINE * *height as f32, rows.len(), *height, *top);
                     }
                 }
                 Elem::Gauge { label, value, text, kind, .. } => {
@@ -1952,8 +2009,8 @@ impl Window {
                         "recast" => [0x60, 0x60, 0x60, 0x80],
                         _ => [0x30, 0x80, 0x30, 0x80],
                     };
-                    let gx = x + w - 92.0;
-                    gu.text_fit(label, x + 20.0, ey, gx - x - 80.0, N);
+                    let gx = lx + lw - 92.0;
+                    gu.text_fit(label, lx + 20.0, ey, gx - x - 80.0, N);
                     gu.shape_text(text, gx - 8.0, ey + 1.0, N, true);
                     let f = value.clamp(0.0, 1.0);
                     if f > 0.0 {
@@ -1964,19 +2021,19 @@ impl Window {
                 Elem::Separator => {}
                 Elem::Tabs { items, at, .. } => {
                     // The Settings pages' arrows (menu frames 25 / 26) round the page name.
-                    gu.sprite("menu    frames", 25, x + 9.0, ey + 1.0, N);
-                    gu.sprite("menu    frames", 26, x + w - 23.0, ey + 1.0, N);
+                    gu.sprite("menu    frames", 25, lx + 9.0, ey + 1.0, N);
+                    gu.sprite("menu    frames", 26, lx + lw - 23.0, ey + 1.0, N);
                     let name = items.get(*at).map_or("", String::as_str);
                     let nw = gu.text_width(name);
-                    gu.text(name, x + (w - nw) / 2.0, ey, 0, [0x80; 4]);
+                    gu.text(name, lx + (lw - nw) / 2.0, ey, 0, [0x80; 4]);
                     if here {
-                        hand = Some((x + (w - nw) / 2.0 - 4.0, ey));
+                        hand = Some((lx + (lw - nw) / 2.0 - 4.0, ey));
                     }
                 }
                 Elem::Input { label, text, key: true, .. } => {
-                    bullet(gu, ey);
-                    gu.label(label, x + 32.0, ey, N, false);
-                    let (bx, by, bw) = (x + 32.0, ey + 14.0, w - 64.0);
+                    bullet(gu, lx, ey);
+                    gu.label(label, lx + 32.0, ey, N, false);
+                    let (bx, by, bw) = (lx + 32.0, ey + 14.0, lw - 64.0);
                     super::super::settings::button(gu, [bx, by, bw, 16.0], N);
                     let shown = if here && self.edit {
                         "Press a key...".to_string()
@@ -1991,9 +2048,9 @@ impl Window {
                     }
                 }
                 Elem::Input { label, text, .. } => {
-                    bullet(gu, ey);
-                    gu.label(label, x + 32.0, ey, N, false);
-                    let (bx, by, bw) = (x + 32.0, ey + 14.0, w - 64.0);
+                    bullet(gu, lx, ey);
+                    gu.label(label, lx + 32.0, ey, N, false);
+                    let (bx, by, bw) = (lx + 32.0, ey + 14.0, lw - 64.0);
                     super::super::settings::button(gu, [bx, by, bw, 16.0], N);
                     if here && self.edit {
                         let chars: Vec<char> = text.chars().collect();
@@ -2020,9 +2077,9 @@ impl Window {
                     }
                 }
                 Elem::Choice { label, items, at, drop: true, .. } => {
-                    bullet(gu, ey);
-                    gu.label(label, x + 32.0, ey, N, false);
-                    let (bx, by, bw) = (x + 32.0, ey + 14.0, w - 64.0);
+                    bullet(gu, lx, ey);
+                    gu.label(label, lx + 32.0, ey, N, false);
+                    let (bx, by, bw) = (lx + 32.0, ey + 14.0, lw - 64.0);
                     let ink = if here { ON } else { N };
                     super::super::settings::button(gu, [bx, by, bw, 16.0], ink);
                     let v = items.get(*at).map_or("", String::as_str);
@@ -2033,9 +2090,9 @@ impl Window {
                     }
                 }
                 Elem::Choice { label, items, at, .. } => {
-                    bullet(gu, ey);
-                    gu.label(label, x + 32.0, ey, N, false);
-                    let (bx, by, bw) = (x + 32.0, ey + 14.0, w - 64.0);
+                    bullet(gu, lx, ey);
+                    gu.label(label, lx + 32.0, ey, N, false);
+                    let (bx, by, bw) = (lx + 32.0, ey + 14.0, lw - 64.0);
                     super::super::settings::button(gu, [bx, by, bw, 16.0], if here { ON } else { N });
                     gu.sprite("menu    frames", 25, bx + 3.0, by + 4.0, N);
                     gu.sprite("menu    frames", 26, bx + bw - 21.0, by + 4.0, N);
@@ -2047,9 +2104,9 @@ impl Window {
                     }
                 }
                 Elem::Colour { label, value, alpha, .. } => {
-                    bullet(gu, ey);
-                    gu.label(label, x + 32.0, ey, N, false);
-                    let (bx, by) = (x + 32.0, ey + 14.0);
+                    bullet(gu, lx, ey);
+                    gu.label(label, lx + 32.0, ey, N, false);
+                    let (bx, by) = (lx + 32.0, ey + 14.0);
                     super::super::settings::button(gu, [bx, by, 64.0, 16.0], N);
                     let [r, g, b, a] = value.map(|v| v as f32 / 255.0);
                     gu.rect(bx + 3.0, by + 3.0, 58.0, 10.0, [r, g, b, a.max(0.15)]);
@@ -2058,7 +2115,7 @@ impl Window {
                     } else {
                         format!("{} {} {}", value[0], value[1], value[2])
                     };
-                    gu.text_fit(&shown, bx + 72.0, by + 1.0, w - 112.0, DIM);
+                    gu.text_fit(&shown, bx + 72.0, by + 1.0, lw - 112.0, DIM);
                     let open = self.edit && here;
                     if here && !open {
                         hand = Some((bx, by));
@@ -2067,36 +2124,36 @@ impl Window {
                         let names = ["R", "G", "B", "A"];
                         for c in 0..if *alpha { 4 } else { 3 } {
                             let cy = ey + PITCH + CHAN_H * c as f32;
-                            gu.label(names[c], x + 48.0, cy + 2.0, if c == self.chan { ON } else { N }, false);
+                            gu.label(names[c], lx + 48.0, cy + 2.0, if c == self.chan { ON } else { N }, false);
                             let v = value[c].to_string();
-                            let sw = (w - SLIDER_X - 48.0).max(96.0);
-                            gu.label(&v, x + SLIDER_X + sw + 6.0, cy + 2.0, N, false);
+                            let sw = (lw - SLIDER_X - 48.0).max(96.0);
+                            gu.label(&v, lx + SLIDER_X + sw + 6.0, cy + 2.0, N, false);
                             slider(
                                 gu,
-                                x + SLIDER_X,
+                                lx + SLIDER_X,
                                 cy + 4.0,
                                 to_step(value[c]) as f32 / (STEPS - 1) as f32,
                                 c == self.chan,
                             );
                             if c == self.chan {
-                                hand = Some((x + SLIDER_X, cy + 4.0));
+                                hand = Some((lx + SLIDER_X, cy + 4.0));
                             }
                         }
                     }
                 }
                 Elem::Canvas { w: cw, h: ch, cmds, .. } => {
-                    draw_canvas(gu, world, cmds, x + 20.0, ey, *cw, *ch);
+                    draw_canvas(gu, world, cmds, lx + 20.0, ey, *cw, *ch);
                 }
                 Elem::Section { label, open, .. } => {
                     let mark = if *open { "-" } else { "+" };
-                    gu.text(mark, x + 20.0, ey + 2.0, 0, [0x80; 4]);
-                    gu.label(label, x + 32.0, ey + 2.0, if here { ON } else { N }, false);
+                    gu.text(mark, lx + 20.0, ey + 2.0, 0, [0x80; 4]);
+                    gu.label(label, lx + 32.0, ey + 2.0, if here { ON } else { N }, false);
                     if here {
-                        hand = Some((x + 32.0, ey + 2.0));
+                        hand = Some((lx + 32.0, ey + 2.0));
                     }
                 }
             }
-            ey += self.elem_h(i);
+            ey_lane[lane] += self.elem_h(i);
         }
         // An open dropdown's list over what is under it, as the login form's: the cursor's row lit, the hand on it.
         if let Some((i, b)) = self.drop_box(x, y)
@@ -2662,7 +2719,7 @@ mod tests {
         let row = |s: &str, tip: &str| Row { cells: vec![s.into()], tip: tip.into(), ..Default::default() };
         let rows = vec![row("Dia", "Lowers defense."), row("Cure", "")];
         w.elems = vec![Elem::List { id: "l".into(), rows, columns: Vec::new(), at: 0, top: 0, height: 5 }];
-        w.meta = vec![Meta { tip: "Pick one.".into(), page: None, hidden: false }];
+        w.meta = vec![Meta { tip: "Pick one.".into(), page: None, hidden: false, lane: 0 }];
         (w.open, w.focus) = (true, true);
         w.settle();
         assert_eq!(w.help_now(), "Lowers defense.");

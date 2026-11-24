@@ -1392,8 +1392,8 @@
         },
         {
           "path": "src/manager.lua",
-          "sha256": "729a8dde6a141358171e073a6ed30a5bcc54ac4283036375430ecb1b52ac1bdc",
-          "size": 34504,
+          "sha256": "fc5b7b839ccb910f02c66dc4f77734f1114210f249b5d7c902072fce3d498aa7",
+          "size": 34355,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/hotbar/src/manager.lua"
         },
         {
@@ -1448,7 +1448,7 @@
       "id": "hotbar",
       "kind": "lua",
       "name": "Hotbars",
-      "version": "1.13.5"
+      "version": "1.13.7"
     },
     {
       "authors": [],
