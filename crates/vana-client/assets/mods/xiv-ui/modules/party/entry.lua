@@ -121,13 +121,12 @@ local function valid_cast(c)
   return type(c)=='table' and type(c.name)=='string' and type(c.progress)=='number' and
     c.progress>=0 and c.progress<=1 and (c.source==nil or type(c.source)=='string')
 end
-local function cast_call(method,...)
-  if not mods or not mods.call then return false end
-  -- X.call deliberately collapses false/nil/errors. Here a successful nil from
-  -- the older individual API is a known no-cast; a failed call is not.
-  local ok, a, b, c, d, e = pcall(mods.call, "xiv-target-bar", method, ...)
-  if ok then return ok, a, b, c, d, e end
-  return pcall(mods.call, "xiv-ui", method, ...)
+local function cast_call(method, ...)
+  -- Patched X.call → suite bridge (xiv-target-bar → target registry).
+  if type(X.call) ~= "function" then return false end
+  local ok, got = pcall(X.call, "xiv-target-bar", method, ...)
+  if ok then return true, got end
+  return false
 end
 local function prepare_casts()
   if preview then frame_casts=nil;return end

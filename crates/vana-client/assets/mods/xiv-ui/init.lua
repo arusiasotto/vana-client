@@ -67,18 +67,20 @@ mods.provide("xiv_config", function(op, panel, ...)
   return bridge.config_dispatch(op, panel, ...)
 end)
 
+-- Host provides for standalone mod ids/tools. Do not reuse bare names across panels
+-- (e.g. target and player both had "layout" — now player is player_layout).
 local HOST_COMPAT = {
-  target = { "layout", "cast", "casts_for", "effects" },
-  player = { "layout" },
+  target = { layout = "layout", cast = "cast", casts_for = "casts_for", effects = "effects" },
+  player = { player_layout = "layout" },
 }
 
 local function publish_host_compat()
-  for alias, names in pairs(HOST_COMPAT) do
+  for alias, mapping in pairs(HOST_COMPAT) do
     local tab = bridge.registry[alias]
     if not tab then goto continue end
-    for _, name in ipairs(names) do
-      local fn = tab[name]
-      if type(fn) == "function" then mods.provide(name, fn) end
+    for host_name, method in pairs(mapping) do
+      local fn = tab[method]
+      if type(fn) == "function" then mods.provide(host_name, fn) end
     end
     ::continue::
   end

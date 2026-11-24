@@ -4,7 +4,7 @@
 **Date:** 2026-11-24 (America/New_York)  
 **Reference:** [`xiv-ui-audit.md`](xiv-ui-audit.md) §4; client `settings.get` in `crates/vana-client/src/client/lua/api.rs` (undeclared key → runtime error `"no setting … in mod.toml"`).
 
-**Verdict:** **PASS** — no HIGH issues; suite matches manifest/settings, permissions, HUD, and stepped-load constraints. MEDIUM/LOW items documented below (no code changes required this pass).
+**Verdict:** **PASS** — no HIGH issues. MEDIUM host `layout` collision and party `cast_call` fixed on branch after initial pass.
 
 ---
 
@@ -36,8 +36,8 @@
 | — | `bootstrap.lua` + `entry.lua` | `require('src.*')` uses prefixed M18 `require` during import/entry; restored native `require` after panel load — no post-bootstrap bare `src.*` in suite `src/` or `init.lua`. | **OK** |
 | — | `init.lua` + `bridge.lua` | `xiv_config` dispatcher; per-panel `xiv_ui_<panel>_config`; `wrap_provide` namespaces host provides; `bridge.registry` for in-suite calls. | **OK** |
 | — | `init.lua` `frame` pump | One panel `bootstrap.step` per frame until queue drained; unchanged. | **OK** |
-| **Medium** | `init.lua` `HOST_COMPAT` | Publishes bare `layout` from **target** and **player** on host — last loaded wins for external `mods.call('xiv-ui', 'layout')`. In-suite `bridge.call('xiv-player-bars','layout')` is correct path. | **OK / accept** (audit §4) |
-| **Medium** | `modules/party/entry.lua` `cast_call` | Legacy `mods.call('xiv-target-bar', …)` then `mods.call('xiv-ui', …)`; `bridge.call` preferred when panels loaded. | **OK / accept** |
+| — | `init.lua` `HOST_COMPAT` | Target: `layout`, `cast`, `casts_for`, `effects`. Player: **`player_layout`** (not bare `layout`). | **Fixed** (client-compat pass) |
+| — | `modules/party/entry.lua` `cast_call` | Uses patched `X.call("xiv-target-bar", …)` → `bridge.registry.target` only. | **Fixed** |
 | **Medium** | `hdr_*` in `mod.toml` | UI section labels only; Lua never reads. | **OK / accept** (skipped per product) |
 | **Low** | Notify toast `offset_x/y` | Proxy `LAYOUT_KEYS` nil → `or 0` in draw; drag values live in `xiv_ui_notify_v1` via hud_config when edited. | **OK** |
 | **Low** | `mods.provide` timers | Each panel hud_config adds `timer.every(0.25, …)` session sweeper. | **OK / accept** |
@@ -51,8 +51,8 @@
 | `loaded`, `suite`, `xiv_config` | `init.lua` | `xiv_config(op, panel, …)` dispatches |
 | `xiv_ui_<panel>_config` | `bootstrap` after entry | Per-panel config API |
 | `xiv_<panel>_*` | `wrap_provide` during import | Namespaced legacy host names |
-| `layout`, `cast`, `casts_for`, `effects` | target (compat) | Host compat for standalones |
-| `layout` | player (compat) | Host collision with target `layout` — use panel-specific bridge |
+| `layout`, `cast`, `casts_for`, `effects` | target (compat) | Target strip APIs on host |
+| `player_layout` | player (compat) | Vitals layout; use `X.call('xiv-player-bars','layout')` in-suite |
 | `busy`, `points`, `status`, … | panel `entry.lua` | Registered in `bridge.registry` |
 
 ---
