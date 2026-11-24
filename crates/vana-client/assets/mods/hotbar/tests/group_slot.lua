@@ -31,7 +31,7 @@ H("manager", { kind = "select", id = "found", index = 1 })
 H("manager", { kind = "press", id = "grp", index = 1 })
 -- Another target for the group leaves the runes, which take only us, on <me>.
 H("manager", { kind = "set", id = "target", index = 3 })
-H("manager", { kind = "press", id = "bbtn", index = 1 })
+H("manager", { kind = "press", id = "bbar", index = 2 })
 local it = data.library("RUN")[1]
 assert(it.entry.name == "Rune Enchantment" and #it.entry.group == 2, it.entry.name)
 assert(it.entry.group[2].action.name == "Tenebrae" and it.entry.group[2].action.target == "me")

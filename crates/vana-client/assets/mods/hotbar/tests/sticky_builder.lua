@@ -18,19 +18,18 @@ local manager = require("src.manager")
 manager.hooks = { changed = function() end, rebind = function() end }
 manager.open()
 
--- New, Cure, Sticky: every job, Save.
+-- New, Cure, Sticky: On (bbar 1), Save (bbar 2).
 H("manager", { kind = "press", id = "lbtn", index = 1 })
-assert(ui.get("manager", "sticky").at == 1)
 H("manager", { kind = "select", id = "found", index = 1 })
-H("manager", { kind = "set", id = "sticky", index = 2 })
-H("manager", { kind = "press", id = "bbtn", index = 1 })
+H("manager", { kind = "press", id = "bbar", index = 1 })
+H("manager", { kind = "press", id = "bbar", index = 2 })
 local lib = data.library("WHM")
 assert(#lib == 1 and lib[1].sticky and lib[1].entry.name == "Cure")
 local id = lib[1].id
 
--- Edit shows it sticky; This job only takes it to RDM's library.
+-- Edit keeps it sticky; Sticky: Off (bbar 1), Save.
 manager.edit_entry(id)
-assert(ui.get("manager", "sticky").at == 2)
-H("manager", { kind = "set", id = "sticky", index = 1 })
-H("manager", { kind = "press", id = "bbtn", index = 1 })
+assert(data.is_sticky(id))
+H("manager", { kind = "press", id = "bbar", index = 1 })
+H("manager", { kind = "press", id = "bbar", index = 2 })
 assert(#data.library("WHM") == 0 and #data.library("RDM") == 1 and not data.library("RDM")[1].sticky)
