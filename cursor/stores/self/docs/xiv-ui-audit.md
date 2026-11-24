@@ -8,7 +8,7 @@
 
 ## Executive summary
 
-Phase 2 integration is **functionally coherent**: one VM, staggered bootstrap, internal `bridge`, layout in `storage.account.xiv_ui_*_v1`, buff uses live disk sources. **HIGH pass (8e92e886):** `xiv_config` registry/dispatcher, M18 tooling, `settings_proxy` docs. **MEDIUM pass (7641b9ff):** shared `src/hud_drag.lua` + `src/hud_config_factory.lua`, thin per-panel `hud_config.lua`, orphan module manifests removed, `mod.toml` reload UX, full M18 regen + `--check` green. Remaining duplicate **logic** is mostly per-panel `xiv.lua` / `config_schema` / large data maps.
+Phase 2 integration is **functionally coherent**: one VM, staggered bootstrap, internal `bridge`, layout in `storage.account.xiv_ui_*_v1`, buff uses live disk sources. **HIGH pass (8e92e886):** `xiv_config` registry/dispatcher, M18 tooling, `settings_proxy` docs. **MEDIUM pass (49433096):** shared `src/hud_drag.lua` + `src/hud_config_factory.lua`, thin per-panel `hud_config.lua`, orphan module manifests removed, `mod.toml` reload UX, full M18 regen + `--check` green. Remaining duplicate **logic** is mostly per-panel `xiv.lua` / `config_schema` / large data maps.
 
 **Recommended Phase 3 priorities:** (1) catalogue + deprecate standalone `xiv-*` assets, (2) dedupe suite `mod.toml` section comments, (3) optional shared `xiv.lua` helpers.
 
@@ -18,8 +18,8 @@ Phase 2 integration is **functionally coherent**: one VM, staggered bootstrap, i
 
 | Severity | Item | Paths / notes | Next action |
 |----------|------|----------------|-------------|
-| **High** | **`hud_config.lua` clones** (same transaction editor; differs only by `storage.account.xiv_ui_<panel>_v1` bucket name) | `modules/{cast,player,party,exp,notify,target,focus}/src/hud_config.lua`; was duplicated in `_m18_*` chunks | **Fixed (7641b9ff):** `src/hud_config_factory.lua` + thin panel shims; bootstrap injects factory |
-| **High** | **`hud_drag.lua` identical** (same MD5 across five modules) | was `modules/{cast,player,party,exp,focus}/src/hud_drag.lua` | **Fixed (7641b9ff):** `src/hud_drag.lua`; bootstrap inject + M18 embed |
+| **High** | **`hud_config.lua` clones** (same transaction editor; differs only by `storage.account.xiv_ui_<panel>_v1` bucket name) | `modules/{cast,player,party,exp,notify,target,focus}/src/hud_config.lua`; was duplicated in `_m18_*` chunks | **Fixed (49433096):** `src/hud_config_factory.lua` + thin panel shims; bootstrap injects factory |
+| **High** | **`hud_drag.lua` identical** (same MD5 across five modules) | was `modules/{cast,player,party,exp,focus}/src/hud_drag.lua` | **Fixed (49433096):** `src/hud_drag.lua`; bootstrap inject + M18 embed |
 | **Medium** | **`xiv.lua` renderer/natives** — near-duplicates with panel-specific tail | `modules/*/src/xiv.lua` (215–408 lines); embedded in `_m18_01.lua` for chunk loaders | **Accept** for now; merge shared `X.renderer`, `X.native`, `X.call` only if churn stays high |
 | **Medium** | **`config_schema.lua`** — same shape per panel | Seven `modules/*/src/config_schema.lua`; labels still mention offsets removed from suite `mod.toml` | **Fix** low priority: trim schema help/labels; keep schema as layout authority |
 | **Medium** | **Status art maps** | `status_png.lua` in `buff`, `target`, `party` (large generated tables) | **Accept** (data, not logic); share only if asset layout unifies |
@@ -33,8 +33,8 @@ Phase 2 integration is **functionally coherent**: one VM, staggered bootstrap, i
 
 | Severity | Item | Paths / notes | Next action |
 |----------|------|----------------|-------------|
-| **High** | **M18 chunks vs on-disk `src/`** — runtime loads **embedded chunk sources**, not `src/*.lua`, for all panels except buff (`source_files = true`). `entry.lua` is always read from disk. | All `modules/*/manifest.lua` with `chunks = { "_m18_*" }` | **Mitigated (7641b9ff):** full regen + `--check` green; `regen_all_m18.py` resolves suite shared `src.hud_drag` from root `src/` |
-| **Medium** | **Orphan standalone `mod.toml`** in suite tree (not used by suite manifest) | `modules/focus/mod.toml`, `modules/target/mod.toml` | **Fixed (7641b9ff):** deleted; `scripts/README.md` notes root `mod.toml` is sole manifest |
+| **High** | **M18 chunks vs on-disk `src/`** — runtime loads **embedded chunk sources**, not `src/*.lua`, for all panels except buff (`source_files = true`). `entry.lua` is always read from disk. | All `modules/*/manifest.lua` with `chunks = { "_m18_*" }` | **Mitigated (49433096):** full regen + `--check` green; `regen_all_m18.py` resolves suite shared `src.hud_drag` from root `src/` |
+| **Medium** | **Orphan standalone `mod.toml`** in suite tree (not used by suite manifest) | `modules/focus/mod.toml`, `modules/target/mod.toml` | **Fixed (49433096):** deleted; `scripts/README.md` notes root `mod.toml` is sole manifest |
 | **Medium** | **`hdr_*` settings** (8× single-option enums) — UI section hacks; Lua never reads them | `mod.toml` `[settings.hdr_*]` | **Fix** or **accept:** remove when client supports sections or keep as UX affordance |
 | **Medium** | **Duplicate section comments** in `mod.toml` (regroup artifacts) | e.g. duplicate `# --- Focus ---`, `# --- Notify ---`, mixed `——` vs `---` | **Fix:** run `scripts/regroup_mod_toml.py` after cleaning regroup script to emit one header each |
 | **Low** | **`scripts/merge_mod_toml.py`** — can truncate suite `mod.toml` on re-run (`# --- Cast` split) | `scripts/merge_mod_toml.py` | **Accept** with warning in script; do not run in CI without regroup |
@@ -51,7 +51,7 @@ No **dead Lua entry files** found; every queued panel has `entry.lua` + `manifes
 |----------|------|----------------|-------------|
 | **Medium** | **Party load probe / runtime commentary** — long inline docs mixed with probe counters | `modules/party/entry.lua` (~1014 lines; large header comment block ~lines 1–80) | **Accept** for debugging; trim when party stabilizes |
 | **Medium** | **Buff `bar.lua` file header + incident comments** | `modules/buff/src/bar.lua` (~46 comment lines; `hud.clear` warning, drag/offset narrative) | **Accept** — operational warnings worth keeping |
-| **Low** | **`hud_config.lua` boilerplate** one-liners repeated 7× | Was each panel `src/hud_config.lua` | **Fixed (7641b9ff):** 8-line shims per panel |
+| **Low** | **`hud_config.lua` boilerplate** one-liners repeated 7× | Was each panel `src/hud_config.lua` | **Fixed (49433096):** 8-line shims per panel |
 | **Low** | **Target status/icon geometry** in `target/entry.lua` | Lines ~19–28 | **Accept** — documents non-obvious layout |
 | **Low** | **M18 chunk files** — huge string literals (not human-maintained prose) | `modules/target/_m18_*.lua` (13 chunks) | **Accept** as build artifact; prefer regen over hand-edit |
 
@@ -65,7 +65,7 @@ No large **commented-out code blocks** flagged in suite `entry.lua` files; stand
 |----------|------|----------------|-------------|
 | **High** | **`mods.provide('xiv_config')` overwrites** — each panel’s `hud_config.new()` registers the **same global name** in one VM. Load order ends at **notify** (last in queue); earlier panels’ config API is lost for external `mods.call`. | All `*/src/hud_config.lua` + `_m18_00` chunks | **Fixed in `xiv-ui` (2026-11):** `bridge.wrap_provide` registers `xiv_config` per panel in `bridge.config`; suite `mods.provide('xiv_config', op, panel, …)` dispatches; each loaded panel also exposes `xiv_ui_<panel>_config` after bootstrap entry. |
 | **High** | **`settings.get` manifest enforcement** — undeclared keys error (`no setting in mod.toml`). Mitigated by `LAYOUT_KEYS` nil-return in proxy | `src/settings_proxy.lua`; layout keys in hud_config `native_value` | **Fixed in `xiv-ui` (2026-11):** expanded comment block in `settings_proxy.lua` documenting client rule + `LAYOUT_KEYS` bypass; notify offset keys remain declared in suite `mod.toml`. |
-| **Medium** | **`settings.get('on')` in panels** via hud_config — panel visibility uses **`mod_*`** toggles through proxy, not per-bucket `on` | `settings_proxy.lua`, `hud_config` strips `on` on commit, `migrate.lua` | **Accept** — by design; **UX (7641b9ff):** `mod.toml` `mod_*` + master `on` help states `/lua reload xiv-ui` when enabling a panel that was off at load |
+| **Medium** | **`settings.get('on')` in panels** via hud_config — panel visibility uses **`mod_*`** toggles through proxy, not per-bucket `on` | `settings_proxy.lua`, `hud_config` strips `on` on commit, `migrate.lua` | **Accept** — by design; **UX (49433096):** `mod.toml` `mod_*` + master `on` help states `/lua reload xiv-ui` when enabling a panel that was off at load |
 | **Medium** | **Cross-panel `X.call` / `mods.call`** with legacy mod ids | `player/entry.lua` → `X.call('xiv-cast-bar','layout')`; `party/entry.lua` → `xiv-target-bar` then `xiv-ui` | **Accept** — `bridge.call` resolves when target/cast loaded; **fix** party helper to use `bridge.registry` only |
 | **Medium** | **Staggered load + frame pump** — up to 8 panels × (chunks + imports + entry); target alone 13 chunks + 35 status_map imports | `init.lua`, `bootstrap.lua`, `modules/target/manifest.lua` | **Accept** with profiling; watch suspend budget on slow disks |
 | **Medium** | **`timer.every` stacking** — each hud_config adds 0.25s session sweeper; cast `0.05s` tick; party `0.5s` pets; buff `0.5s` | Multiple `entry.lua` + hud_config | **Accept**; revisit if timer budget tight |
