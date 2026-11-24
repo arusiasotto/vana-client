@@ -253,7 +253,8 @@ local function build(list, x, y)
     else
       local bx, by = slot_xy(i, x, y, cl, stepx, stepy, u)
       local id = row.id
-      local name = res.status(id) or ("Status " .. id)
+      local ok_name, status_name = pcall(res.status, id)
+      local name = (ok_name and status_name) or ("Status " .. tostring(id))
       local ok, info = pcall(res.status_info, id)
       info = ok and info or nil
       local timed = type(row.remaining) == "number" and not (info and info.untimed)
@@ -392,7 +393,9 @@ function M.tick()
       failed, fail_ticks = true, 0
       pcall(clear_all)
       pcall(ui.native.hide, "buffs", false)
-      if chat and chat.add then pcall(chat.add, "XIV Buff Bar hit an error (see log); native icons restored, retrying.") end
+      local msg = "XIV Buff Bar hit an error (see log); native icons restored, retrying."
+      if type(err) == "string" and err ~= "" then msg = msg .. " [" .. err .. "]" end
+      if chat and chat.add then pcall(chat.add, msg) end
     end
   end
 end

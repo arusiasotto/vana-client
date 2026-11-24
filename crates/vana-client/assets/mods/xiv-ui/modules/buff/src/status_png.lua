@@ -63,8 +63,9 @@ local square = {
 [3095]=true,[3176]=true,[3451]=true,[9641]=true,[61273]=true,
 }
 local paths, squares = {}, {}
+local asset_root = "modules/buff/"
 for id, icon in pairs(ids) do
-  paths[id] = "img/status/" .. icon .. ".png"
+  paths[id] = asset_root .. "img/status/" .. icon .. ".png"
   squares[id] = square[icon] or false
 end
 local M = {}

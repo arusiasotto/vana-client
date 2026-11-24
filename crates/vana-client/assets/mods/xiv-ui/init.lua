@@ -26,6 +26,16 @@ if not rawget(_G, "__xiv_ui_hud_image_patched") then
     end
     return old_image(id, spec)
   end
+  local old_set = hud.set
+  function hud.set(id, spec)
+    if type(spec) == "table" and type(spec.path) == "string" then
+      local copy = {}
+      for k, v in pairs(spec) do copy[k] = v end
+      copy.path = assets.resolve_path(copy.path, id)
+      spec = copy
+    end
+    return old_set(id, spec)
+  end
 end
 
 local function load_manifest(dir)
