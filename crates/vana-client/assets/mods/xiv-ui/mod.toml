@@ -222,7 +222,7 @@ help = "Only used when attached."
 type = "bool"
 default = false
 label = "Attach To Player Bars"
-help = "When detached, drag the XP strip to move it."
+help = "On: XP follows player bars (use Attach below/above). Off: drag the XP strip by itself."
 [settings.exp_dark_thin]
 type = "bool"
 default = true

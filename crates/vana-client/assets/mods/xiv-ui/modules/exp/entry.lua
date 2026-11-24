@@ -140,14 +140,16 @@ local function draw()
     if anchor and anchor.visible and not (anchor.preview and not preview) then
       if settings.get('attach_below')~=false then
         local au=anchor.ui_scale
-        if anchor.y+(anchor.h or 28*au)+26*au<=s.height then
-          x,w,u,scale=anchor.vx or anchor.x,anchor.vw or anchor.w,au,anchor.scale
-          if not anchor.vx then
-            -- Older Player Bars: trim the transparent art margin (11 left/1 right normal, 10/1 compact).
-            local lw=math.floor(anchor.w/au+0.5);local il=(lw==421 or lw==279) and 10 or 11
-            x,w=anchor.x+il*au,anchor.w-(il+1)*au
-          end
-          y=anchor.y+(anchor.h or 28*u)+4*u;text_y=y+8*u
+        x,w,u,scale=anchor.vx or anchor.x,anchor.vw or anchor.w,au,anchor.scale
+        if not anchor.vx then
+          local lw=math.floor(anchor.w/au+0.5);local il=(lw==421 or lw==279) and 10 or 11
+          x,w=anchor.x+il*au,anchor.w-(il+1)*au
+        end
+        y=anchor.y+(anchor.h or 28*au)+4*u;text_y=y+8*u
+        local bar_h=(settings.get('dark_thin')~=false and 6 or 5)*u
+        if text_y+14*u>s.height then
+          text_y=math.max(0,s.height-14*u);y=text_y-8*u
+          if y+bar_h>s.height then y=math.max(0,s.height-bar_h) end
         end
       elseif anchor.y>=25*anchor.ui_scale then
         x,w,u,scale=anchor.vx or anchor.x,anchor.vw or anchor.w,anchor.ui_scale,anchor.scale

@@ -10,8 +10,8 @@ return {
   {key="offset_y",type="int",label="Vertical Offset From Top",help="",default=6,min=0,max=800,step=1},
   {key="dark_thin",type="bool",label="Thin Dark/Glow Artwork",help="",default=true},
   {key="stats_text",type="bool",label="Observed Rate / Estimated Time Text",help="",default=false},
-  {key="attach_vitals",type="bool",label="Attach To Player Bars",help="",default=false},
-  {key="attach_below",type="bool",label="Attach Below Player Bars (off = above)",help="Only used when attached.",default=true},
+  {key="attach_vitals",type="bool",label="Attach To Player Bars",help="On: XP strip follows player bars; drag player to move both. Off: drag the XP strip.",default=false},
+  {key="attach_below",type="bool",label="Attach Below Player Bars (off = above)",help="Only when Attach To Player Bars is on. Default below vitals.",default=true},
 }
 ]],
 ["src.hud_config"]=[[
