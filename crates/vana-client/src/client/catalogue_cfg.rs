@@ -2,13 +2,56 @@
 
 use crate::config::{self, ServerCatalogueEntry, ServerCatalogues};
 
+/// Saved `owner/repo` for the first key that has one.
+pub fn repo_for_keys(keys: &[String]) -> String {
+    let store = ServerCatalogues::load();
+    for key in keys {
+        if let Some(e) = store.get(key) && !e.repo.is_empty() {
+            return e.repo.clone();
+        }
+    }
+    String::new()
+}
+
+/// Stores `text` as the catalogue repo for `keys` (clears when empty); returns keys for refetch.
+pub fn save_repo(keys: &[String], text: &str) -> Option<Vec<String>> {
+    let repo = normalize_repo(text);
+    let mut store = ServerCatalogues::load();
+    if repo.is_empty() {
+        for key in keys {
+            store.clear(key);
+        }
+    } else {
+        let entry = ServerCatalogueEntry { repo: repo.clone(), ..Default::default() };
+        for key in keys {
+            store.set(key, entry.clone());
+        }
+        copy_login_to_search(&mut store, keys);
+    }
+    if let Err(e) = store.save() {
+        log::warn!("server catalogues: {e:#}");
+        return None;
+    }
+    Some(keys.to_vec())
+}
+
+pub fn clear_repo(keys: &[String]) -> Option<Vec<String>> {
+    let mut store = ServerCatalogues::load();
+    for key in keys {
+        store.clear(key);
+    }
+    if let Err(e) = store.save() {
+        log::warn!("server catalogues: {e:#}");
+        return None;
+    }
+    Some(keys.to_vec())
+}
+
 /// Text field state for the catalogue repo dialog.
 pub struct CatalogueDialog {
     pub keys: Vec<String>,
     pub text: String,
     pub label: String,
-    /// The first frame after open: the repo field takes the keyboard.
-    pub focus_field: bool,
     open: bool,
 }
 
@@ -30,7 +73,7 @@ impl CatalogueDialog {
                 }
             }
         }
-        Self { keys, text, label, focus_field: true, open: true }
+        Self { keys, text, label, open: true }
     }
 
     pub fn is_open(&self) -> bool {
@@ -43,40 +86,11 @@ impl CatalogueDialog {
 
     /// Stores the repo for every active key (clears when text empty); returns keys for refetch.
     pub fn save(&self) -> Option<Vec<String>> {
-        let repo = normalize_repo(&self.text);
-        let mut store = ServerCatalogues::load();
-        if repo.is_empty() {
-            for key in &self.keys {
-                store.clear(key);
-            }
-        } else {
-            let entry = ServerCatalogueEntry {
-                repo: repo.clone(),
-                label: self.label.trim().to_string(),
-                ..Default::default()
-            };
-            for key in &self.keys {
-                store.set(key, entry.clone());
-            }
-            copy_login_to_search(&mut store, &self.keys);
-        }
-        if let Err(e) = store.save() {
-            log::warn!("server catalogues: {e:#}");
-            return None;
-        }
-        Some(self.keys.clone())
+        save_repo(&self.keys, &self.text)
     }
 
     pub fn clear(&self) -> Option<Vec<String>> {
-        let mut store = ServerCatalogues::load();
-        for key in &self.keys {
-            store.clear(key);
-        }
-        if let Err(e) = store.save() {
-            log::warn!("server catalogues: {e:#}");
-            return None;
-        }
-        Some(self.keys.clone())
+        clear_repo(&self.keys)
     }
 }
 
