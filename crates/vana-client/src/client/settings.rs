@@ -1429,9 +1429,9 @@ impl SettingsUi {
     fn turn(&mut self, d: i32) {
         self.edit = false;
         self.tab = (self.tab as i32 + d).rem_euclid(self.tabs().len() as i32) as usize;
-<<<<<<< HEAD
         let shown = if self.on_mods() {
-            let m = self.mods_ui.get_or_insert_with(super::modsui::Mods::open);
+            let keys = self.catalogue_keys.clone();
+            let m = self.mods_ui.get_or_insert_with(|| super::modsui::Mods::open(keys));
             // An install's failure belongs to the page it was asked on; DAT Packs and Mods share the list's top.
             (m.error, m.top) = (None, 0);
             super::modsui::VISIBLE
@@ -1440,14 +1440,6 @@ impl SettingsUi {
         };
         // Turning the page starts the next at its top.
         self.row = self.row.min(self.row_count()).min(shown);
-=======
-        if self.on_mods() {
-            // An install's failure belongs to the page it was asked on.
-            let keys = self.catalogue_keys.clone();
-            self.mods_ui.get_or_insert_with(|| super::modsui::Mods::open(keys)).error = None;
-        }
-        self.row = self.row.min(self.row_count());
->>>>>>> 505f7e4a (feat(modsui): four-thread dual fetch and server_entries)
         self.col = self.marked_col();
         self.top.set(0);
         self.drawn.set(None);
