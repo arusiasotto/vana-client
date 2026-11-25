@@ -1087,7 +1087,14 @@ pub(super) fn draw(gu: &mut super::super::game_ui::GameUi, w: &World) {
         rects.push((mod_id, e.id.clone(), [r[0] / k.0, r[1] / k.1, r[2] / k.0, r[3] / k.1]));
     }
     gu.opacity(None);
-    info.borrow_mut().hud_rects = rects;
+    // Modern overlay hit targets are set in modern/hudmods.rs; do not clear them here.
+    if w.modern {
+        if !rects.is_empty() {
+            info.borrow_mut().hud_rects.extend(rects);
+        }
+    } else {
+        info.borrow_mut().hud_rects = rects;
+    }
     // The classic UI's tooltip (the modern UI's is the kit's, modern/mod.rs), once the pointer rests a moment.
     if !w.modern
         && let Some((title, text, secs)) = tip(host)

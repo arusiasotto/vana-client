@@ -1960,9 +1960,9 @@ impl Host {
         (f.native_rects.clone(), f.window)
     }
 
-    /// HUD elements drawn this frame by the modern layer, after the game UI's: (mod, element, window pixel rect).
-    pub(in crate::client) fn add_hud_rects(&self, rects: Vec<(String, String, [f32; 4])>) {
-        self.info.borrow_mut().hud_rects.extend(rects);
+    /// HUD hit rects from the modern layer this frame (mod, element, window pixels). Replaces prior rects from hudmods.
+    pub(in crate::client) fn set_hud_rects(&self, rects: Vec<(String, String, [f32; 4])>) {
+        self.info.borrow_mut().hud_rects = rects;
     }
 
     /// The modern UI's pixels per point while it draws (hud.screen's ui_scale there), else none.
