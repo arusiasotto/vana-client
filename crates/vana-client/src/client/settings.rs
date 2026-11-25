@@ -2313,11 +2313,11 @@ impl SettingsUi {
     }
 
     /// The page's installed packs or mods (name, on) in order, then its offers: archives found and catalogue entries.
-    /// A Lua mod goes by its mod.toml's name.
-    pub fn mods_rows(&self) -> (Vec<(String, bool)>, Vec<super::modsui::Offer>) {
+    /// A Lua mod goes by its mod.toml's name. `server` picks standard or server catalogue rows on DATs.
+    pub fn mods_rows(&self, server: bool) -> (Vec<(String, bool)>, Vec<super::modsui::Offer>) {
         let name = |n: &String| self.lua_info.get(n).map_or_else(|| n.clone(), |i| i.name.clone());
         let packs = self.on_page().into_iter().map(|k| (name(&self.s.mods[k].name), self.mod_on(k))).collect();
-        (packs, self.offers(self.lua_page(), false))
+        (packs, self.offers(self.lua_page(), server))
     }
 
     /// The page's installed pack or mod `i`'s folder (a Lua mod's id).
@@ -2808,9 +2808,9 @@ mod tests {
         assert_eq!(ui.tab, MODS);
         // "a" a Lua mod: the Mods page holds it alone, with ON / OFF; on DAT Packs, "b" moves down past it.
         ui.lua_names.insert("a".into());
-        assert_eq!((ui.mods_rows().0, ui.mods_cols(1)), (vec![("a".to_string(), false)], 2));
+        assert_eq!((ui.mods_rows(false).0, ui.mods_cols(1)), (vec![("a".to_string(), false)], 2));
         ui.goto(PACKS, 1);
-        assert_eq!(ui.mods_rows().0.iter().map(|r| r.0.as_str()).collect::<String>(), "bc");
+        assert_eq!(ui.mods_rows(false).0.iter().map(|r| r.0.as_str()).collect::<String>(), "bc");
         assert!(ui.mod_move(0, false));
         assert_eq!(names(&ui), "cab");
     }

@@ -140,7 +140,7 @@ impl ModMgr {
             self.tab = 0;
             self.s.goto_page(true);
         }
-        let n = self.s.mods_rows().0.len();
+        let n = self.s.mods_rows(false).0.len();
         if let Some(i) = (0..n).find(|&i| self.s.mod_id(i).is_some_and(|f| f.eq_ignore_ascii_case(&id))) {
             self.find.clear();
             self.pick(i);
@@ -159,7 +159,7 @@ impl ModMgr {
     /// The installed mods the search lets through, by their place in the list.
     fn shown(&self) -> Vec<usize> {
         let q = self.find.trim().to_lowercase();
-        let rows = self.s.mods_rows().0;
+        let rows = self.s.mods_rows(false).0;
         (0..rows.len())
             .filter(|&i| {
                 q.is_empty()
@@ -171,7 +171,7 @@ impl ModMgr {
 
     /// The picked mod as the page shows it.
     fn picked(&self) -> Option<Sel> {
-        let rows = self.s.mods_rows().0;
+        let rows = self.s.mods_rows(false).0;
         let (name, on) = rows.get(self.sel)?.clone();
         let id = self.s.mod_id(self.sel)?;
         let info = self.s.lua_info.get(&id).cloned().unwrap_or_default();
@@ -584,7 +584,8 @@ fn key(w: &mut World, key: egui::Key, shift: bool) {
         return;
     }
     if mm.s.mods_state().is_some_and(|m| m.browse.is_some()) {
-        config::mods_key(&mut mm.s, key, shift);
+        let mut cat = config::ModsCatalogue::default();
+        config::mods_key(&mut mm.s, key, shift, &mut cat);
         flush(w);
         return;
     }
@@ -599,9 +600,14 @@ fn key(w: &mut World, key: egui::Key, shift: bool) {
         0 => page_key(w, key, shift),
         1 => get_key(w, key, shift),
         _ => {
-            if config::mods_key(&mut mm.s, key, shift) == ModOut::Back {
+            let mut cat = config::ModsCatalogue {
+                server: mm.dat_source == ListSource::Server,
+                dual: true,
+            };
+            if config::mods_key(&mut mm.s, key, shift, &mut cat) == ModOut::Back {
                 mm.open = false;
             }
+            mm.dat_source = if cat.server { ListSource::Server } else { ListSource::Standard };
             flush(w);
         }
     }
@@ -1121,7 +1127,6 @@ enum Click {
     Get(usize),
     GetPoint(usize),
     GetSource(usize),
-    DatSource(usize),
     CatalogueField,
     CatalogueSave,
     CatalogueClear,
@@ -1247,7 +1252,7 @@ fn list(ui: &mut Ui, m: &super::Modern, mm: &ModMgr, updates: &[bool], follow: b
             click.push(Click::Find);
         }
         ui.add_space(6.0);
-        let rows = mm.s.mods_rows().0;
+        let rows = mm.s.mods_rows(false).0;
         let shown = mm.shown();
         if rows.is_empty() {
             note(ui, m, "No mods installed yet: Get mods has ours.", "muted");
@@ -1862,7 +1867,7 @@ fn apply(w: &mut World, clicks: Vec<Click>) {
             }
             Click::Remove(yes) => {
                 config::remove_answer(&mut mm.s, yes);
-                let n = mm.s.mods_rows().0.len();
+                let n = mm.s.mods_rows(false).0.len();
                 mm.sel = mm.sel.min(n.saturating_sub(1));
                 mm.focus = Focus::List;
                 flush(w);
@@ -1881,12 +1886,6 @@ fn apply(w: &mut World, clicks: Vec<Click>) {
                     sound(w, Se::Cursor);
                 }
             }
-            Click::DatSource(k) => {
-                if k != mm.dat_source as usize {
-                    mm.dat_source = if k == 0 { ListSource::Standard } else { ListSource::Server };
-                    sound(w, Se::Cursor);
-                }
-            }
             Click::CatalogueField => {
                 (mm.get_row, mm.get_sub, mm.catalogue_typing) = (1, 0, true);
             }
@@ -1900,9 +1899,14 @@ fn apply(w: &mut World, clicks: Vec<Click>) {
                 }
             }
             Click::Dats(act) => {
-                if config::mods_do(&mut mm.s, act) == ModOut::Back {
+                let mut cat = config::ModsCatalogue {
+                    server: mm.dat_source == ListSource::Server,
+                    dual: true,
+                };
+                if config::mods_do(&mut mm.s, act, &mut cat) == ModOut::Back {
                     mm.open = false;
                 }
+                mm.dat_source = if cat.server { ListSource::Server } else { ListSource::Standard };
                 flush(w);
             }
             Click::UpdateAll => {
@@ -1982,7 +1986,7 @@ fn window(p: &mut Panels, mm: &mut ModMgr, sel: Option<&Sel>, replies: &[&str]) 
         "mods window",
         mm.tab * 10_000_000 + mm.sel * 10_000 + mm.at.stop * 100 + mm.at.sub + mm.get_row * 1000 + mm.s.m_mods.0 * 7,
     );
-    let rows = mm.s.mods_rows().0;
+    let rows = mm.s.mods_rows(false).0;
     let updates: Vec<bool> = (0..rows.len())
         .map(|i| {
             let id = mm.s.mod_id(i).unwrap_or_default();
@@ -2006,12 +2010,13 @@ fn window(p: &mut Panels, mm: &mut ModMgr, sel: Option<&Sel>, replies: &[&str]) 
                 ui.set_min_height(body);
                 match mm.tab {
                     _ if browsing => {
+                        let cat = config::ModsCatalogue::default();
                         let mut act = Vec::new();
-                        config::mods_page(ui, m, &mm.s, true, follow, &mut act);
+                        config::mods_page(ui, m, &mm.s, true, follow, &mut act, &cat);
                         if !act.is_empty() {
                             click.push(Click::Dats(act));
                         }
-                        help = config::mods_help(&mm.s);
+                        help = config::mods_help(&mm.s, &cat);
                     }
                     0 => {
                         let ks = sel.map_or(Vec::new(), |s| kinds(s, mm.sub, mm.form));
@@ -2040,24 +2045,28 @@ fn window(p: &mut Panels, mm: &mut ModMgr, sel: Option<&Sel>, replies: &[&str]) 
                                 .into();
                     }
                     _ => {
+                        let cat = config::ModsCatalogue {
+                            server: mm.dat_source == ListSource::Server,
+                            dual: true,
+                        };
                         ui.horizontal_top(|ui| {
                             ui.vertical(|ui| {
                                 ui.set_width(LIST_W + 16.0 + FORMS_W + 60.0);
                                 let mut act = Vec::new();
-                                config::mods_page(ui, m, &mm.s, true, follow, &mut act);
+                                config::mods_page(ui, m, &mm.s, true, follow, &mut act, &cat);
                                 if !act.is_empty() {
                                     click.push(Click::Dats(act));
                                 }
                             });
                             ui.add_space(16.0);
-                            let d = config::row_detail(&mm.s, mm.s.m_mods.0).unwrap_or_else(|| Detail {
+                            let d = config::row_detail(&mm.s, mm.s.m_mods.0, &cat).unwrap_or_else(|| Detail {
                                 name: "DATs".into(),
                                 text: config::DATS_HELP.into(),
                                 facts: Vec::new(),
                             });
                             config::details(ui, m, &d);
                         });
-                        help = config::mods_help(&mm.s);
+                        help = config::mods_help(&mm.s, &cat);
                     }
                 }
             });
