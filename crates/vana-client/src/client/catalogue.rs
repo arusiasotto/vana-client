@@ -180,12 +180,6 @@ pub fn parse(text: &str, any_host: bool) -> Result<Vec<Entry>> {
         .collect())
 }
 
-/// A list: fetched, else the copy kept from the last fetch; only its kind's entries (packs or Lua mods).
-/// VANA_DAT_CATALOGUE / VANA_MOD_CATALOGUE: another list (a URL or a file).
-pub fn fetch(list: List) -> Result<Vec<Entry>> {
-    fetch_from(Source::Standard, list, &[])
-}
-
 pub fn fetch_from(source: Source, list: List, server_keys: &[String]) -> Result<Vec<Entry>> {
     let want = |e: &Entry| (e.kind != "lua") == (list == List::Dats);
     fetch_all(source, list, server_keys).map(|v| v.into_iter().filter(want).collect())

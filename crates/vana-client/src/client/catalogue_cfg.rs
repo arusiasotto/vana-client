@@ -91,10 +91,6 @@ fn copy_login_to_search(store: &mut ServerCatalogues, keys: &[String]) {
     store.set(search, entry);
 }
 
-pub fn active_keys_cfg(cfg: &config::Config, search: Option<(std::net::Ipv4Addr, u16)>) -> Vec<String> {
-    config::active_server_keys(cfg, search)
-}
-
 pub fn parse_host_port(host_port: &str) -> Option<(String, u16)> {
     let (host, port) = host_port.rsplit_once(':')?;
     let port: u16 = port.parse().ok()?;
