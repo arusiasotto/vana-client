@@ -54,7 +54,7 @@ mod texpack;
 mod uishot;
 mod voice;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -67,6 +67,24 @@ struct Cli {
     #[command(subcommand)]
     /// Without a subcommand the game client opens.
     cmd: Option<Cmd>,
+}
+
+#[derive(Subcommand)]
+enum CatalogueCmd {
+    /// Set the catalogue repository root for HOST:PORT (`owner/repo` or GitHub URL).
+    Set {
+        host_port: String,
+        repo: String,
+        #[arg(long)]
+        mods: Option<String>,
+        #[arg(long)]
+        dats: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    Clear { host_port: String },
+    Show { host_port: String },
+    List,
 }
 
 #[derive(Subcommand)]
@@ -121,6 +139,11 @@ enum Cmd {
         port: Option<u16>,
         #[arg(long)]
         fingerprint: Option<String>,
+    },
+    /// Per-server mod/DAT catalogue repository (server_catalogues.json).
+    Catalogue {
+        #[command(subcommand)]
+        cmd: CatalogueCmd,
     },
     /// Open the client window and drive it: log in, pick a character, walk, screenshot, log out.
     Play {
@@ -1156,6 +1179,75 @@ fn parse_mask(s: &str) -> Result<u32, String> {
     s.strip_prefix("0x").map_or_else(|| s.parse(), |h| u32::from_str_radix(h, 16)).map_err(|e| e.to_string())
 }
 
+fn run_catalogue(cmd: CatalogueCmd) -> Result<()> {
+    use client::catalogue_cfg::{self, normalize_repo};
+    use config::{ServerCatalogueEntry, ServerCatalogues};
+    let path = config::server_catalogues_path();
+    match cmd {
+        CatalogueCmd::List => {
+            let store = ServerCatalogues::load();
+            for (key, e) in store.list() {
+                let repo = if e.repo.is_empty() { "(none)" } else { &e.repo };
+                println!("{key}\t{repo}");
+            }
+            println!("({})", path.display());
+        }
+        CatalogueCmd::Show { host_port } => {
+            let (host, port) = catalogue_cfg::parse_host_port(&host_port)
+                .with_context(|| format!("{host_port:?} is not host:port"))?;
+            let key = catalogue_cfg::key_from_host_port(&host, port);
+            let store = ServerCatalogues::load();
+            match store.get(&key) {
+                Some(e) => {
+                    println!("key: {key}");
+                    if !e.repo.is_empty() {
+                        println!("repo: {}", e.repo);
+                    }
+                    if let Some(m) = &e.mods {
+                        println!("mods: {m}");
+                    }
+                    if let Some(d) = &e.dats {
+                        println!("dats: {d}");
+                    }
+                    if !e.label.is_empty() {
+                        println!("label: {}", e.label);
+                    }
+                }
+                None => println!("no entry for {key}"),
+            }
+            println!("({})", path.display());
+        }
+        CatalogueCmd::Clear { host_port } => {
+            let (host, port) = catalogue_cfg::parse_host_port(&host_port)
+                .with_context(|| format!("{host_port:?} is not host:port"))?;
+            let key = catalogue_cfg::key_from_host_port(&host, port);
+            let mut store = ServerCatalogues::load();
+            store.clear(&key);
+            store.save()?;
+            println!("cleared {key}");
+            println!("({})", path.display());
+        }
+        CatalogueCmd::Set { host_port, repo, mods, dats, label } => {
+            let (host, port) = catalogue_cfg::parse_host_port(&host_port)
+                .with_context(|| format!("{host_port:?} is not host:port"))?;
+            let key = catalogue_cfg::key_from_host_port(&host, port);
+            let mut store = ServerCatalogues::load();
+            let entry = ServerCatalogueEntry {
+                repo: normalize_repo(&repo),
+                mods,
+                dats,
+                label: label.unwrap_or_default(),
+                ..Default::default()
+            };
+            store.set(&key, entry);
+            store.save()?;
+            println!("set {key}");
+            println!("({})", path.display());
+        }
+    }
+    Ok(())
+}
+
 fn login(cfg: &config::Config, creds: &Credentials) -> Result<net::lobby::Lobby> {
     use net::auth::{self, Command, Reply, Request};
     let req = Request { username: &creds.username, password: &creds.password, ..Default::default() };
@@ -1326,6 +1418,7 @@ fn main() -> Result<()> {
             println!("({})", store.display());
             Ok(())
         }
+        Cmd::Catalogue { cmd } => run_catalogue(cmd),
         Cmd::Install { source, game_dir, staging, no_verify, keep_staging } => {
             let mut cfg = config::Config::load();
             if let Some(dir) = game_dir {

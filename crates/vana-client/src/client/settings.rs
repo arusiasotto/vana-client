@@ -936,6 +936,7 @@ pub struct SettingsUi {
     pub mod_changes: Vec<(String, String, serde_json::Value)>,
     /// Mods' settings shown on our Extras tabs: (mod, row).
     tab_rows: Vec<(String, ModRow)>,
+    pub catalogue_keys: Vec<String>,
 }
 
 /// What a row's controls are.
@@ -979,6 +980,7 @@ impl SettingsUi {
             lua_names: crate::modpack::lua_folders(),
             m_dat_tab: 0,
             lua_info: crate::modpack::lua_info(),
+            catalogue_keys: crate::config::active_server_keys(c, None),
         };
         s.col = s.marked_col();
         // Not in tests: it loads the engine in the data folder.
@@ -1413,7 +1415,8 @@ impl SettingsUi {
         self.tab = (self.tab as i32 + d).rem_euclid(self.tabs().len() as i32) as usize;
         if self.on_mods() {
             // An install's failure belongs to the page it was asked on.
-            self.mods_ui.get_or_insert_with(super::modsui::Mods::open).error = None;
+            let keys = self.catalogue_keys.clone();
+            self.mods_ui.get_or_insert_with(|| super::modsui::Mods::open(keys)).error = None;
         }
         self.row = self.row.min(self.row_count());
         self.col = self.marked_col();
@@ -1700,7 +1703,8 @@ impl SettingsUi {
     pub fn goto(&mut self, tab: usize, row: usize) {
         self.tab = tab.min(self.tabs().len() - 1);
         if self.on_mods() {
-            let m = self.mods_ui.get_or_insert_with(super::modsui::Mods::open);
+            let keys = self.catalogue_keys.clone();
+            let m = self.mods_ui.get_or_insert_with(|| super::modsui::Mods::open(keys));
             m.wait_scan();
             let _ = m.tick(&mut self.s.mods);
         }
@@ -1922,7 +1926,7 @@ fn plain(help: &str) -> String {
 impl SettingsUi {
     pub fn view(&self) -> View {
         let rows = if self.on_mods() {
-            let offers = self.offers();
+            let offers = self.offers(self.lua_page(), false);
             let lua = self.lua_page();
             let installed = self.on_page().into_iter().enumerate().map(|(i, k)| {
                 let (m, on) = (&self.s.mods[k], self.mod_on(k));
@@ -2015,12 +2019,12 @@ impl SettingsUi {
         if self.on_mods() { self.mods_total() } else { self.rows().len() }
     }
 
-    fn offers(&self) -> Vec<super::modsui::Offer> {
-        self.mods_ui.as_ref().map(|m| m.offers(self.lua_page())).unwrap_or_default()
+    pub fn offers(&self, lua: bool, server: bool) -> Vec<super::modsui::Offer> {
+        self.mods_ui.as_ref().map(|m| m.offers(lua, server)).unwrap_or_default()
     }
 
     fn mods_total(&self) -> usize {
-        self.on_page().len() + self.offers().len()
+        self.on_page().len() + self.offers(self.lua_page(), false).len()
     }
 
     /// Buttons on a row: ON / OFF (and Move for a pack, Update for a mod with one), or an offer's one.
@@ -2210,7 +2214,7 @@ impl SettingsUi {
                 m.held = Some(self.s.mods.clone());
             }
             self.sounds.push(Se::Select);
-        } else if self.mods_ui.as_mut().is_some_and(|m| m.install_offer(i - sh.len(), lua)) {
+        } else if self.mods_ui.as_mut().is_some_and(|m| m.install_offer(i - sh.len(), lua, false)) {
             self.sounds.push(Se::Select);
         } else {
             self.sounds.push(Se::Error);
@@ -2244,7 +2248,7 @@ impl SettingsUi {
         let sh = self.on_page();
         let n = sh.len();
         let total = self.mods_total();
-        let offers = self.offers();
+        let offers = self.offers(self.lua_page(), false);
         for (vis, i) in (top..total).take(super::modsui::VISIBLE).enumerate() {
             let hy = y + Self::TOP + PITCH * vis as f32;
             if let Some(b) = gu.cell_bounds("menu    windowps", 465, 2) {
@@ -2313,7 +2317,7 @@ impl SettingsUi {
     pub fn mods_rows(&self) -> (Vec<(String, bool)>, Vec<super::modsui::Offer>) {
         let name = |n: &String| self.lua_info.get(n).map_or_else(|| n.clone(), |i| i.name.clone());
         let packs = self.on_page().into_iter().map(|k| (name(&self.s.mods[k].name), self.mod_on(k))).collect();
-        (packs, self.offers())
+        (packs, self.offers(self.lua_page(), false))
     }
 
     /// The page's installed pack or mod `i`'s folder (a Lua mod's id).
@@ -2360,9 +2364,9 @@ impl SettingsUi {
     }
 
     /// The page's offer `k` (an archive found, a catalogue entry) installed.
-    pub fn archive_install(&mut self, k: usize) {
+    pub fn archive_install(&mut self, k: usize, server: bool) {
         let lua = self.lua_page();
-        let ok = self.mods_ui.as_mut().is_some_and(|m| m.install_offer(k, lua));
+        let ok = self.mods_ui.as_mut().is_some_and(|m| m.install_offer(k, lua, server));
         self.sounds.push(if ok { Se::Select } else { Se::Error });
     }
 
@@ -2400,7 +2404,11 @@ impl SettingsUi {
                 _ => "Deletes this pack's folder.",
             }
             .into(),
-            (st, _) => self.offers().into_iter().nth(st.saturating_sub(2 + n)).map_or_else(String::new, |o| o.help),
+            (st, _) => self
+                .offers(self.lua_page(), false)
+                .into_iter()
+                .nth(st.saturating_sub(2 + n))
+                .map_or_else(String::new, |o| o.help),
         }
     }
 
@@ -2426,7 +2434,7 @@ impl SettingsUi {
                 "DAT pack {} of {n}: a higher one's textures win. ON / OFF, or Move it. Takes effect on restart.",
                 i + 1
             ),
-            Some(i) => self.offers().into_iter().nth(i - n).map_or_else(String::new, |o| o.help),
+            Some(i) => self.offers(self.lua_page(), false).into_iter().nth(i - n).map_or_else(String::new, |o| o.help),
         }
     }
 }

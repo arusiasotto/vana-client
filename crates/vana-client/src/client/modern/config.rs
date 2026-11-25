@@ -1241,7 +1241,7 @@ fn mods_act(s: &mut SettingsUi, act: kit::Act, at: At) -> ModOut {
             }
         }
         // DATs, Available: Install.
-        kit::Act::Press(st, _) if !lua && st >= first => s.archive_install(st - first),
+        kit::Act::Press(st, _) if !lua && st >= first => s.archive_install(st - first, false),
         // Mods: a mod's toggle, Settings, Uninstall; then the archives found.
         kit::Act::Press(st, b) if lua && st >= first && st - first < n => {
             let i = st - first;
@@ -1262,7 +1262,7 @@ fn mods_act(s: &mut SettingsUi, act: kit::Act, at: At) -> ModOut {
                 _ => {}
             }
         }
-        kit::Act::Press(st, _) if lua && st >= first => s.archive_install(st - first - n),
+        kit::Act::Press(st, _) if lua && st >= first => s.archive_install(st - first - n, false),
         a => s.sounds.extend(a.sound()),
     }
     ModOut::Stay
