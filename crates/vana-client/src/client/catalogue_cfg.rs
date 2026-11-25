@@ -1,4 +1,4 @@
-//! Per-server catalogue repository: one dialog for the login lobby and ModMgr.
+//! Per-server catalogue repository: login overlay and Modmgr inline field.
 
 use crate::config::{self, ServerCatalogues};
 
@@ -38,65 +38,6 @@ pub fn save_repo(keys: &[String], text: &str) -> Option<Vec<String>> {
         return None;
     }
     Some(keys.to_vec())
-}
-
-pub fn clear_repo(keys: &[String]) -> Option<Vec<String>> {
-    let mut store = ServerCatalogues::load();
-    for key in keys {
-        store.clear(key);
-    }
-    if let Err(e) = store.save() {
-        log::warn!("server catalogues: {e:#}");
-        return None;
-    }
-    Some(keys.to_vec())
-}
-
-/// Text field state for the catalogue repo dialog.
-pub struct CatalogueDialog {
-    pub keys: Vec<String>,
-    pub text: String,
-    pub label: String,
-    open: bool,
-}
-
-impl CatalogueDialog {
-    pub fn open(keys: Vec<String>) -> Self {
-        let store = ServerCatalogues::load();
-        let mut text = String::new();
-        let mut label = String::new();
-        for key in &keys {
-            if let Some(e) = store.get(key) {
-                if !e.repo.is_empty() {
-                    text = e.repo.clone();
-                }
-                if !e.label.is_empty() {
-                    label = e.label.clone();
-                }
-                if !text.is_empty() {
-                    break;
-                }
-            }
-        }
-        Self { keys, text, label, open: true }
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.open
-    }
-
-    pub fn close(&mut self) {
-        self.open = false;
-    }
-
-    /// Stores the repo for every active key (clears when text empty); returns keys for refetch.
-    pub fn save(&self) -> Option<Vec<String>> {
-        save_repo(&self.keys, &self.text)
-    }
-
-    pub fn clear(&self) -> Option<Vec<String>> {
-        clear_repo(&self.keys)
-    }
 }
 
 /// GitHub web URL or `owner/repo` → stored `owner/repo`.

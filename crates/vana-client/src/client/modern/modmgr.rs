@@ -520,6 +520,9 @@ fn text(w: &mut World, t: &str) {
     }
     if mm.tab == 1 && mm.catalogue_typing {
         mm.catalogue_url.push_str(&t);
+        if mm.catalogue_url.chars().count() > 200 {
+            mm.catalogue_url = mm.catalogue_url.chars().take(200).collect();
+        }
         return;
     }
     if mm.tab != 0 || mm.s.m_remove.is_some() {
@@ -1006,7 +1009,10 @@ fn get_key(w: &mut World, key: egui::Key, shift: bool) {
     if mm.catalogue_typing {
         match key {
             egui::Key::Backspace => {
-                mm.catalogue_url.pop();
+                let n = mm.catalogue_url.chars().count();
+                if n > 0 {
+                    mm.catalogue_url = mm.catalogue_url.chars().take(n - 1).collect();
+                }
                 return;
             }
             egui::Key::Escape => {

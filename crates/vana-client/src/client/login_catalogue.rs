@@ -137,7 +137,10 @@ pub fn window(
                 egui::Key::ArrowDown | egui::Key::ArrowRight => st.focus = (st.focus + 1) % items,
                 egui::Key::ArrowUp | egui::Key::ArrowLeft => st.focus = (st.focus + items - 1) % items,
                 egui::Key::Backspace if st.focus == 0 => {
-                    st.text.pop();
+                    let n = st.text.chars().count();
+                    if n > 0 {
+                        st.text = st.text.chars().take(n - 1).collect();
+                    }
                 }
                 egui::Key::Enter => press = Some(if st.focus == 0 { FIELD } else { st.focus }),
                 egui::Key::Escape => press = Some(items - 1),

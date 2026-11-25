@@ -1290,6 +1290,9 @@ fn login_window(
                 egui::Key::ArrowLeft if *focus == check && !playonline => *focus = twofa,
                 egui::Key::ArrowRight if *focus == twofa => *focus = check,
                 egui::Key::ArrowRight if *focus == check && update => *focus = upd,
+                egui::Key::ArrowRight if *focus == check && !update && !playonline => *focus = cat,
+                egui::Key::ArrowRight if *focus == upd => *focus = cat,
+                egui::Key::ArrowLeft if *focus == cat => *focus = if update { upd } else { check },
                 egui::Key::ArrowLeft if *focus == upd => *focus = check,
                 egui::Key::ArrowLeft if (first + 1..=first + 2).contains(&*focus) => *focus -= 1,
                 egui::Key::ArrowRight if (first..first + 2).contains(&*focus) => *focus += 1,
@@ -16196,9 +16199,12 @@ impl App {
                         }
                         match act {
                             Some(login_catalogue::Act::Save) => {
-                                if c.save().is_some() {
+                                if let Some(keys) = c.save() {
                                     if let Some(a) = self.audio.as_mut() {
                                         a.ui(crate::audio::Ui::Select);
+                                    }
+                                    if let Some(m) = self.lobby_settings.as_mut().and_then(|s| s.mods_mut()) {
+                                        m.refetch_server(keys);
                                     }
                                     self.login_catalogue = None;
                                 } else if let Some(a) = self.audio.as_mut() {
