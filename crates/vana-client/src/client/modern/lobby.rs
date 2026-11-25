@@ -188,6 +188,17 @@ impl Modern {
                 size,
             );
         }
+        if let Some((r, label)) = &v.catalogue {
+            self.lobby_button(
+                &p,
+                pt(*r).expand2(vec2(4.0, 3.0)),
+                label,
+                v.focus == n + 7 && !v.busy,
+                !v.busy,
+                hover,
+                size,
+            );
+        }
         if let Some((r, label)) = &v.update {
             self.lobby_button(
                 &p,

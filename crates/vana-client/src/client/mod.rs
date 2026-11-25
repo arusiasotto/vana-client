@@ -919,6 +919,8 @@ pub struct LoginView {
     pub buttons: Vec<([f32; 4], &'static str, bool)>,
     /// Two-factor (the focus after Exit), left of the box; none for PlayOnline.
     pub twofa: Option<([f32; 4], &'static str, bool)>,
+    /// Server catalogue repo (n + 7); none for PlayOnline.
+    pub catalogue: Option<([f32; 4], &'static str)>,
     /// Update (the focus after Two-factor), at the box's row's right end; only while something is out of date.
     pub update: Option<([f32; 4], &'static str)>,
     pub focus: usize,
@@ -1020,7 +1022,7 @@ fn login_window(
     let trust_at = n + 6;
     let cat = n + 7;
     let trusting = trust.is_some();
-    if (*focus == upd && !update) || (*focus == trust_at && !trusting) {
+    if (*focus == upd && !update) || (*focus == trust_at && !trusting) || (*focus == cat && playonline) {
         *focus = check;
     }
     let was = *focus;
@@ -1029,6 +1031,7 @@ fn login_window(
         .chain(trusting.then_some(trust_at))
         .chain(n..first + 3)
         .chain((!playonline).then_some(twofa))
+        .chain((!playonline).then_some(cat))
         .chain(update.then_some(upd))
         .collect();
     let (sw, sh) = (size[0] as f32, size[1] as f32);
@@ -1307,8 +1310,12 @@ fn login_window(
                     chosen = Some(LoginChoice::Update);
                     sounds.push(crate::audio::Ui::Select);
                 }
-                egui::Key::Enter => {
-                    let k = focus.saturating_sub(first);
+                egui::Key::Enter if *focus == cat => {
+                    chosen = Some(LoginChoice::Catalogue);
+                    sounds.push(crate::audio::Ui::Select);
+                }
+                egui::Key::Enter if *focus >= first && *focus < first + 3 => {
+                    let k = *focus - first;
                     chosen = enabled[k].then_some(CHOICES[k]);
                     sounds.push(if enabled[k] { crate::audio::Ui::Select } else { crate::audio::Ui::Error });
                 }
@@ -1347,7 +1354,9 @@ fn login_window(
     } else if *focus == trust_at {
         "With two-factor sign-in: log in once with the code, then this computer needs none until the server stops \
          trusting it."
-    } else if *focus >= first && !(if *focus == twofa { filled } else { enabled[*focus - first] }) {
+    } else if *focus == cat {
+        "Set the GitHub repository for this server's mod and DAT catalogue."
+    } else if *focus >= first && *focus < first + 3 && !enabled[*focus - first] {
         if playonline {
             "Enter the PlayOnline ID and password and the Square Enix ID and password first."
         } else {
@@ -1395,6 +1404,7 @@ fn login_window(
             trust: trust.as_deref().map(|t| (trust_rect, TRUST, *t)),
             buttons: (0..3).map(|k| (arects[k], ACTIONS[k], enabled[k])).collect(),
             twofa: tf_rect.map(|r| (r, TF, filled)),
+            catalogue: cat_rect.map(|r| (r, CAT)),
             update: upd_rect.map(|r| (r, UPD)),
             focus: *focus,
             busy,
