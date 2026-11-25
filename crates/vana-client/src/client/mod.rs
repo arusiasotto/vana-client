@@ -1084,14 +1084,13 @@ fn login_window(
     const CAT: &str = "Catalogue";
     let tf_rect = (!playonline)
         .then(|| [wx + 16.0 * f, row(check) + 1.0 * f, ((lu.label_width(TF) + 14.0).max(88.0) * f).round(), 16.0 * f]);
-    let cat_rect = tf_rect.map(|r| {
-        let w = ((lu.label_width(CAT) + 14.0).max(88.0) * f).round();
-        [r[0] + r[2] + 8.0 * f, r[1], w, 16.0 * f]
-    });
-    // Update at the row's other end, under the fields' right edge.
+    // Catalogue on the right of the Remember-password row (Update sits further right when shown).
+    let cat_w = (!playonline).then(|| ((lu.label_width(CAT) + 14.0).max(88.0) * f).round());
+    let cat_rect = cat_w.map(|w| [wx + ww - 16.0 * f - w, row(check) + 1.0 * f, w, 16.0 * f]);
     let upd_rect = update.then(|| {
         let w = (upd_w * f).round();
-        [wx + ww - 16.0 * f - w, row(check) + 1.0 * f, w, 16.0 * f]
+        let x = cat_rect.map_or(wx + ww - 16.0 * f - w, |c| c[0] - 8.0 * f - w);
+        [x, row(check) + 1.0 * f, w, 16.0 * f]
     });
     // A combo field: its arrow at the right end, its list under it.
     let arrow_rect = |i: usize| {
