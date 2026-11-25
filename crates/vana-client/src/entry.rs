@@ -1138,7 +1138,7 @@ fn run_catalogue(cmd: CatalogueCmd) -> Result<()> {
                     println!("key: {key}");
                     if !e.repo.is_empty() {
                         println!("repo: {}", e.repo);
-            }
+                    }
                     if let Some(m) = &e.mods {
                         println!("mods: {m}");
                     }

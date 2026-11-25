@@ -31,6 +31,7 @@ mod regime;
 mod rest;
 mod resttick;
 mod spamfilter;
+mod login_catalogue;
 mod twofa;
 mod uiconf;
 #[cfg(windows)]
@@ -46,6 +47,7 @@ mod bump;
 mod camera;
 mod carrier;
 mod catalogue;
+pub mod catalogue_cfg;
 mod cfgapply;
 mod clock;
 mod configui;
@@ -980,6 +982,8 @@ pub struct LoginView {
     pub buttons: Vec<([f32; 4], &'static str, bool)>,
     /// Two-factor (the focus after Exit), left of the box; none for PlayOnline.
     pub twofa: Option<([f32; 4], &'static str, bool)>,
+    /// Server catalogue repo (n + 7); none for PlayOnline.
+    pub catalogue: Option<([f32; 4], &'static str)>,
     /// Update (the focus after Two-factor), at the box's row's right end; only while something is out of date.
     pub update: Option<([f32; 4], &'static str)>,
     pub focus: usize,
@@ -1031,6 +1035,7 @@ enum LoginChoice {
     Create,
     Exit,
     TwoFa,
+    Catalogue,
     Update,
     Picked(usize),
     Forget(usize, usize),
@@ -1106,8 +1111,9 @@ fn login_window(
     let twofa = n + 4;
     let upd = n + 5;
     let trust_at = n + 6;
+    let cat = n + 7;
     let trusting = trust.is_some();
-    if (*focus == upd && !update) || (*focus == trust_at && !trusting) {
+    if (*focus == upd && !update) || (*focus == trust_at && !trusting) || (*focus == cat && playonline) {
         *focus = check;
     }
     let was = *focus;
@@ -1116,6 +1122,7 @@ fn login_window(
         .chain(trusting.then_some(trust_at))
         .chain(n..first + 3)
         .chain((!playonline).then_some(twofa))
+        .chain((!playonline).then_some(cat))
         .chain(update.then_some(upd))
         .collect();
     let (sw, sh) = (size[0] as f32, size[1] as f32);
@@ -1165,12 +1172,16 @@ fn login_window(
     let enabled = [filled, filled && !playonline, true];
     // Two-factor (also needing them) under the labels, on the box's row.
     const TF: &str = "Account";
+    const CAT: &str = "Catalogue";
     let tf_rect = (!playonline)
         .then(|| [wx + 16.0 * f, row(check) + 1.0 * f, ((lu.label_width(TF) + 14.0).max(88.0) * f).round(), 16.0 * f]);
-    // Update at the row's other end, under the fields' right edge.
+    // Catalogue on the right of the Remember-password row (Update sits further right when shown).
+    let cat_w = (!playonline).then(|| ((lu.label_width(CAT) + 14.0).max(88.0) * f).round());
+    let cat_rect = cat_w.map(|w| [wx + ww - 16.0 * f - w, row(check) + 1.0 * f, w, 16.0 * f]);
     let upd_rect = update.then(|| {
         let w = (upd_w * f).round();
-        [wx + ww - 16.0 * f - w, row(check) + 1.0 * f, w, 16.0 * f]
+        let x = cat_rect.map_or(wx + ww - 16.0 * f - w, |c| c[0] - 8.0 * f - w);
+        [x, row(check) + 1.0 * f, w, 16.0 * f]
     });
     // A combo field: its arrow at the right end, its list under it.
     let arrow_rect = |i: usize| {
@@ -1230,7 +1241,7 @@ fn login_window(
             *focus = trust_at;
         }
     }
-    for (i, r) in [(twofa, tf_rect), (upd, upd_rect)] {
+    for (i, r) in [(twofa, tf_rect), (cat, cat_rect), (upd, upd_rect)] {
         if let Some(r) = r
             && input.pointer.is_some_and(|p| inside(&r, p))
         {
@@ -1270,6 +1281,11 @@ fn login_window(
             *focus = twofa;
             chosen = filled.then_some(LoginChoice::TwoFa);
             sounds.push(if filled { crate::audio::Ui::Select } else { crate::audio::Ui::Error });
+        }
+        if cat_rect.is_some_and(|r| inside(&r, p)) {
+            *focus = cat;
+            chosen = Some(LoginChoice::Catalogue);
+            sounds.push(crate::audio::Ui::Select);
         }
         if upd_rect.is_some_and(|r| inside(&r, p)) {
             *focus = upd;
@@ -1364,6 +1380,9 @@ fn login_window(
                 egui::Key::ArrowLeft if *focus == check && !playonline => *focus = twofa,
                 egui::Key::ArrowRight if *focus == twofa => *focus = check,
                 egui::Key::ArrowRight if *focus == check && update => *focus = upd,
+                egui::Key::ArrowRight if *focus == check && !update && !playonline => *focus = cat,
+                egui::Key::ArrowRight if *focus == upd => *focus = cat,
+                egui::Key::ArrowLeft if *focus == cat => *focus = if update { upd } else { check },
                 egui::Key::ArrowLeft if *focus == upd => *focus = check,
                 egui::Key::ArrowLeft if (first + 1..=first + 2).contains(&*focus) => *focus -= 1,
                 egui::Key::ArrowRight if (first..first + 2).contains(&*focus) => *focus += 1,
@@ -1384,8 +1403,12 @@ fn login_window(
                     chosen = Some(LoginChoice::Update);
                     sounds.push(crate::audio::Ui::Select);
                 }
-                egui::Key::Enter => {
-                    let k = focus.saturating_sub(first);
+                egui::Key::Enter if *focus == cat => {
+                    chosen = Some(LoginChoice::Catalogue);
+                    sounds.push(crate::audio::Ui::Select);
+                }
+                egui::Key::Enter if *focus >= first && *focus < first + 3 => {
+                    let k = *focus - first;
                     chosen = enabled[k].then_some(CHOICES[k]);
                     sounds.push(if enabled[k] { crate::audio::Ui::Select } else { crate::audio::Ui::Error });
                 }
@@ -1424,7 +1447,9 @@ fn login_window(
     } else if *focus == trust_at {
         "With two-factor sign-in: log in once with the code, then this computer needs none until the server stops \
          trusting it."
-    } else if *focus >= first && !(if *focus == twofa { filled } else { enabled[*focus - first] }) {
+    } else if *focus == cat {
+        "Set the GitHub repository for this server's mod and DAT catalogue."
+    } else if *focus >= first && *focus < first + 3 && !enabled[*focus - first] {
         if playonline {
             "Enter the PlayOnline ID and password and the Square Enix ID and password first."
         } else {
@@ -1480,6 +1505,7 @@ fn login_window(
             trust: trust.as_deref().map(|t| (trust_rect, TRUST, *t)),
             buttons: (0..3).map(|k| (arects[k], ACTIONS[k], enabled[k])).collect(),
             twofa: tf_rect.map(|r| (r, TF, filled)),
+            catalogue: cat_rect.map(|r| (r, CAT)),
             update: upd_rect.map(|r| (r, UPD)),
             focus: *focus,
             busy,
@@ -1524,6 +1550,7 @@ fn login_window(
         .enumerate()
         .map(|(k, ((r, a), e))| (first + k, *r, a, e))
         .chain(tf_rect.map(|r| (twofa, r, TF, filled)))
+        .chain(cat_rect.map(|r| (cat, r, CAT, true)))
         .chain(upd_rect.map(|r| (upd, r, UPD, true)));
     for (i, r, name, on_ok) in all {
         let on = *focus == i && !busy;
@@ -8261,6 +8288,7 @@ struct World {
     client_version: String,
     /// The search server from the lobby's reply (+0x40 IP, +0x44 port) and the queries running on it.
     search_addr: (std::net::Ipv4Addr, u16),
+    catalogue_keys: Vec<String>,
     searches: Vec<(std::sync::mpsc::Receiver<anyhow::Result<crate::net::search::Reply>>, search::Then)>,
     /// The search results window ("menu    scresult") and scoption over it.
     search: Option<search::Results>,
@@ -9200,6 +9228,7 @@ pub struct App {
     trust_for: (String, String),
     /// The two-factor window over the login form.
     twofa: Option<twofa::TwoFa>,
+    login_catalogue: Option<login_catalogue::LoginCatalogue>,
     /// The title's Config window (lobycwin) with its values, and our settings screen over the title.
     lobby_cfg: Option<configui::ConfigUi>,
     /// The title's pressed button (menu index), when, and whether the press was taken (loby2win +0x5e / +0x1c).
@@ -9568,6 +9597,7 @@ impl App {
             rename_refused: None,
             trust_for: Default::default(),
             twofa: None,
+            login_catalogue: None,
             lobby_cfg: None,
             title_press: None,
             lobby_values: Default::default(),
@@ -10744,6 +10774,7 @@ impl App {
                             ground: None,
                             name: login.name.clone(),
                             search_addr: login.search,
+                            catalogue_keys: crate::config::active_server_keys(&self.cfg, Some(login.search)),
                             searches: Vec::new(),
                             search: None,
                             search_words: self.search_words.clone(),
@@ -16215,7 +16246,11 @@ impl App {
                         page: false,
                         events: Vec::new(),
                     };
-                    let shown = if self.login_error.is_some() || self.twofa.is_some() || self.update_ui.is_some() {
+                    let shown = if self.login_error.is_some()
+                        || self.twofa.is_some()
+                        || self.update_ui.is_some()
+                        || self.login_catalogue.is_some()
+                    {
                         &none
                     } else {
                         &input
@@ -16226,7 +16261,10 @@ impl App {
                     #[cfg(target_os = "android")]
                     let mut field_ime = None;
                     let update_help = self.update_ui.as_ref().map(|u| u.help());
-                    let help_over = update_help.as_deref().or_else(|| self.twofa.as_ref().map(|t| t.help()));
+                    let help_over = update_help
+                        .as_deref()
+                        .or_else(|| self.login_catalogue.as_ref().map(|c| c.help()))
+                        .or_else(|| self.twofa.as_ref().map(|t| t.help()));
                     // Not retail: Update while something is out of date.
                     let update = self.updates.as_ref().is_some_and(|s| s.lock().unwrap().any());
                     let chosen = login_window(
@@ -16374,9 +16412,63 @@ impl App {
                             None => {}
                         }
                     }
+<<<<<<< HEAD
                     #[cfg(target_os = "android")]
                     if self.twofa.is_some() && self.login_error.is_none() {
                         self.lobby_ime.set(account_ime);
+=======
+                    // Server catalogue repo over the form.
+                    if let Some(c) = self.login_catalogue.as_mut() {
+                        let mut cv = None;
+                        let act = login_catalogue::window(
+                            lu,
+                            &input,
+                            size,
+                            c,
+                            &mut sounds,
+                            modern_ui.then_some(&mut cv),
+                        );
+                        if let Some(v) = &cv {
+                            self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).twofa_window(
+                                ctx,
+                                window,
+                                self.cfg.modern_scale,
+                                self.ui_k,
+                                v,
+                            );
+                        }
+                        match act {
+                            Some(login_catalogue::Act::Save) => {
+                                if let Some(keys) = c.save() {
+                                    if let Some(a) = self.audio.as_mut() {
+                                        a.ui(crate::audio::Ui::Select);
+                                    }
+                                    if let Some(m) = self.lobby_settings.as_mut().and_then(|s| s.mods_mut()) {
+                                        m.refetch_server(keys);
+                                    }
+                                    self.login_catalogue = None;
+                                } else if let Some(a) = self.audio.as_mut() {
+                                    a.ui(crate::audio::Ui::Error);
+                                }
+                            }
+                            Some(login_catalogue::Act::Clear) => {
+                                if let Some(keys) = c.clear() {
+                                    c.text.clear();
+                                    if let Some(a) = self.audio.as_mut() {
+                                        a.ui(crate::audio::Ui::Select);
+                                    }
+                                    if let Some(m) = self.lobby_settings.as_mut().and_then(|s| s.mods_mut()) {
+                                        m.refetch_server(keys);
+                                    }
+                                    self.login_catalogue = None;
+                                } else if let Some(a) = self.audio.as_mut() {
+                                    a.ui(crate::audio::Ui::Error);
+                                }
+                            }
+                            Some(login_catalogue::Act::Close) => self.login_catalogue = None,
+                            None => {}
+                        }
+>>>>>>> 367e8449 (feat(login): Catalogue overlay and lobby entry)
                     }
                     // The Update window over the form (client/updater.rs): before the login, so an old client can
                     // always reach it.
@@ -16664,6 +16756,10 @@ impl App {
                     match chosen.filter(|_| self.login_error.is_none()) {
                         Some(LoginChoice::Exit) => self.exit_requested = true,
                         Some(LoginChoice::TwoFa) => self.twofa = Some(twofa::TwoFa::new()),
+                        Some(LoginChoice::Catalogue) if !is_playonline(&self.cfg.server) => {
+                            let keys = crate::config::active_server_keys(&self.cfg, None);
+                            self.login_catalogue = Some(login_catalogue::LoginCatalogue::new(keys));
+                        }
                         Some(LoginChoice::Update) => {
                             if let Some(s) = self.updates.clone() {
                                 self.update_ui = Some(updater::UpdateUi::open(s, self.cfg.ffxi_dir()));
@@ -17959,6 +18055,7 @@ impl App {
                             let mut s = settings::SettingsUi::open_kind(&self.cfg, window, settings::Kind::Settings);
                             s.in_game = true;
                             s.scope_at = Some(uiconf::at(world));
+                            s.catalogue_keys = crate::config::active_server_keys(&self.cfg, Some(world.search_addr));
                             world.modmgr = Some(modern::ModMgr::new(s, world.lua.settings_pages(&self.cfg.mods), id));
                         }
                     }
