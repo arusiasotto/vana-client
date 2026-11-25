@@ -24,7 +24,15 @@ const PAGE_W: f32 = 800.0;
 const FORMS_W: f32 = 370.0;
 const ROW_H: f32 = 30.0;
 const TABS: [&str; 3] = ["Installed", "Get mods", "DATs"];
+const GET_SRC: [&str; 2] = ["Standard", "Server"];
 const SUBS: [&str; 3] = ["Settings", "Commands", "Permissions"];
+
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+enum ListSource {
+    #[default]
+    Standard,
+    Server,
+}
 const SUB_SETTINGS: usize = 0;
 const SUB_COMMANDS: usize = 1;
 /// Suggestions under a picker field.
@@ -73,6 +81,12 @@ pub struct ModMgr {
     /// The last Run: (mod, the print number then, the line).
     ran: Option<(String, u64, String)>,
     get_row: usize,
+    get_sub: usize,
+    get_source: ListSource,
+    dat_source: ListSource,
+    /// Server catalogue repo typed on Get mods (Server).
+    catalogue_url: String,
+    catalogue_typing: bool,
     /// Get mods' details pages asked for by keys, for the next draw (Page Down +1).
     get_pages: std::cell::Cell<i32>,
     pickers: gm::Pickers,
@@ -83,6 +97,7 @@ impl ModMgr {
     /// The window over SettingsUi `s` (on its Mods page), on mod `id`'s Settings when given.
     pub fn new(mut s: SettingsUi, pages: Vec<ModPage>, id: Option<String>) -> Self {
         s.goto_page(true);
+        let catalogue_url = super::super::catalogue_cfg::repo_for_keys(&s.catalogue_keys);
         let mut mm = Self {
             s,
             pages,
@@ -104,6 +119,11 @@ impl ModMgr {
             owners: HashMap::new(),
             ran: None,
             get_row: 0,
+            get_sub: 0,
+            get_source: ListSource::Standard,
+            dat_source: ListSource::Standard,
+            catalogue_url,
+            catalogue_typing: false,
             get_pages: std::cell::Cell::new(0),
             pickers: gm::Pickers::default(),
             lists_at: None,
@@ -120,7 +140,7 @@ impl ModMgr {
             self.tab = 0;
             self.s.goto_page(true);
         }
-        let n = self.s.mods_rows().0.len();
+        let n = self.s.mods_rows(false).0.len();
         if let Some(i) = (0..n).find(|&i| self.s.mod_id(i).is_some_and(|f| f.eq_ignore_ascii_case(&id))) {
             self.find.clear();
             self.pick(i);
@@ -139,7 +159,7 @@ impl ModMgr {
     /// The installed mods the search lets through, by their place in the list.
     fn shown(&self) -> Vec<usize> {
         let q = self.find.trim().to_lowercase();
-        let rows = self.s.mods_rows().0;
+        let rows = self.s.mods_rows(false).0;
         (0..rows.len())
             .filter(|&i| {
                 q.is_empty()
@@ -151,7 +171,7 @@ impl ModMgr {
 
     /// The picked mod as the page shows it.
     fn picked(&self) -> Option<Sel> {
-        let rows = self.s.mods_rows().0;
+        let rows = self.s.mods_rows(false).0;
         let (name, on) = rows.get(self.sel)?.clone();
         let id = self.s.mod_id(self.sel)?;
         let info = self.s.lua_info.get(&id).cloned().unwrap_or_default();
@@ -495,7 +515,17 @@ fn on_get_mods(w: &World) -> bool {
 fn text(w: &mut World, t: &str) {
     let Some(mm) = w.modmgr.as_mut() else { return };
     let t: String = t.chars().filter(|c| !c.is_control()).collect();
-    if mm.tab != 0 || t.is_empty() || mm.s.m_remove.is_some() {
+    if t.is_empty() {
+        return;
+    }
+    if mm.tab == 1 && mm.catalogue_typing {
+        mm.catalogue_url.push_str(&t);
+        if mm.catalogue_url.chars().count() > 200 {
+            mm.catalogue_url = mm.catalogue_url.chars().take(200).collect();
+        }
+        return;
+    }
+    if mm.tab != 0 || mm.s.m_remove.is_some() {
         return;
     }
     if let Some((_, typed)) = mm.editing.as_mut() {
@@ -534,7 +564,8 @@ fn turn(w: &mut World, t: usize) {
     if t == mm.tab {
         return;
     }
-    (mm.tab, mm.field, mm.finding, mm.get_row) = (t, None, false, 0);
+    (mm.tab, mm.field, mm.finding, mm.get_row, mm.get_sub, mm.catalogue_typing) =
+        (t, None, false, 0, 0, false);
     mm.stop_editing();
     mm.s.goto_page(t != 2);
     if t == 0 {
@@ -553,7 +584,8 @@ fn key(w: &mut World, key: egui::Key, shift: bool) {
         return;
     }
     if mm.s.mods_state().is_some_and(|m| m.browse.is_some()) {
-        config::mods_key(&mut mm.s, key, shift);
+        let mut cat = config::ModsCatalogue::default();
+        config::mods_key(&mut mm.s, key, shift, &mut cat);
         flush(w);
         return;
     }
@@ -568,9 +600,14 @@ fn key(w: &mut World, key: egui::Key, shift: bool) {
         0 => page_key(w, key, shift),
         1 => get_key(w, key, shift),
         _ => {
-            if config::mods_key(&mut mm.s, key, shift) == ModOut::Back {
+            let mut cat = config::ModsCatalogue {
+                server: mm.dat_source == ListSource::Server,
+                dual: true,
+            };
+            if config::mods_key(&mut mm.s, key, shift, &mut cat) == ModOut::Back {
                 mm.open = false;
             }
+            mm.dat_source = if cat.server { ListSource::Server } else { ListSource::Standard };
             flush(w);
         }
     }
@@ -643,7 +680,7 @@ fn all_key(w: &mut World, key: egui::Key) {
 /// Every installed Lua mod with an update, one after another.
 fn update_all(w: &mut World) {
     let Some(mm) = w.modmgr.as_mut() else { return };
-    let n = mm.s.mods_mut().map_or(0, |m| m.update_all(true));
+    let n = mm.s.mods_mut().map_or(0, |m| m.update_all(true, None));
     sound(w, if n > 0 { Se::Select } else { Se::Error });
 }
 
@@ -920,13 +957,65 @@ fn run(w: &mut World, to_chat: bool) {
     sound(w, Se::Select);
 }
 
-/// Get mods' stops: Install from File, the standard mods, the archives found.
-fn get_stops(s: &SettingsUi) -> Vec<Stop> {
+fn get_headers(mm: &ModMgr) -> usize {
+    1 + usize::from(mm.get_source == ListSource::Server)
+}
+
+fn save_catalogue_url(w: &mut World) {
+    let Some(mm) = w.modmgr.as_mut() else { return };
+    let keys = mm.s.catalogue_keys.clone();
+    let text = mm.catalogue_url.clone();
+    mm.catalogue_typing = false;
+    let Some(keys) = super::super::catalogue_cfg::save_repo(&keys, &text) else {
+        return sound(w, Se::Error);
+    };
+    if let Some(m) = mm.s.mods_mut() {
+        m.refetch_server(keys);
+    }
+    sound(w, Se::Select);
+}
+
+fn clear_catalogue_url(w: &mut World) {
+    let Some(mm) = w.modmgr.as_mut() else { return };
+    let keys = mm.s.catalogue_keys.clone();
+    mm.catalogue_url.clear();
+    mm.catalogue_typing = false;
+    let Some(keys) = super::super::catalogue_cfg::clear_repo(&keys) else {
+        return sound(w, Se::Error);
+    };
+    if let Some(m) = mm.s.mods_mut() {
+        m.refetch_server(keys);
+    }
+    sound(w, Se::Select);
+}
+
+/// Get mods' stops: Install from File, Add server (Server tab), the active list's mods, archives found.
+fn get_stops(mm: &ModMgr) -> Vec<Stop> {
+    let s = &mm.s;
     let busy = s.mods_state().is_some_and(|m| m.installing().is_some());
-    let standard = s.mods_state().map_or(Vec::new(), |m| m.standard().iter().map(|(_, st)| st.is_none()).collect());
-    std::iter::once(Stop::Buttons { n: 1, off: busy as u64, pair: None })
-        .chain(standard.into_iter().map(|done| Stop::Buttons { n: 1, off: (busy || done) as u64, pair: None }))
-        .chain(s.mods_rows().1.iter().filter(|o| !o.all).map(|_| Stop::Buttons { n: 1, off: busy as u64, pair: None }))
+    let list: Vec<bool> = s
+        .mods_state()
+        .map_or(Vec::new(), |m| {
+            let rows = if mm.get_source == ListSource::Server {
+                m.server_standard().iter().map(|(_, st)| st.is_none()).collect()
+            } else {
+                m.standard().iter().map(|(_, st)| st.is_none()).collect()
+            };
+            rows
+        });
+    let headers = std::iter::once(Stop::Buttons { n: 1, off: busy as u64, pair: None });
+    let server = mm.get_source == ListSource::Server;
+    let add = server.then_some(Stop::Buttons { n: 3, off: busy as u64, pair: None });
+    headers
+        .chain(add)
+        .chain(list.into_iter().map(|done| Stop::Buttons { n: 1, off: (busy || done) as u64, pair: None }))
+        .chain(
+            s.mods_state()
+                .map_or(Vec::new(), |m| m.offers(true, mm.get_source == ListSource::Server))
+                .into_iter()
+                .filter(|o| !o.all)
+                .map(|_| Stop::Buttons { n: 1, off: busy as u64, pair: None }),
+        )
         .collect()
 }
 
@@ -937,22 +1026,57 @@ fn get_key(w: &mut World, key: egui::Key, shift: bool) {
         mm.get_pages.set(mm.get_pages.get() + if key == egui::Key::PageDown { 1 } else { -1 });
         return;
     }
-    let st = get_stops(&mm.s);
-    let mut at = At::new(mm.get_row.min(st.len() - 1), 0);
+    if mm.catalogue_typing {
+        match key {
+            egui::Key::Backspace => {
+                let n = mm.catalogue_url.chars().count();
+                if n > 0 {
+                    mm.catalogue_url = mm.catalogue_url.chars().take(n - 1).collect();
+                }
+                return;
+            }
+            egui::Key::Escape => {
+                mm.catalogue_typing = false;
+                return sound(w, Se::Cancel);
+            }
+            egui::Key::Enter => {
+                save_catalogue_url(w);
+                return;
+            }
+            egui::Key::ArrowUp | egui::Key::ArrowDown | egui::Key::Tab => mm.catalogue_typing = false,
+            _ => return,
+        }
+    }
+    let st = get_stops(mm);
+    let row = mm.get_row.min(st.len().saturating_sub(1));
+    let sub_cap = match st.get(row) {
+        Some(kit::Stop::Buttons { n, .. }) => n.saturating_sub(1),
+        _ => 0,
+    };
+    let mut at = At::new(row, mm.get_sub.min(sub_cap));
     let act = kit::key(&st, &mut at, key, shift);
     mm.get_row = at.stop;
+    mm.get_sub = at.sub;
     match act {
-        kit::Act::Press(k, _) => get_press(w, k),
+        kit::Act::Press(k, b) => get_press(w, k, b),
         kit::Act::Back => close(w),
         a => w.sounds.extend(a.sound().map(|s| s as u32)),
     }
 }
 
-/// Get mods' row `k` pressed: the file picker, a standard mod installed, an archive installed.
-fn get_press(w: &mut World, k: usize) {
+/// Get mods' row `k` pressed: the file picker, Add server, a standard mod installed, an archive installed.
+fn get_press(w: &mut World, k: usize, b: usize) {
     let Some(mm) = w.modmgr.as_mut() else { return };
     mm.get_row = k;
-    let n = mm.s.mods_state().map_or(0, |m| m.standard().len());
+    mm.get_sub = b;
+    let headers = get_headers(mm);
+    let n = mm.s.mods_state().map_or(0, |m| {
+        if mm.get_source == ListSource::Server {
+            m.server_standard().len()
+        } else {
+            m.standard().len()
+        }
+    });
     if k == 0 {
         if let Some(m) = mm.s.mods_mut() {
             m.browse = Some(super::super::modsui::Browse::open(true));
@@ -960,11 +1084,29 @@ fn get_press(w: &mut World, k: usize) {
         }
         return sound(w, Se::Select);
     }
-    if k <= n {
-        let ok = mm.s.mods_mut().is_some_and(|m| m.install_standard(k - 1));
+    if k == 1 && mm.get_source == ListSource::Server {
+        match b {
+            0 => {
+                mm.catalogue_typing = true;
+                return sound(w, Se::Select);
+            }
+            1 => save_catalogue_url(w),
+            _ => clear_catalogue_url(w),
+        }
+        return;
+    }
+    if k < headers + n {
+        let i = k - headers;
+        let ok = mm.s.mods_mut().is_some_and(|m| {
+            if mm.get_source == ListSource::Server {
+                m.install_server_standard(i)
+            } else {
+                m.install_standard(i)
+            }
+        });
         return sound(w, if ok { Se::Select } else { Se::Error });
     }
-    mm.s.archive_install(k - 1 - n);
+    mm.s.archive_install(k - headers - n, mm.get_source == ListSource::Server);
     flush(w);
 }
 
@@ -984,6 +1126,10 @@ enum Click {
     Remove(bool),
     Get(usize),
     GetPoint(usize),
+    GetSource(usize),
+    CatalogueField,
+    CatalogueSave,
+    CatalogueClear,
     Dats(Vec<ModDo>),
     UpdateAll,
     Close,
@@ -1106,7 +1252,7 @@ fn list(ui: &mut Ui, m: &super::Modern, mm: &ModMgr, updates: &[bool], follow: b
             click.push(Click::Find);
         }
         ui.add_space(6.0);
-        let rows = mm.s.mods_rows().0;
+        let rows = mm.s.mods_rows(false).0;
         let shown = mm.shown();
         if rows.is_empty() {
             note(ui, m, "No mods installed yet: Get mods has ours.", "muted");
@@ -1478,11 +1624,10 @@ fn form(
     }
 }
 
-/// Get mods: Install from File, the standard mods, the archives found; the details of the row under the cursor
-/// (`pages`: their pages asked for by keys).
 fn get_mods(
     ui: &mut Ui,
     m: &super::Modern,
+    mm: &ModMgr,
     s: &SettingsUi,
     row: usize,
     follow: bool,
@@ -1491,9 +1636,9 @@ fn get_mods(
 ) {
     let Some(state) = s.mods_state() else { return };
     let busy = state.installing();
-    let standard = state.standard();
-    // The archives found (Update All is the Installed tab's).
-    let offers: Vec<_> = s.mods_rows().1.into_iter().filter(|o| !o.all).collect();
+    let server = mm.get_source == ListSource::Server;
+    let list = if server { state.server_standard() } else { state.standard() };
+    let offers: Vec<_> = s.offers(true, server).into_iter().filter(|o| !o.all).collect();
     let mut hover = None;
     let tall = ui.ctx().content_rect().height() * 0.45;
     ui.horizontal_top(|ui| {
@@ -1503,6 +1648,38 @@ fn get_mods(
             if kit::clicked(&kit::button(ui, m, "Install from File...", 0.0, b), b) {
                 click.push(Click::Get(0));
             }
+            if server {
+                let font = FontId::proportional(m.theme.small);
+                let field_focus = row == 1 && mm.get_sub == 0;
+                let (_, rect) = kit::line(ui, m, "Add server", field_focus, follow, |ui| {
+                    ui.horizontal(|ui| {
+                        let caret = mm.catalogue_typing.then(|| mm.catalogue_url.chars().count());
+                        let field = kit::field(ui, m, &mm.catalogue_url, caret, 200.0, font.clone(), None);
+                        if ui.rect_contains_pointer(field)
+                            && ui.ctx().input(|i| i.pointer.primary_clicked())
+                        {
+                            click.push(Click::CatalogueField);
+                        }
+                        if mm.catalogue_typing {
+                            kit::ring(ui.painter(), m, field, 6.0);
+                        }
+                        let b_add = Btn { cursor: row == 1 && mm.get_sub == 1, off: busy.is_some(), ..Default::default() };
+                        if kit::clicked(&kit::button(ui, m, "Add", 72.0, b_add), b_add) {
+                            click.push(Click::CatalogueSave);
+                        }
+                        let b_clr = Btn { cursor: row == 1 && mm.get_sub == 2, off: busy.is_some(), ..Default::default() };
+                        if kit::clicked(&kit::button(ui, m, "Clear", 72.0, b_clr), b_clr) {
+                            click.push(Click::CatalogueClear);
+                        }
+                    });
+                });
+                if ui.rect_contains_pointer(rect) {
+                    hover = Some(1);
+                }
+                if kit::row_clicked(ui, rect) {
+                    click.push(Click::GetPoint(1));
+                }
+            }
             if let Some((slug, pm)) = &busy {
                 note(ui, m, &format!("Installing {slug}: {}%", pm / 10), "gold");
             }
@@ -1510,19 +1687,34 @@ fn get_mods(
                 note(ui, m, &format!("The last install failed: {e}"), "hp");
             }
             ui.add_space(6.0);
+            if let Some(k) = kit::tab_strip(ui, m, "get mods src", &GET_SRC, server as usize, true) {
+                click.push(Click::GetSource(k));
+            }
             kit::scroll(ui, "get mods", tall, |ui| {
                 ui.add_space(4.0);
-                heading(ui, m, "Standard mods");
-                if standard.is_empty() {
-                    let text = match &state.list_error {
-                        Some(e) => format!("The standard mods could not be read: {e}"),
-                        None if state.loading() => "Reading the list from GitHub...".into(),
-                        None => "No standard mods are listed.".into(),
+                let title = if server { "Server mods" } else { "Standard mods" };
+                heading(ui, m, title);
+                if list.is_empty() {
+                    let text = if server {
+                        if s.catalogue_keys.is_empty() {
+                            "Set the server on login or paste a catalogue URL.".into()
+                        } else if let Some(e) = state.server_list_error.as_ref() {
+                            format!("The server mods could not be read: {e}")
+                        } else {
+                            "No server catalogue is configured for this server.".into()
+                        }
+                    } else {
+                        match &state.list_error {
+                            Some(e) => format!("The standard mods could not be read: {e}"),
+                            None if state.loading() => "Reading the list from GitHub...".into(),
+                            None => "No standard mods are listed.".into(),
+                        }
                     };
                     note(ui, m, &text, "muted");
                 }
-                for (k, (e, st)) in standard.iter().enumerate() {
-                    let r = k + 1;
+                let headers = get_headers(mm);
+                for (k, (e, st)) in list.iter().enumerate() {
+                    let r = k + headers;
                     let label = match state.progress(&e.id) {
                         Some(pm) => format!("{}%  {} {}", pm / 10, e.name, e.version),
                         None => format!("{} {}", e.name, e.version),
@@ -1550,7 +1742,7 @@ fn get_mods(
                     heading(ui, m, "Found in the Downloads folder");
                 }
                 for (k, o) in offers.iter().enumerate() {
-                    let r = 1 + standard.len() + k;
+                    let r = headers + list.len() + k;
                     let (_, rect) = kit::line_elided(ui, m, &o.label, row == r, follow, |ui| {
                         let b = Btn { cursor: row == r, off: busy.is_some(), ..Default::default() };
                         if kit::clicked(&kit::button(ui, m, o.button, 96.0, b), b) {
@@ -1575,15 +1767,22 @@ fn get_mods(
                     .into(),
                 facts: Vec::new(),
             },
-            r if r <= standard.len() => {
-                let (e, _) = &standard[r - 1];
+            1 if server => Detail {
+                name: "Add server".into(),
+                text: "GitHub repo (owner/repo or URL) with catalogue/mods.json and catalogue/dats.json. Add saves it \
+                    for this server."
+                    .into(),
+                facts: Vec::new(),
+            },
+            r if r >= get_headers(mm) && r < get_headers(mm) + list.len() => {
+                let (e, _) = &list[r - get_headers(mm)];
                 let mut facts = vec![("Version", e.version.clone())];
                 if !e.authors.is_empty() {
                     facts.push(("By", e.authors.join(", ")));
                 }
                 Detail { name: e.name.clone(), text: crate::modpack::with_commands(&e.description, &e.commands), facts }
             }
-            r => offers.get(r - 1 - standard.len()).map_or_else(Detail::default, |o| Detail {
+            r => offers.get(r - get_headers(mm) - list.len()).map_or_else(Detail::default, |o| Detail {
                 name: o.label.clone(),
                 text: o.help.clone(),
                 facts: Vec::new(),
@@ -1668,22 +1867,46 @@ fn apply(w: &mut World, clicks: Vec<Click>) {
             }
             Click::Remove(yes) => {
                 config::remove_answer(&mut mm.s, yes);
-                let n = mm.s.mods_rows().0.len();
+                let n = mm.s.mods_rows(false).0.len();
                 mm.sel = mm.sel.min(n.saturating_sub(1));
                 mm.focus = Focus::List;
                 flush(w);
             }
-            Click::Get(r) => get_press(w, r),
+            Click::Get(r) => {
+                let sub = if r == mm.get_row { mm.get_sub } else { 0 };
+                get_press(w, r, sub);
+            }
+            Click::GetSource(k) => {
+                if k != mm.get_source as usize {
+                    mm.get_source = if k == 0 { ListSource::Standard } else { ListSource::Server };
+                    (mm.get_row, mm.get_sub, mm.catalogue_typing) = (0, 0, false);
+                    if k == 1 {
+                        mm.catalogue_url = super::super::catalogue_cfg::repo_for_keys(&mm.s.catalogue_keys);
+                    }
+                    sound(w, Se::Cursor);
+                }
+            }
+            Click::CatalogueField => {
+                (mm.get_row, mm.get_sub, mm.catalogue_typing) = (1, 0, true);
+            }
+            Click::CatalogueSave => save_catalogue_url(w),
+            Click::CatalogueClear => clear_catalogue_url(w),
             Click::GetPoint(r) => {
-                if mm.get_row != r {
-                    mm.get_row = r;
+                if mm.get_row != r || mm.get_sub != 0 {
+                    (mm.get_row, mm.get_sub) = (r, 0);
+                    mm.catalogue_typing = false;
                     sound(w, Se::Cursor);
                 }
             }
             Click::Dats(act) => {
-                if config::mods_do(&mut mm.s, act) == ModOut::Back {
+                let mut cat = config::ModsCatalogue {
+                    server: mm.dat_source == ListSource::Server,
+                    dual: true,
+                };
+                if config::mods_do(&mut mm.s, act, &mut cat) == ModOut::Back {
                     mm.open = false;
                 }
+                mm.dat_source = if cat.server { ListSource::Server } else { ListSource::Standard };
                 flush(w);
             }
             Click::UpdateAll => {
@@ -1724,7 +1947,7 @@ pub fn draw(p: &mut Panels, w: &mut World) {
     {
         mm.owners = w.lua.command_list().into_iter().filter(|c| !c.id.is_empty()).map(|c| (c.name, c.id)).collect();
     }
-    let Some(mm) = w.modmgr.as_ref() else { return };
+    let Some(mm) = w.modmgr.as_mut() else { return };
     let sel = if mm.tab == 0 { mm.picked() } else { None };
     let replies: Vec<&str> = match (&mm.ran, &sel) {
         (Some((id, seq, _)), Some(s)) if *id == s.id => w.lua.printed_since(id, *seq),
@@ -1756,19 +1979,18 @@ fn fill_pickers(w: &mut World) {
     mm.pickers.fill(&picks, names.as_ref(), people, Vec::new());
 }
 
-fn window(p: &mut Panels, mm: &ModMgr, sel: Option<&Sel>, replies: &[&str]) -> Vec<Click> {
+fn window(p: &mut Panels, mm: &mut ModMgr, sel: Option<&Sel>, replies: &[&str]) -> Vec<Click> {
     let m = p.m;
     let mut click = Vec::new();
     let follow = m.moved(
         "mods window",
         mm.tab * 10_000_000 + mm.sel * 10_000 + mm.at.stop * 100 + mm.at.sub + mm.get_row * 1000 + mm.s.m_mods.0 * 7,
     );
-    let rows = mm.s.mods_rows().0;
+    let rows = mm.s.mods_rows(false).0;
     let updates: Vec<bool> = (0..rows.len())
         .map(|i| {
             let id = mm.s.mod_id(i).unwrap_or_default();
-            mm.s.mods_state()
-                .is_some_and(|s| s.standard().iter().any(|(e, st)| e.id.eq_ignore_ascii_case(&id) && *st == Some(true)))
+            mm.s.mods_state().and_then(|s| s.update_for(&id)).is_some()
         })
         .collect();
     let mut help = String::new();
@@ -1787,12 +2009,13 @@ fn window(p: &mut Panels, mm: &ModMgr, sel: Option<&Sel>, replies: &[&str]) -> V
                 ui.set_min_height(body);
                 match mm.tab {
                     _ if browsing => {
+                        let cat = config::ModsCatalogue::default();
                         let mut act = Vec::new();
-                        config::mods_page(ui, m, &mm.s, true, follow, &mut act);
+                        config::mods_page(ui, m, &mm.s, true, follow, &mut act, &cat);
                         if !act.is_empty() {
                             click.push(Click::Dats(act));
                         }
-                        help = config::mods_help(&mm.s);
+                        help = config::mods_help(&mm.s, &cat);
                     }
                     0 => {
                         let ks = sel.map_or(Vec::new(), |s| kinds(s, mm.sub, mm.form));
@@ -1814,31 +2037,35 @@ fn window(p: &mut Panels, mm: &ModMgr, sel: Option<&Sel>, replies: &[&str]) -> V
                     }
                     1 => {
                         let mut pages = mm.get_pages.take();
-                        get_mods(ui, m, &mm.s, mm.get_row, follow, &mut pages, &mut click);
+                        get_mods(ui, m, mm, &mm.s, mm.get_row, follow, &mut pages, &mut click);
                         help =
                             "Up / Down: a mod. Page Up / Down: scroll its details. Enter: install it (or update it). \
                                 Tab: the next tab. Escape: close."
                                 .into();
                     }
                     _ => {
+                        let cat = config::ModsCatalogue {
+                            server: mm.dat_source == ListSource::Server,
+                            dual: true,
+                        };
                         ui.horizontal_top(|ui| {
                             ui.vertical(|ui| {
                                 ui.set_width(LIST_W + 16.0 + FORMS_W + 60.0);
                                 let mut act = Vec::new();
-                                config::mods_page(ui, m, &mm.s, true, follow, &mut act);
+                                config::mods_page(ui, m, &mm.s, true, follow, &mut act, &cat);
                                 if !act.is_empty() {
                                     click.push(Click::Dats(act));
                                 }
                             });
                             ui.add_space(16.0);
-                            let d = config::row_detail(&mm.s, mm.s.m_mods.0).unwrap_or_else(|| Detail {
+                            let d = config::row_detail(&mm.s, mm.s.m_mods.0, &cat).unwrap_or_else(|| Detail {
                                 name: "DATs".into(),
                                 text: config::DATS_HELP.into(),
                                 facts: Vec::new(),
                             });
                             config::details(ui, m, &d);
                         });
-                        help = config::mods_help(&mm.s);
+                        help = config::mods_help(&mm.s, &cat);
                     }
                 }
             });
