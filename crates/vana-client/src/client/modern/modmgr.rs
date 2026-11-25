@@ -1990,8 +1990,7 @@ fn window(p: &mut Panels, mm: &mut ModMgr, sel: Option<&Sel>, replies: &[&str]) 
     let updates: Vec<bool> = (0..rows.len())
         .map(|i| {
             let id = mm.s.mod_id(i).unwrap_or_default();
-            mm.s.mods_state()
-                .is_some_and(|s| s.standard().iter().any(|(e, st)| e.id.eq_ignore_ascii_case(&id) && *st == Some(true)))
+            mm.s.mods_state().and_then(|s| s.update_for(&id)).is_some()
         })
         .collect();
     let mut help = String::new();
