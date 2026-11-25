@@ -31,6 +31,7 @@ mod regime;
 mod rest;
 mod resttick;
 mod spamfilter;
+mod login_catalogue;
 mod twofa;
 mod uiconf;
 #[cfg(windows)]
@@ -9119,7 +9120,7 @@ pub struct App {
     trust_for: (String, String),
     /// The two-factor window over the login form.
     twofa: Option<twofa::TwoFa>,
-    server_catalogue: Option<catalogue_cfg::CatalogueDialog>,
+    login_catalogue: Option<login_catalogue::LoginCatalogue>,
     /// The title's Config window (lobycwin) with its values, and our settings screen over the title.
     lobby_cfg: Option<configui::ConfigUi>,
     /// The title's pressed button (menu index), when, and whether the press was taken (loby2win +0x5e / +0x1c).
@@ -9478,7 +9479,7 @@ impl App {
             rename_refused: None,
             trust_for: Default::default(),
             twofa: None,
-            server_catalogue: None,
+            login_catalogue: None,
             lobby_cfg: None,
             title_press: None,
             lobby_values: Default::default(),
@@ -16031,7 +16032,11 @@ impl App {
                         page: false,
                         events: Vec::new(),
                     };
-                    let shown = if self.login_error.is_some() || self.twofa.is_some() || self.update_ui.is_some() {
+                    let shown = if self.login_error.is_some()
+                        || self.twofa.is_some()
+                        || self.update_ui.is_some()
+                        || self.login_catalogue.is_some()
+                    {
                         &none
                     } else {
                         &input
@@ -16040,7 +16045,10 @@ impl App {
                     let modern_ui = self.cfg.modern_ui;
                     let mut view = None;
                     let update_help = self.update_ui.as_ref().map(|u| u.help());
-                    let help_over = update_help.as_deref().or_else(|| self.twofa.as_ref().map(|t| t.help()));
+                    let help_over = update_help
+                        .as_deref()
+                        .or_else(|| self.login_catalogue.as_ref().map(|c| c.help()))
+                        .or_else(|| self.twofa.as_ref().map(|t| t.help()));
                     // Not retail: Update while something is out of date.
                     let update = self.updates.as_ref().is_some_and(|s| s.lock().unwrap().any());
                     let chosen = login_window(
@@ -16163,6 +16171,37 @@ impl App {
                                     app.twofa_send(Command::ChangePassword, p, otp, new)
                                 }));
                             }
+                            None => {}
+                        }
+                    }
+                    // Server catalogue repo over the form.
+                    if let Some(c) = self.login_catalogue.as_mut() {
+                        let mut cv = None;
+                        let act = login_catalogue::window(
+                            lu,
+                            &input,
+                            size,
+                            c,
+                            &mut sounds,
+                            modern_ui.then_some(&mut cv),
+                        );
+                        if let Some(v) = &cv {
+                            self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).twofa_window(
+                                ctx,
+                                window,
+                                self.cfg.modern_scale,
+                                self.ui_k,
+                                v,
+                            );
+                        }
+                        match act {
+                            Some(login_catalogue::Act::Save) => {
+                                if c.save().is_some() && let Some(a) = self.audio.as_mut() {
+                                    a.ui(crate::audio::Ui::Select);
+                                }
+                                self.login_catalogue = None;
+                            }
+                            Some(login_catalogue::Act::Close) => self.login_catalogue = None,
                             None => {}
                         }
                     }
@@ -16383,7 +16422,7 @@ impl App {
                         Some(LoginChoice::TwoFa) => self.twofa = Some(twofa::TwoFa::new()),
                         Some(LoginChoice::Catalogue) if !is_playonline(&self.cfg.server) => {
                             let keys = crate::config::active_server_keys(&self.cfg, None);
-                            self.server_catalogue = Some(catalogue_cfg::CatalogueDialog::open(keys));
+                            self.login_catalogue = Some(login_catalogue::LoginCatalogue::new(keys));
                         }
                         Some(LoginChoice::Update) => {
                             if let Some(s) = self.updates.clone() {
