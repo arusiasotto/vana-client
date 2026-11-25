@@ -16196,10 +16196,14 @@ impl App {
                         }
                         match act {
                             Some(login_catalogue::Act::Save) => {
-                                if c.save().is_some() && let Some(a) = self.audio.as_mut() {
-                                    a.ui(crate::audio::Ui::Select);
+                                if c.save().is_some() {
+                                    if let Some(a) = self.audio.as_mut() {
+                                        a.ui(crate::audio::Ui::Select);
+                                    }
+                                    self.login_catalogue = None;
+                                } else if let Some(a) = self.audio.as_mut() {
+                                    a.ui(crate::audio::Ui::Error);
                                 }
-                                self.login_catalogue = None;
                             }
                             Some(login_catalogue::Act::Close) => self.login_catalogue = None,
                             None => {}

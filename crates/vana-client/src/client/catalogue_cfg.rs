@@ -1,6 +1,6 @@
 //! Per-server catalogue repository: one dialog for the login lobby and ModMgr.
 
-use crate::config::{self, ServerCatalogueEntry, ServerCatalogues};
+use crate::config::{self, ServerCatalogues};
 
 /// Saved `owner/repo` for the first key that has one.
 pub fn repo_for_keys(keys: &[String]) -> String {
@@ -15,16 +15,21 @@ pub fn repo_for_keys(keys: &[String]) -> String {
 
 /// Stores `text` as the catalogue repo for `keys` (clears when empty); returns keys for refetch.
 pub fn save_repo(keys: &[String], text: &str) -> Option<Vec<String>> {
+    let trimmed = text.trim();
     let repo = normalize_repo(text);
     let mut store = ServerCatalogues::load();
     if repo.is_empty() {
+        if !trimmed.is_empty() {
+            return None;
+        }
         for key in keys {
             store.clear(key);
         }
     } else {
-        let entry = ServerCatalogueEntry { repo: repo.clone(), ..Default::default() };
         for key in keys {
-            store.set(key, entry.clone());
+            let mut entry = store.get(key).cloned().unwrap_or_default();
+            entry.repo = repo.clone();
+            store.set(key, entry);
         }
         copy_login_to_search(&mut store, keys);
     }
@@ -160,5 +165,7 @@ mod tests {
         assert_eq!(normalize_repo("https://github.com/my-org/vana-server-mods.git/"), "my-org/vana-server-mods");
         assert_eq!(normalize_repo("org/repo"), "org/repo");
         assert!(normalize_repo("").is_empty());
+        assert!(normalize_repo("https://gitlab.com/foo/bar").is_empty());
+        assert!(normalize_repo("not-a-repo").is_empty());
     }
 }
