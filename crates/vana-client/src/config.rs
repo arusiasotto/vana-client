@@ -205,11 +205,14 @@ impl ServerCatalogues {
                 e.dats.clone().or_else(|| (!e.repo.is_empty()).then(|| e.repo.clone()))
             };
             let Some(v) = raw.filter(|s| !s.is_empty()) else { continue };
-            if v.starts_with("http") || v.contains(std::path::MAIN_SEPARATOR) || v.starts_with('/') {
+            if v.starts_with("http") {
                 return Some(v);
             }
             if let Some(u) = expand_server_catalogue(&v, list_file) {
                 return Some(u);
+            }
+            if v.starts_with('/') || v.contains(std::path::MAIN_SEPARATOR) {
+                return Some(v);
             }
         }
         None
@@ -1258,6 +1261,29 @@ mod tests {
     fn regime_moved_with_a_config_copy() {
         assert_eq!(super::regime_moved(false), None);
         assert_eq!(super::regime_moved(true), Some(super::data_dir().join("regime")));
+    }
+
+    #[test]
+    fn expand_github_owner_repo_to_raw_url() {
+        let u = super::expand_server_catalogue("arusiasotto/vana-server-catalogue-template", "mods.json").unwrap();
+        assert_eq!(
+            u,
+            "https://raw.githubusercontent.com/arusiasotto/vana-server-catalogue-template/master/catalogue/mods.json"
+        );
+    }
+
+    #[test]
+    fn server_catalogue_url_for_repo_not_local_path() {
+        let mut store = super::ServerCatalogues::default();
+        store.set(
+            "login:example:54030",
+            super::ServerCatalogueEntry {
+                repo: "arusiasotto/vana-server-catalogue-template".into(),
+                ..Default::default()
+            },
+        );
+        let url = store.url_for(&["login:example:54030".into()], "mods.json").unwrap();
+        assert!(url.starts_with("https://raw.githubusercontent.com/"));
     }
 
     #[test]
