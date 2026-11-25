@@ -7,6 +7,8 @@ pub struct CatalogueDialog {
     pub keys: Vec<String>,
     pub text: String,
     pub label: String,
+    /// The first frame after open: the repo field takes the keyboard.
+    pub focus_field: bool,
     open: bool,
 }
 
@@ -28,7 +30,7 @@ impl CatalogueDialog {
                 }
             }
         }
-        Self { keys, text, label, open: true }
+        Self { keys, text, label, focus_field: true, open: true }
     }
 
     pub fn is_open(&self) -> bool {

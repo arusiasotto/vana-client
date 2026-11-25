@@ -454,9 +454,18 @@ pub fn shown(w: &World) -> bool {
     w.modern && w.modmgr.as_ref().is_some_and(|m| m.open)
 }
 
+fn catalogue_open(w: &World) -> bool {
+    w.modmgr.as_ref().is_some_and(|m| m.open && m.catalogue.is_some())
+}
+
 /// The window takes the keys (no chat line, prompt or event over it).
 pub fn takes_keys(w: &World) -> bool {
-    shown(w) && !w.typing && w.prompt.is_none() && w.confirm.is_none() && !super::super::event::active(w)
+    shown(w)
+        && !catalogue_open(w)
+        && !w.typing
+        && w.prompt.is_none()
+        && w.confirm.is_none()
+        && !super::super::event::active(w)
 }
 
 /// `/lua mods`, Settings > Mods: the window (the app makes it), on mod `id`'s Settings when given.
@@ -470,6 +479,17 @@ pub fn open(w: &mut World, id: Option<String>) {
 
 /// Typed text and keys while it is open. True when it took them.
 pub fn events(w: &mut World, events: &[egui::Event]) -> bool {
+    if catalogue_open(w) {
+        for e in events {
+            if let egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } = e
+                && let Some(mm) = w.modmgr.as_mut()
+            {
+                mm.catalogue = None;
+                return true;
+            }
+        }
+        return false;
+    }
     if !takes_keys(w) {
         return false;
     }
@@ -1543,11 +1563,20 @@ fn form(
 fn catalogue_dialog(ui: &mut Ui, m: &super::Modern, mm: &mut ModMgr, click: &mut Vec<Click>) {
     let Some(d) = mm.catalogue.as_mut() else { return };
     egui::Window::new("Server catalogue")
+        .id(egui::Id::new("server_catalogue"))
         .collapsible(false)
         .resizable(false)
         .show(ui.ctx(), |ui| {
             ui.label("Catalogue repository (GitHub):");
-            ui.text_edit_singleline(&mut d.text);
+            let want_focus = d.focus_field;
+            if want_focus {
+                d.focus_field = false;
+            }
+            let response =
+                ui.add(egui::TextEdit::singleline(&mut d.text).desired_width(ui.available_width()));
+            if want_focus {
+                response.request_focus();
+            }
             ui.label("https://github.com/my-org/vana-server-mods");
             ui.horizontal(|ui| {
                 let b = Btn::default();
