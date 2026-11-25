@@ -13,6 +13,19 @@ pub fn repo_for_keys(keys: &[String]) -> String {
     String::new()
 }
 
+/// Clears the saved catalogue repo for `keys`; returns them for refetch on success.
+pub fn clear_repo(keys: &[String]) -> Option<Vec<String>> {
+    let mut store = ServerCatalogues::load();
+    for key in keys {
+        store.clear(key);
+    }
+    if let Err(e) = store.save() {
+        log::warn!("server catalogues: {e:#}");
+        return None;
+    }
+    Some(keys.to_vec())
+}
+
 /// Stores `text` as the catalogue repo for `keys` (clears when empty); returns keys for refetch.
 pub fn save_repo(keys: &[String], text: &str) -> Option<Vec<String>> {
     let trimmed = text.trim();

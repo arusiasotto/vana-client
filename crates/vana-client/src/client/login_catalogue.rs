@@ -18,6 +18,7 @@ pub struct LoginCatalogue {
 
 pub enum Act {
     Save,
+    Clear,
     Close,
 }
 
@@ -31,9 +32,13 @@ impl LoginCatalogue {
         catalogue_cfg::save_repo(&self.keys, &self.text)
     }
 
+    pub fn clear(&self) -> Option<Vec<String>> {
+        catalogue_cfg::clear_repo(&self.keys)
+    }
+
     pub fn help(&self) -> &'static str {
-        "Paste the GitHub repo with catalogue/mods.json and catalogue/dats.json. Save or Enter stores it for this \
-         server."
+        "Paste the GitHub repo with catalogue/mods.json and catalogue/dats.json. Save or Enter stores it; Clear \
+         removes the saved repo for this server."
     }
 
     fn type_in(&mut self, t: &str) {
@@ -78,7 +83,7 @@ fn layout(lu: &GameUi, size: [u32; 2], text: &str, f: f32) -> Lay {
         push(&mut lines, &mut y, HINT.into(), GREY, false);
     }
     y += 8.0 * f;
-    const NAMES: [&str; 2] = ["Save", "Cancel"];
+    const NAMES: [&str; 3] = ["Save", "Clear", "Cancel"];
     let widths: Vec<f32> = NAMES.iter().map(|n| ((lu.label_width(n) + 14.0).max(88.0) * f).round()).collect();
     let mut x = (ww - widths.iter().sum::<f32>() - 24.0 * f) / 2.0;
     let buttons: Vec<_> = widths
@@ -113,6 +118,7 @@ pub fn window(
     let hover_moves = modern.is_none();
     let lay = layout(lu, size, &st.text, f);
     const FIELD: usize = 1;
+    const CLEAR_BTN: usize = 2;
     let items = FIELD + lay.buttons.len();
     let was = st.focus;
     let mut press = None;
@@ -159,13 +165,14 @@ pub fn window(
         });
         match i {
             FIELD => act = Some(Act::Save),
+            CLEAR_BTN => act = Some(Act::Clear),
             _ => act = Some(Act::Close),
         }
     } else if st.focus != was {
         sounds.push(crate::audio::Ui::Cursor);
     }
     let lay = layout(lu, size, &st.text, f);
-    let names: [&str; 2] = ["Save", "Cancel"];
+    let names: [&str; 3] = ["Save", "Clear", "Cancel"];
     if let Some(out) = modern {
         *out = Some(View {
             frame: lay.frame,

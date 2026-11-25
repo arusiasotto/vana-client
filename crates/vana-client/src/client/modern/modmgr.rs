@@ -969,6 +969,20 @@ fn save_catalogue_url(w: &mut World) {
     sound(w, Se::Select);
 }
 
+fn clear_catalogue_url(w: &mut World) {
+    let Some(mm) = w.modmgr.as_mut() else { return };
+    let keys = mm.s.catalogue_keys.clone();
+    mm.catalogue_url.clear();
+    mm.catalogue_typing = false;
+    let Some(keys) = super::super::catalogue_cfg::clear_repo(&keys) else {
+        return sound(w, Se::Error);
+    };
+    if let Some(m) = mm.s.mods_mut() {
+        m.refetch_server(keys);
+    }
+    sound(w, Se::Select);
+}
+
 /// Get mods' stops: Install from File, Add server (Server tab), the active list's mods, archives found.
 fn get_stops(mm: &ModMgr) -> Vec<Stop> {
     let s = &mm.s;
@@ -985,7 +999,7 @@ fn get_stops(mm: &ModMgr) -> Vec<Stop> {
         });
     let headers = std::iter::once(Stop::Buttons { n: 1, off: busy as u64, pair: None });
     let server = mm.get_source == ListSource::Server;
-    let add = server.then_some(Stop::Buttons { n: 2, off: busy as u64, pair: None });
+    let add = server.then_some(Stop::Buttons { n: 3, off: busy as u64, pair: None });
     headers
         .chain(add)
         .chain(list.into_iter().map(|done| Stop::Buttons { n: 1, off: (busy || done) as u64, pair: None }))
@@ -1028,7 +1042,12 @@ fn get_key(w: &mut World, key: egui::Key, shift: bool) {
         }
     }
     let st = get_stops(mm);
-    let mut at = At::new(mm.get_row.min(st.len() - 1), mm.get_sub.min(1));
+    let row = mm.get_row.min(st.len().saturating_sub(1));
+    let sub_cap = match st.get(row) {
+        Some(kit::Stop::Buttons { n, .. }) => n.saturating_sub(1),
+        _ => 0,
+    };
+    let mut at = At::new(row, mm.get_sub.min(sub_cap));
     let act = kit::key(&st, &mut at, key, shift);
     mm.get_row = at.stop;
     mm.get_sub = at.sub;
@@ -1060,11 +1079,14 @@ fn get_press(w: &mut World, k: usize, b: usize) {
         return sound(w, Se::Select);
     }
     if k == 1 && mm.get_source == ListSource::Server {
-        if b == 0 {
-            mm.catalogue_typing = true;
-            return sound(w, Se::Select);
+        match b {
+            0 => {
+                mm.catalogue_typing = true;
+                return sound(w, Se::Select);
+            }
+            1 => save_catalogue_url(w),
+            _ => clear_catalogue_url(w),
         }
-        save_catalogue_url(w);
         return;
     }
     if k < headers + n {
@@ -1102,6 +1124,7 @@ enum Click {
     DatSource(usize),
     CatalogueField,
     CatalogueSave,
+    CatalogueClear,
     Dats(Vec<ModDo>),
     UpdateAll,
     Close,
@@ -1635,9 +1658,13 @@ fn get_mods(
                         if mm.catalogue_typing {
                             kit::ring(ui.painter(), m, field, 6.0);
                         }
-                        let b = Btn { cursor: row == 1 && mm.get_sub == 1, off: busy.is_some(), ..Default::default() };
-                        if kit::clicked(&kit::button(ui, m, "Add", 72.0, b), b) {
+                        let b_add = Btn { cursor: row == 1 && mm.get_sub == 1, off: busy.is_some(), ..Default::default() };
+                        if kit::clicked(&kit::button(ui, m, "Add", 72.0, b_add), b_add) {
                             click.push(Click::CatalogueSave);
+                        }
+                        let b_clr = Btn { cursor: row == 1 && mm.get_sub == 2, off: busy.is_some(), ..Default::default() };
+                        if kit::clicked(&kit::button(ui, m, "Clear", 72.0, b_clr), b_clr) {
+                            click.push(Click::CatalogueClear);
                         }
                     });
                 });
@@ -1864,6 +1891,7 @@ fn apply(w: &mut World, clicks: Vec<Click>) {
                 (mm.get_row, mm.get_sub, mm.catalogue_typing) = (1, 0, true);
             }
             Click::CatalogueSave => save_catalogue_url(w),
+            Click::CatalogueClear => clear_catalogue_url(w),
             Click::GetPoint(r) => {
                 if mm.get_row != r || mm.get_sub != 0 {
                     (mm.get_row, mm.get_sub) = (r, 0);

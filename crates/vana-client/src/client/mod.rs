@@ -16211,6 +16211,20 @@ impl App {
                                     a.ui(crate::audio::Ui::Error);
                                 }
                             }
+                            Some(login_catalogue::Act::Clear) => {
+                                if let Some(keys) = c.clear() {
+                                    c.text.clear();
+                                    if let Some(a) = self.audio.as_mut() {
+                                        a.ui(crate::audio::Ui::Select);
+                                    }
+                                    if let Some(m) = self.lobby_settings.as_mut().and_then(|s| s.mods_mut()) {
+                                        m.refetch_server(keys);
+                                    }
+                                    self.login_catalogue = None;
+                                } else if let Some(a) = self.audio.as_mut() {
+                                    a.ui(crate::audio::Ui::Error);
+                                }
+                            }
                             Some(login_catalogue::Act::Close) => self.login_catalogue = None,
                             None => {}
                         }
