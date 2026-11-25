@@ -85,9 +85,26 @@ pub enum List {
     Mods,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Source {
+    Standard,
+    Server,
+}
+
+impl Source {
+    fn cache_name(self, list: List) -> &'static str {
+        match (self, list) {
+            (Source::Standard, List::Mods) => "standard/mods.json",
+            (Source::Standard, List::Dats) => "standard/dats.json",
+            (Source::Server, List::Mods) => "server/mods.json",
+            (Source::Server, List::Dats) => "server/dats.json",
+        }
+    }
+}
+
 impl List {
     /// Its file in catalogue/ (and the copy kept from the last fetch).
-    fn file(self) -> &'static str {
+    pub fn file(self) -> &'static str {
         match self {
             List::Dats => "dats.json",
             List::Mods => "mods.json",
@@ -99,6 +116,13 @@ impl List {
         match self {
             List::Dats => "VANA_DAT_CATALOGUE",
             List::Mods => "VANA_MOD_CATALOGUE",
+        }
+    }
+
+    fn server_env(self) -> &'static str {
+        match self {
+            List::Dats => "VANA_SERVER_DAT_CATALOGUE",
+            List::Mods => "VANA_SERVER_MOD_CATALOGUE",
         }
     }
 }
@@ -156,36 +180,73 @@ pub fn parse(text: &str, any_host: bool) -> Result<Vec<Entry>> {
         .collect())
 }
 
-/// A list: fetched, else the copy kept from the last fetch; only its kind's entries (packs or Lua mods).
-/// VANA_DAT_CATALOGUE / VANA_MOD_CATALOGUE: another list (a URL or a file).
-pub fn fetch(list: List) -> Result<Vec<Entry>> {
+pub fn fetch_from(source: Source, list: List, server_keys: &[String]) -> Result<Vec<Entry>> {
     let want = |e: &Entry| (e.kind != "lua") == (list == List::Dats);
-    fetch_all(list).map(|v| v.into_iter().filter(want).collect())
+    fetch_all(source, list, server_keys).map(|v| v.into_iter().filter(want).collect())
 }
 
-fn fetch_all(list: List) -> Result<Vec<Entry>> {
-    let over = std::env::var(list.env()).ok();
-    let kept = crate::config::catalogue_dir().join(list.file());
-    let got = match over.as_deref() {
-        Some(p) if !p.starts_with("http") => std::fs::read_to_string(p).with_context(|| p.to_string()),
-        Some(u) => super::updater::get_text(u),
-        None => super::updater::get_text(&url(list)),
+fn migrate_flat_cache(list: List) {
+    let dir = crate::config::catalogue_dir();
+    let flat = dir.join(list.file());
+    let standard = dir.join("standard").join(list.file());
+    if flat.is_file() && !standard.is_file() {
+        let _ = std::fs::create_dir_all(standard.parent().unwrap_or(Path::new(".")));
+        let _ = std::fs::rename(&flat, &standard);
+    }
+}
+
+fn resolve_url(source: Source, list: List, server_keys: &[String]) -> (Option<String>, bool) {
+    match source {
+        Source::Standard => {
+            let over = std::env::var(list.env()).ok();
+            (over.clone().or_else(|| Some(url(list))), over.is_some())
+        }
+        Source::Server => {
+            if let Ok(over) = std::env::var(list.server_env()) {
+                return (Some(over), true);
+            }
+            let store = crate::config::ServerCatalogues::load();
+            let u = store.url_for(server_keys, list.file());
+            (u.clone(), u.is_some())
+        }
+    }
+}
+
+fn fetch_all(source: Source, list: List, server_keys: &[String]) -> Result<Vec<Entry>> {
+    if source == Source::Standard {
+        migrate_flat_cache(list);
+    }
+    let (resolved, any_host) = resolve_url(source, list, server_keys);
+    let Some(fetch_url) = resolved else {
+        return Ok(Vec::new());
     };
+    let kept = crate::config::catalogue_dir().join(source.cache_name(list));
+    let got = if !fetch_url.starts_with("http") {
+        std::fs::read_to_string(&fetch_url).with_context(|| fetch_url.clone())
+    } else {
+        super::updater::get_text(&fetch_url)
+    };
+    let keep = source == Source::Standard && std::env::var(list.env()).is_err()
+        || source == Source::Server && std::env::var(list.server_env()).is_err();
     match got {
         Ok(text) => {
-            let list = parse(&text, over.is_some())?;
-            if over.is_none() {
+            let entries = parse(&text, any_host)?;
+            if keep {
                 let _ = std::fs::create_dir_all(kept.parent().unwrap_or(Path::new(".")));
                 let _ = std::fs::write(&kept, &text);
             }
-            Ok(list)
+            Ok(entries)
         }
-        Err(e) if over.is_none() => {
-            log::info!("mod catalogue: {e:#}; using the last copy");
+        Err(e) if keep => {
+            log::info!("mod catalogue ({source:?}): {e:#}; using the last copy");
             parse(&std::fs::read_to_string(&kept).map_err(|_| e)?, false)
         }
         Err(e) => Err(e),
     }
+}
+
+pub fn clear_cache(source: Source, list: List) {
+    let _ = std::fs::remove_file(crate::config::catalogue_dir().join(source.cache_name(list)));
 }
 
 /// The material pack's id: its folder in the data folder (material::dir).
