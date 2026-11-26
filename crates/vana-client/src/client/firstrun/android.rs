@@ -486,7 +486,8 @@ impl FirstRun {
         let two_cols = screen.width() / ppp >= 480.0;
         let margin = if two_cols { 14.0 } else { 8.0 };
         let panel_w = (screen.width() - margin * 2.0).max(280.0);
-        let scroll_max = (screen.height() - 44.0).max(120.0);
+        let pinned_footer = failed.is_some() || cleanup.is_some();
+        let scroll_max = (screen.height() - 44.0 - if pinned_footer { 56.0 } else { 0.0 }).max(120.0);
         ctx.layer_painter(egui::LayerId::background()).rect_filled(
             screen,
             0.0,
@@ -515,9 +516,9 @@ impl FirstRun {
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             match (&failed, working, &cleanup, recovery) {
-                                (Some(e), _, _, _) => self.failed_ui(ui, e, &mut action),
+                                (Some(e), _, _, _) => self.failed_body(ui, e),
                                 (None, true, _, _) => self.progress_ui(ui),
-                                (None, false, Some(stash), _) => self.cleanup_offer_ui(ui, stash, &mut action),
+                                (None, false, Some(stash), _) => self.cleanup_offer_body(ui, stash),
                                 (None, false, None, true) => self.recovery_ui(ui, &mut action),
                                 (None, false, None, false) => {
                                     self.ask_ui_scroll(ui, two_cols);
@@ -527,6 +528,11 @@ impl FirstRun {
                                 }
                             }
                         });
+                    if let Some(e) = &failed {
+                        self.failed_actions(ui, e, &mut action);
+                    } else if let Some(stash) = &cleanup {
+                        self.cleanup_offer_actions(ui, stash, &mut action);
+                    }
                 });
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(if working || wiping { 250 } else { 16 }));
@@ -877,17 +883,20 @@ impl FirstRun {
         });
     }
 
-    fn cleanup_offer_ui(&mut self, ui: &mut egui::Ui, stash: &Path, action: &mut Action) {
+    fn cleanup_offer_body(&mut self, ui: &mut egui::Ui, stash: &Path) {
         ui.label(egui::RichText::new("Installation finished.").size(16.0));
         let gb = crate::install::installer_dir_bytes(stash) as f64 / 1e9;
         ui.label(
             egui::RichText::new(format!(
-                "The five installer volumes are in {} ({gb:.1} GB). Delete them only if you accept — they are not removed automatically.",
+                "Installer volumes are in {} ({gb:.1} GB). They stay on disk unless you delete them.",
                 short_path(stash)
             ))
             .size(13.0)
             .weak(),
         );
+    }
+
+    fn cleanup_offer_actions(&mut self, ui: &mut egui::Ui, stash: &Path, action: &mut Action) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button(egui::RichText::new("Delete installer files").size(16.0)).clicked() {
@@ -904,10 +913,14 @@ impl FirstRun {
         });
     }
 
-    fn failed_ui(&mut self, ui: &mut egui::Ui, failed: &str, action: &mut Action) {
+    fn failed_body(&mut self, ui: &mut egui::Ui, failed: &str) {
         ui.label("It did not finish:");
         ui.label(egui::RichText::new(failed).weak().size(13.0));
-        ui.horizontal(|ui| {
+    }
+
+    fn failed_actions(&mut self, ui: &mut egui::Ui, _failed: &str, action: &mut Action) {
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Try again").clicked() {
                 *self.stage.lock().unwrap() = Stage::Ask;
                 *action = self.begin_install();
