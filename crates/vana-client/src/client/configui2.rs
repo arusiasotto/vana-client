@@ -909,7 +909,7 @@ pub fn draw(
                 gu.sprite("menu    windowps", 74, cx, cy, if on { 0x8080_5020 } else { 0x8080_8080 });
                 text_b(gu, row.0, cx + 30.0, cy, white);
                 if on {
-                    gu.cursor(cx, cy);
+                    gu.cursor_child(&name, id, cx, cy, x, y);
                 }
             }
             // FUN_10198620: 11 rows, total the category's colours.

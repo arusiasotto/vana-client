@@ -1,18 +1,18 @@
 -- The set builder's picks. For a set at the player's level:
 --   1. the reference is the set's best piece per slot at the level cap (75 or 99): a curated list where one exists,
 --      else the best-scoring piece in the whole item list the job and race can wear at the cap;
---   2. each slot gets the owned piece, wearable now, that gives the most of that reference's weighted stats (its share);
---   3. below MIN_SHARE (nothing close to it) the slot takes the owned piece the set's weights score highest;
---   4. separately, "worth getting": the best piece by the same rule from every item wearable at this level, if it
---      beats the owned pick.
+--   2. each slot gets the reference itself when we hold it, else the owned piece, wearable now, that the set's
+--      weights score highest (with the caps the other picks leave);
+--   3. separately, "worth getting": the highest-scoring piece from every item wearable at this level, if it beats
+--      the owned pick (worth_bag: the bag it is kept in when we hold it where it cannot be worn from).
 -- Weapons (main, sub, range) are picked only in sets that swap them (mages' idle and casting sets); the others keep
 -- what is worn.
 
 local stats = require("src.build.stats")
+local sets = require("src.build.sets")
 
 local M = {}
 
-M.MIN_SHARE = 0.25
 M.SLOT_NAMES = { [0] = "main", "sub", "range", "ammo", "head", "body", "hands", "legs", "feet", "neck", "waist",
   "left_ear", "right_ear", "left_ring", "right_ring", "back" }
 local WEAPON_SLOTS = { [0] = true, [1] = true, [2] = true }
@@ -95,17 +95,22 @@ end
 
 -- ---- What may go in a slot ----
 
--- Job and race may wear it, in this slot, at this level (nil: any level).
-function M.fits(rec, slot, job_id, race, level)
+-- Job and race may wear it, in this slot, at this level and superior level (nil: any).
+function M.fits(rec, slot, job_id, race, level, su)
   if not rec or not rec.slots or rec.slots & (1 << slot) == 0 then return false end
   if rec.jobs & (1 << job_id) == 0 then return false end
   if race and rec.races and rec.races & (1 << race) == 0 then return false end
   if level and (rec.level or 0) > level then return false end
-  if (rec.superior_level or 0) > 0 then return false end
+  if su and (rec.superior_level or 0) > su then return false end
   -- Pieces that take a second slot (a suit, a cloak: "Cannot equip leggear") are left out *(not modelled yet)*.
   if rec.description and rec.description:find("Cannot [Ee]quip") then return false end
   return true
 end
+
+-- Item flags: Rare (one may be held) and GM-only (flag 0x2, inferred: only the "GMs Only" Judge's pieces carry it).
+local FLAG_RARE, FLAG_GM = 0x8000, 0x0002
+function M.rare(rec) return rec ~= nil and (rec.flags or 0) & FLAG_RARE ~= 0 end
+function M.gm_only(rec) return rec ~= nil and (rec.flags or 0) & FLAG_GM ~= 0 end
 
 -- A sub-slot piece that goes with the main (a grip under a two-handed weapon, else no grip).
 local function sub_ok(rec, main_rec)
@@ -175,29 +180,41 @@ function M.best_by_score(cands, set)
   return picks
 end
 
--- The candidate giving the most of the reference's kind of stats, among those at least MIN_SHARE alike; with its
--- share (nil when none is alike enough).
-local function by_share(cands, ref, set, used)
-  local best, best_sh, best_al = nil, nil, 0
-  for _, c in ipairs(cands) do
-    M.pace()
-    if not (c.key and used[c.key]) then
-      local sh, al = M.share(c.s, ref, set)
-      if sh >= M.MIN_SHARE and al > best_al then best, best_sh, best_al = c, sh, al end
-    end
-  end
-  return best, best_sh
+-- In the sets worn between actions (combat, idle, defence), a slot the set's weights give nothing from any held piece
+-- takes the generally strongest one instead of none: defence, attributes, accuracy, attack and evasion. Not weapons
+-- or ammo (a swap there costs TP or is used up), and not in action sets, where an empty slot keeps what is on.
+local GENERAL = { weights = { def = 0.2, hp = 0.05, mp = 0.03, str = 0.5, dex = 0.5, vit = 0.5, agi = 0.5, int = 0.5,
+  mnd = 0.5, chr = 0.5, acc = 0.3, att = 0.3, eva = 0.3, meva = 0.3 } }
+local NO_FILL = { [0] = true, [1] = true, [2] = true, [3] = true }
+local FILL_GROUPS = { ["Combat"] = true, ["Idle and Defence"] = true }
+-- Element gear goes on by the day, the weather or the weapon skill (run.lua), never as filler.
+local ELEMENT_GEAR = { [sets.OBI_ALL] = true }
+for _, t in ipairs({ sets.OBIS, sets.GORGETS, sets.BELTS, sets.FOTIA }) do
+  for _, n in pairs(t) do ELEMENT_GEAR[n] = true end
 end
 
--- The pieces the job and race may wear in each slot at a level (nil: any), from the index: {slot = {{id, rec, s}}},
--- stats read as they go. Paced.
-function M.candidates(index, job_id, race, level)
+-- The highest-scoring piece of a list not used yet.
+local function best_unused(cands, set, used)
+  local best, bv = nil, 0
+  for _, c in ipairs(cands or {}) do
+    if not (c.key and used[c.key]) then
+      local v = M.score(c.s, set)
+      if v > bv then best, bv = c, v end
+    end
+    M.pace()
+  end
+  return best
+end
+
+-- The pieces the job and race may wear in each slot at a level and superior level (nil: any), from the index:
+-- {slot = {{id, rec, s}}}, stats read as they go. Paced.
+function M.candidates(index, job_id, race, level, su)
   local out = {}
   for slot = 0, 15 do
     local list = {}
     for _, id in ipairs(index[slot] or {}) do
       local rec = M.item(id)
-      if M.fits(rec, slot, job_id, race, level) then
+      if M.fits(rec, slot, job_id, race, level, su) and not M.gm_only(rec) then
         list[#list + 1] = { id = id, key = id, rec = rec, s = M.stats_of(id) }
       end
       M.pace()
@@ -207,8 +224,9 @@ function M.candidates(index, job_id, race, level)
   return out
 end
 
--- Builds one set. ctx: job (e.g. "WAR"), job_id, race, level, owned (list of {id, key, augments}), at_cap and
--- at_level (M.candidates at the cap and at our level), bis (curated {slot = item name or id} or nil), names (name -> id).
+-- Builds one set. ctx: job (e.g. "WAR"), job_id, race, level, su (our superior level), owned (list of {id, key,
+-- augments}), at_cap and at_level (M.candidates at the cap and at our level), bis (curated {slot = item name or id}
+-- or nil), names (name -> id).
 -- Returns {slots = {slot = {pick, share, how, ref, worth}}, score}.
 function M.build(ctx, set, set_name)
   -- Only pure mages swap weapons (main, sub or range resets TP), and not in melee sets.
@@ -220,7 +238,7 @@ function M.build(ctx, set, set_name)
   for _, o in ipairs(ctx.owned) do
     local rec = M.item(o.id)
     for slot = 0, 15 do
-      if wanted(slot) and M.fits(rec, slot, ctx.job_id, ctx.race, ctx.level) then
+      if wanted(slot) and M.fits(rec, slot, ctx.job_id, ctx.race, ctx.level, ctx.su) then
         owned[slot] = owned[slot] or {}
         table.insert(owned[slot], { id = o.id, key = o.key, rec = rec, s = M.stats_of(o.id, o.augments), owned = o })
       end
@@ -249,29 +267,66 @@ function M.build(ctx, set, set_name)
       end
     end
     if id and wanted(slot) then
-      ref[slot] = { id = id, s = M.stats_of(id), rec = M.item(id) }
+      ref[slot] = { id = id, s = M.stats_of(id), rec = M.item(id), curated = true }
     elseif auto[slot] then
       ref[slot] = auto[slot]
     end
   end
+  -- A Rare piece is held once: when both of a pair name it, the automatic one (else the second) takes the next best.
+  for a, b in pairs({ [11] = 12, [13] = 14 }) do
+    local ra, rb = ref[a], ref[b]
+    if ra and rb and ra.id == rb.id and M.rare(ra.rec) then
+      local slot = (rb.curated and not ra.curated) and a or b
+      local best, bv = nil, 0
+      for _, c in ipairs(cap_cands[slot] or {}) do
+        local v = M.score(c.s, set)
+        if c.id ~= ra.id and v > bv then best, bv = c, v end
+        M.pace()
+      end
+      ref[slot] = best
+    end
+  end
 
-  -- The owned picks: the most of the reference, else the set's best.
+  -- The owned picks: the best in slot itself when we hold it, else the set's best.
   local by_score = M.best_by_score(owned, set)
+  local fill = set_name ~= "Movement" and FILL_GROUPS[sets.group(set_name, set)]
   local out = { slots = {}, score = 0 }
   local used = {}
+  -- The best in slot itself, when we hold it: the guides weigh what the set's weights miss. Every slot claims its
+  -- own first, so a pair's left slot cannot take the right slot's reference by score.
+  local held = {}
+  for slot = 0, 15 do
+    local r = ref[slot]
+    for _, c in ipairs(r and owned[slot] or {}) do
+      if c.id == r.id and not (c.key and used[c.key]) then
+        held[slot] = c
+        if c.key then used[c.key] = true end
+        break
+      end
+    end
+  end
   for slot = 0, 15 do
     local list = owned[slot]
     local r = ref[slot]
-    local pick, share, how
-    if list and r and M.score(r.s, set) > 0 then
-      pick, share = by_share(list, r.s, set, used)
-      how = pick and "bis" or nil
+    local pick, share, how = held[slot], nil, nil
+    if pick then how = "bis" end
+    if not pick then
+      pick = by_score[slot]
+      -- Taken by another slot (its best in slot): the next best.
+      if pick and pick.key and used[pick.key] then pick = best_unused(list, set, used) end
+      how = pick and "score" or nil
     end
-    if not pick and by_score[slot] and not (by_score[slot].key and used[by_score[slot].key]) then
-      pick, how = by_score[slot], "score"
-      share = r and (M.share(pick.s, r.s, set)) or nil
+    -- A piece giving the set nothing is left off, unless it is the best in slot (its worth is what the weights miss).
+    if pick and how ~= "bis" and M.score(pick.s, set) <= 0 then pick, how = nil, nil end
+    if not pick and not NO_FILL[slot] and fill then
+      local plain = {}
+      for _, c in ipairs(list or {}) do
+        if not (c.rec and ELEMENT_GEAR[c.rec.name]) then plain[#plain + 1] = c end
+      end
+      pick = best_unused(plain, GENERAL, used)
+      how = pick and "fill" or nil
     end
-    if pick and M.score(pick.s, set) <= 0 then pick, how = nil, nil end
+    share = pick and r and (M.share(pick.s, r.s, set)) or nil
     if not pick then share = nil end
     if pick and pick.key then used[pick.key] = true end
     out.slots[slot] = { pick = pick, share = share, how = how, ref = r }
@@ -295,24 +350,19 @@ function M.build(ctx, set, set_name)
   for slot = 0, 15 do
     if wanted(slot) and ctx.at_level[slot] then
       local cands = {}
+      -- The pair's other slot already suggests a Rare piece: not this one too.
+      local twin = PAIR[slot] and out.slots[PAIR[slot]] and out.slots[PAIR[slot]].worth
+      local taken = twin and M.rare(twin.rec) and twin.id
       for _, c in ipairs(ctx.at_level[slot]) do
-        if not (ctx.owns and ctx.owns[c.id]) then cands[#cands + 1] = c end
+        if not (ctx.owns and ctx.owns[c.id]) and c.id ~= taken then cands[#cands + 1] = c end
       end
       local o = out.slots[slot]
-      local w
-      if o.ref and M.score(o.ref.s, set) > 0 then
-        w = by_share(cands, o.ref.s, set, {})
+      local w = best_unused(cands, set, {})
+      if w and (not o.pick or M.score(w.s, set) > M.score(o.pick.s, set)) then
+        o.worth = w
+        -- Held, but in a bag it cannot be worn from: the window says where, not to get it.
+        o.worth_bag = ctx.kept and ctx.kept[w.id] or nil
       end
-      if not w then
-        local best, bv = nil, 0
-        for _, c in ipairs(cands) do
-          local v = M.score(c.s, set)
-          if v > bv then best, bv = c, v end
-          M.pace()
-        end
-        w = best
-      end
-      if w and (not o.pick or M.score(w.s, set) > M.score(o.pick.s, set)) then o.worth = w end
     end
   end
 

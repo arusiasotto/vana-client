@@ -1618,8 +1618,7 @@ pub(super) fn install(
                     }
                 }
             }
-            let names = w.names.clone().map(crate::dat::battle::Tables);
-            let ctx = crate::dat::battle::Ctx { actor, target, me: w.name.clone(), work, names, ..Default::default() };
+            let ctx = crate::dat::battle::Ctx { actor, target, work, ..crate::client::combat::ctx(w) };
             let Some(line) = bt.expand(id, &ctx) else { return Ok(None) };
             let t = lua.create_table()?;
             t.set("text", line.lines.join("\n"))?;
@@ -1634,7 +1633,12 @@ pub(super) fn install(
             let filter = group.map(|g| super::runtime::phrase_category(&g)).transpose()?;
             let Some(d) = w.battle.as_ref().and_then(|b| b.phrases.as_ref()) else { return Ok(None) };
             let word = word.unwrap_or_default();
-            let (hits, matched) = d.query(&word, filter);
+            // A group lists all its entries (`word` is not used with one); one the dictionary lacks (or the Items / Key
+            // Items group before the game built it) gives none: the game's "エラー" row is not passed on.
+            if filter.is_some_and(|f| !d.has_category(f)) {
+                return Ok(Some(lua.create_table()?));
+            }
+            let (hits, matched) = d.query(if filter.is_some() { "" } else { &word }, filter);
             let out = lua.create_table()?;
             // A word that matches nothing gives nothing (the game's candidate list shows the groups instead).
             if !word.trim().is_empty() && filter.is_none() && !matched {
@@ -1688,7 +1692,7 @@ pub(super) fn install(
                 let t = lua.create_table()?;
                 t.set("kind", if g.kind == crate::dat::autotrans::KIND_KEY_ITEMS { "key_item" } else { "item" })?;
                 t.set("title", g.title.as_str())?;
-                t.set("count", g.words.len())?;
+                t.set("count", g.len())?;
                 out.push(t)?;
             }
             Ok(Some(out))
@@ -1960,7 +1964,8 @@ fn entity_in(
         let bits = super::super::radar::kind_bits(w, id, e);
         t.set("radar", super::super::radar::colour(bits, e.monstrosity, e.motion.status, true))?;
     }
-    t.set("hidden", e.flags & 2 != 0)?;
+    // Not drawn: hidden or asleep by the server, the event's filter, /hidetrust.
+    t.set("hidden", super::super::event::hides(w, id))?;
     t.set("race", e.race.or(e.appearance.map(|l| l.race)))?;
     t.set("model", e.model)?;
     t.set("height", model_height(w, id))?;
@@ -2197,6 +2202,8 @@ fn popup(
     let mut w = super::window::Window::new(id);
     (w.elems, w.meta) = elems.into_iter().unzip();
     (w.modal, w.popup, w.open) = (true, at_pointer, true);
+    // The window it was opened from gets the focus back when it closes.
+    w.back = s.windows.iter().find(|x| x.focus && x.open).map(|x| x.id.clone());
     w.anchor = at_pointer.then_some(cursor);
     w.settle();
     s.windows.push(w);
@@ -2263,7 +2270,8 @@ fn cmds(v: Option<Table>) -> mlua::Result<Vec<super::window::Cmd>> {
         .collect()
 }
 
-/// A list's rows: strings, or {cells..., icon = {kind = "item" | "status" | "spell" | "ability", id}, colour}.
+/// A list's rows: strings, or {cells..., icon = {kind = "item" | "status" | "spell" | "ability", id}, colour, colours,
+/// items, tags}.
 fn rows(v: Option<Table>) -> mlua::Result<Vec<super::window::Row>> {
     use super::window::Row;
     let cell = |v: Value| -> String {
@@ -2291,11 +2299,73 @@ fn rows(v: Option<Table>) -> mlua::Result<Vec<super::window::Row>> {
                         )),
                         None => None,
                     };
+                    // `colours`: single cells' colours by column ({[3] = {r, g, b}}).
+                    let mut cell_colours = Vec::new();
+                    if let Some(c) = t.get::<Option<Table>>("colours")? {
+                        for pair in c.pairs::<usize, Value>() {
+                            let (k, v) = pair?;
+                            if k == 0 || k > 64 {
+                                return Err(mlua::Error::runtime("a row's colours are keyed by column, 1 to 64"));
+                            }
+                            if cell_colours.len() < k {
+                                cell_colours.resize(k, None);
+                            }
+                            cell_colours[k - 1] = super::hud::colour(v)?;
+                        }
+                    }
+                    // `items`: the item a cell names, by column ({[2] = id} or {[2] = {id, bag, index}}).
+                    let mut cell_items = Vec::new();
+                    if let Some(c) = t.get::<Option<Table>>("items")? {
+                        for pair in c.pairs::<usize, Value>() {
+                            let (k, v) = pair?;
+                            if k == 0 || k > 64 {
+                                return Err(mlua::Error::runtime("a row's items are keyed by column, 1 to 64"));
+                            }
+                            let item = match v {
+                                Value::Table(i) => super::window::ItemRef {
+                                    id: i.get("id")?,
+                                    at: match (i.get::<Option<u8>>("bag")?, i.get::<Option<u8>>("index")?) {
+                                        (Some(b), Some(x)) => Some((b, x)),
+                                        _ => None,
+                                    },
+                                },
+                                Value::Integer(n) => super::window::ItemRef { id: n as u16, at: None },
+                                Value::Number(n) => super::window::ItemRef { id: n as u16, at: None },
+                                _ => return Err(mlua::Error::runtime("a row's item is an id or {id, bag, index}")),
+                            };
+                            if cell_items.len() < k {
+                                cell_items.resize(k, None);
+                            }
+                            cell_items[k - 1] = Some(item);
+                        }
+                    }
+                    // `tags`: a cell's tags by column ({[5] = {"Rare", "Ex"}} or {[5] = "Rare"}).
+                    let mut cell_tags: Vec<Vec<String>> = Vec::new();
+                    if let Some(c) = t.get::<Option<Table>>("tags")? {
+                        for pair in c.pairs::<usize, Value>() {
+                            let (k, v) = pair?;
+                            if k == 0 || k > 64 {
+                                return Err(mlua::Error::runtime("a row's tags are keyed by column, 1 to 64"));
+                            }
+                            let list = match v {
+                                Value::Table(l) => l.sequence_values::<String>().collect::<mlua::Result<_>>()?,
+                                Value::String(s) => vec![s.to_string_lossy()],
+                                _ => return Err(mlua::Error::runtime("a cell's tags are a string or a list of them")),
+                            };
+                            if cell_tags.len() < k {
+                                cell_tags.resize(k, Vec::new());
+                            }
+                            cell_tags[k - 1] = list;
+                        }
+                    }
                     Row {
                         cells,
                         icon,
                         colour: super::hud::colour(t.get("colour")?)?,
+                        cell_colours,
                         tip: t.get::<Option<String>>("tip")?.unwrap_or_default(),
+                        cell_items,
+                        cell_tags,
                     }
                 }
                 other => Row::text(&cell(other)),

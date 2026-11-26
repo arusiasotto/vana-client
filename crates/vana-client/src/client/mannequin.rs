@@ -629,7 +629,13 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
             let dd = if on { 1.0 } else { 0.0 };
             gu.sprite(WINDOWPS, 546, x0 + e.x as f32 + dd, y0 + e.y as f32 + dd, if on { 0x8080_5020 } else { WHITE });
             if on {
-                gu.cursor(x0 + e.x as f32, y0 + e.y as f32);
+                gu.cursor_on(
+                    GRID,
+                    e.id,
+                    x0 + e.x as f32,
+                    y0 + e.y as f32,
+                    [x0 + e.x as f32, y0 + e.y as f32, e.w as f32, e.h as f32],
+                );
             }
         }
         let mut by_child = vec![(0u16, 0u32, false); 16];

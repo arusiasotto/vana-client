@@ -581,6 +581,9 @@ fn enter(w: &mut World) -> bool {
 }
 
 /// A submenu's Enter (FUN_101e61b0, FUN_101e6250 / 6360 / 6470, FUN_101e6540); each closes its window after.
+/// link2 / link3's case 4 (menu_comment_fn, the comment editor on the linkshell message) is the caption's number,
+/// and the caption never has the cursor: the submenus carry registry flag 0x200000, so their open puts it in state
+/// 0x10 (`GameUi::caption`), where neither the mouse nor a link reaches it. The case is dead code in retail.
 fn select(w: &mut World, name: &'static str, child: u16) {
     let n = cursor_row(w).map_or(0, |r| r.num);
     match (name, child) {
@@ -846,7 +849,9 @@ fn has_focus(l: &Linkshell, editing: bool, confirming: bool) -> bool {
     l.sub.is_none() && l.naming.is_none() && !editing && !confirming
 }
 
-/// Mouse *(inf: the generic child hit test)*: hover moves the cursor, a click on the cursor row is Enter.
+/// Mouse (the per-frame hover in FUN_101267f0 and the release FUN_1015f420, over the hit test FUN_1011a140): hover
+/// moves the cursor, a click on the cursor row is Enter. A submenu's caption does not take it: it is in state 0x10
+/// (`GameUi::hit`).
 pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), moved: bool, clicked: bool) {
     let Some(l) = w.linkshell.clone() else { return };
     let (name, sel) = match (&l.naming, &l.sub) {
@@ -855,24 +860,18 @@ pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), move
         (None, Some(s)) => (s.name, s.sel),
         (None, None) => (LIST, (l.cursor.saturating_sub(l.top) + 1) as u16),
     };
-    let (Some((x, y)), Some(lay)) = (gu.window_xy(name, sw, sh), gu.layout(name)) else { return };
     let n = rows(w).len();
-    let Some(e) = lay.elements.iter().skip(1).filter(|e| e.links[2] != 0xff).find(|e| {
-        let (ex, ey) = (x + e.x as f32, y + e.y as f32);
-        p.0 >= ex && p.0 < ex + e.w as f32 && p.1 >= ey && p.1 < ey + e.h as f32
-    }) else {
-        return;
-    };
-    if name == LIST && l.top + e.id as usize > n {
+    let Some(id) = gu.hit(name, sw, sh, p) else { return };
+    if name == LIST && l.top + id as usize > n {
         return;
     }
     gu.hover.set(true);
-    if e.id != sel && (moved || clicked) {
+    if id != sel && (moved || clicked) {
         if let Some(l) = w.linkshell.as_mut() {
             match (&mut l.naming, &mut l.sub) {
-                (Some(nm), _) => nm.sel = e.id,
-                (None, Some(s)) => s.sel = e.id,
-                (None, None) => l.cursor = l.top + e.id as usize - 1,
+                (Some(nm), _) => nm.sel = id,
+                (None, Some(s)) => s.sel = id,
+                (None, None) => l.cursor = l.top + id as usize - 1,
             }
         }
         w.sounds.push(Ui::Cursor as u32);
@@ -967,8 +966,8 @@ fn draw_naming(gu: &mut GameUi, w: &World, nm: &Naming, sw: f32, sh: f32) -> Opt
             gu.sprite_scaled("menu    windowps", 97, cx + 12.0, cy + 1.0, nm.rgb[k] as f32 / 15.0, 1.0, BAR_TINTS[k]);
         }
     }
-    if focused && let Some([cx, cy, ..]) = child(nm.sel) {
-        gu.cursor(cx, cy);
+    if focused && let Some(r @ [cx, cy, ..]) = child(nm.sel) {
+        gu.cursor_on(NAMING, nm.sel, cx, cy, r);
     }
     Some(win.frame)
 }

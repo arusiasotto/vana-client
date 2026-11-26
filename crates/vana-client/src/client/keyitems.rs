@@ -476,7 +476,7 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
                 }
                 super::missions::lines(gu, name, cx + 36.0, ry, NAME_W, if i == k.cursor { CURSOR } else { WHITE });
                 if on && focused {
-                    gu.cursor(cx, ry);
+                    gu.cursor_on(WINDOW, 0, cx, ry, [cx, ry, 36.0 + NAME_W, 16.0]);
                 }
                 ry += h[i] + GAP;
             }

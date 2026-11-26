@@ -1,6 +1,6 @@
 # `hud`
 
-The `hud` namespace draws things over the game: texts, filled rectangles, speech bubbles, bars, a map, PNG images, live
+The `hud` namespace draws things over the game: texts, filled rectangles and triangles, speech bubbles, bars, a map, PNG images, live
 portraits of actors and item, status, spell or ability icons. Each element has an id you choose. You create it once (`hud.text`, `hud.rect`, ...), change it with `hud.set`
 as things happen, and it stays on screen until you remove it; you do not redraw it every frame. HUD elements draw over
 the game world and the name plates and under every window, in the game world only, and they hide while the player has
@@ -23,6 +23,7 @@ end)
 | --- | --- |
 | [`hud.text(id, spec)`](#hudtext) | Creates or replaces a text. |
 | [`hud.rect(id, spec)`](#hudrect) | Creates or replaces a filled rectangle. |
+| [`hud.tri(id, spec)`](#hudtri) | Creates or replaces a filled triangle. |
 | [`hud.bubble(id, spec)`](#hudbubble) | Creates or replaces a speech bubble with a tail pointing at a place. |
 | [`hud.bar(id, spec)`](#hudbar) | Creates or replaces a bar filled from 0 to 1. |
 | [`hud.map(id, spec)`](#hudmap) | Creates or replaces a window onto the zone's map. |
@@ -165,6 +166,39 @@ Creates or replaces a filled rectangle. Use it as a panel behind other elements,
 ```lua
 hud.rect("flash", {x = 0, y = 0, w = hud.screen().width, h = 6, colour = {255, 40, 40, 200}})
 timer.after(0.5, function() hud.remove("flash") end)
+```
+
+## `hud.tri`
+
+```lua
+hud.tri(id, spec)
+```
+
+Creates or replaces a filled triangle. Its corners are window pixels counted from the element's `x` and `y`, like a
+canvas `{type = "tri", x1, y1, ...}` command. Use it for pointers, chevrons and small markers without relying on font
+glyphs.
+
+**`spec` fields**
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `x`, `y`, `visible`, `layer` | | | As for [every element](#places-sizes-and-layers). |
+| `x1`, `y1`, `x2`, `y2`, `x3`, `y3` | `number` | `0` | The three corners in window pixels from `x` and `y`. |
+| `colour` | `{r, g, b, a}` | white | The fill colour. |
+
+Clicks use the triangle's axis-aligned bounding box, not the triangle itself. Clients released before it have no
+`hud.tri`: a mod that may run on one checks `if hud.tri then` and draws its marker another way.
+
+**Example**
+
+```lua
+local u = hud.screen().ui_scale
+-- A small gold chevron pointing down (window hotbars draw the same on canvas).
+hud.tri("mark", {
+  x = 100, y = 40,
+  x1 = -4 * u, y1 = 0, x2 = 4 * u, y2 = 0, x3 = 0, y3 = 5 * u,
+  colour = {215, 190, 120, 255},
+})
 ```
 
 ## `hud.bubble`

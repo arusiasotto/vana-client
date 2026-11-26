@@ -73,6 +73,8 @@ pub struct Ctx {
     pub strings: [String; 2],
     /// The name tables, for the items, objectives and key items a message names.
     pub names: Option<Tables>,
+    /// The point names `7f b0` / `b1` / `b7` read (merits, job points, alter ego points).
+    pub texts: Option<Texts>,
 }
 
 /// The client's name tables (one item reader for all text).
@@ -82,6 +84,16 @@ pub struct Tables(pub std::sync::Arc<super::names::Names>);
 impl std::fmt::Debug for Tables {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str("Tables")
+    }
+}
+
+/// The other name tables FUN_100c1650 reads (dialog::Texts).
+#[derive(Clone)]
+pub struct Texts(pub std::sync::Arc<dyn super::dialog::Texts>);
+
+impl std::fmt::Debug for Texts {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("Texts")
     }
 }
 
@@ -100,6 +112,7 @@ impl Line {
     }
 }
 
+#[cfg_attr(test, derive(Default))]
 pub struct BattleText {
     basic: Dialog,
     skills: Option<Dialog>,
@@ -686,6 +699,25 @@ impl BattleText {
                         out.extend(format!("{} gil", separated(v as u32)).bytes());
                         3
                     }
+                    // 7f b0 / b1 / b7 n (FUN_100c1650, as dialog::expand): the name of work[n] as a merit (or merit
+                    // category), job point entry or alter ego point entry; e.g. message 828 "<name> attribute
+                    // increased to #." with work[0] the attribute (s2c 0x029 Data).
+                    0xb0 | 0xb1 | 0xb7 => {
+                        let id = work(s.get(i + 2).copied().unwrap_or(0)) as u16;
+                        if let Some(t) = ctx.texts.as_ref().and_then(|t| t.0.point(a, id)) {
+                            out.extend(t);
+                        }
+                        3
+                    }
+                    // 7f b5 n (FUN_100c1650 -> FUN_100bd9b0, as dialog::expand): row work[n] of the Monstrosity names
+                    // (language slot 0x21).
+                    0xb5 => {
+                        let row = work(s.get(i + 2).copied().unwrap_or(0)) as i16;
+                        if let Some(t) = ctx.texts.as_ref().and_then(|t| t.0.monstrosity(row)) {
+                            out.extend(t);
+                        }
+                        3
+                    }
                     0x34..=0x36 => 3,
                     0x38 => 4,
                     0x84 => {
@@ -1088,6 +1120,59 @@ mod tests {
         assert_eq!(b.colour(0x1c), [0x2c, 0x30, 0xa0, 0x70]);
         assert_eq!(b.colour(0x7a), [0x10, 0x80, 0x80, 0x60]);
         assert_eq!(b.colour(0xff), [0x80; 4]);
+    }
+
+    /// Message 828 as the English file holds it: `7f b7 00` names work[0] from the alter ego point names, `12 01`
+    /// prints work[1]. Retail's s2c 0x029 for an upgrade carries the attribute id (8 Max HP .. 18) in Data, the new
+    /// level in Data2. `7f b0` / `b1` read the merit and job point names the same way.
+    #[test]
+    fn point_names() {
+        let bt = BattleText::default();
+        let raw = b"\x7f\xb7\x00 attribute increased to \x12\x01.\x7f\x31\x00\x07";
+        let texts = Some(Texts(std::sync::Arc::new(super::super::dialog::tests::Stub)));
+        let ctx = Ctx { work: [8, 2, 0, 0, 0], texts, ..Default::default() };
+        assert_eq!(bt.expand_raw(raw, &ctx).plain(), ["pb7:8 attribute increased to 2."]);
+        let ctx = Ctx { work: [0, 0, 7, 0, 0], ..ctx };
+        assert_eq!(bt.expand_raw(b"\x7f\xb0\x02 \x7f\xb1\x02", &ctx).plain(), ["pb0:7 pb1:7"]);
+        // 7f b5: the Monstrosity name of row work[n].
+        assert_eq!(bt.expand_raw(b"\x7f\xb5\x02!", &ctx).plain(), ["m7!"]);
+        // Without the tables the name is left out, the rest of the line kept.
+        let ctx = Ctx { work: [8, 2, 0, 0, 0], ..Default::default() };
+        assert_eq!(bt.expand_raw(raw, &ctx).plain(), [" attribute increased to 2."]);
+    }
+
+    /// The alter ego point names (language slot 0x20).
+    struct AeNames(super::super::merits::AeTables);
+
+    impl super::super::dialog::Texts for AeNames {
+        fn kind(&self, _kind: u8, _id: u32) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn point(&self, _sub: u8, id: u16) -> Option<Vec<u8>> {
+            Some(encode_sjis(&self.0.name(id)))
+        }
+
+        fn monstrosity(&self, _row: i16) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    /// Message 828 with retail's s2c 0x029 for a Max HP upgrade to level 2 (Data 8, Data2 2) and for Magic Skills
+    /// (Data 18).
+    #[test]
+    fn alter_ego_upgrade_line() {
+        let Some(bt) = load() else { return };
+        let cfg = crate::config::Config::load();
+        let Ok(index) = DatIndex::open(&cfg.ffxi_dir()) else { return };
+        let Ok(dll) = std::fs::read(crate::dat::ffximain(&cfg.ffxi_dir())) else { return };
+        let names = super::super::msg::current_slot_file(&dll, 1, 0x20);
+        let ae = super::super::merits::AeTables::load(&index, names);
+        let texts = Some(Texts(std::sync::Arc::new(AeNames(ae))));
+        let ctx = Ctx { work: [8, 2, 0, 0, 0], texts, ..named() };
+        assert_eq!(bt.expand(828, &ctx).unwrap().plain(), ["Max HP attribute increased to 2."]);
+        let ctx = Ctx { work: [18, 10, 0, 0, 0], ..ctx };
+        assert_eq!(bt.expand(828, &ctx).unwrap().plain(), ["Magic Skills attribute increased to 10."]);
     }
 
     /// The install predates LSB's client: ids match up to the Master Level messages, which are blank here.

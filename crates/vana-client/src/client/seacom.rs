@@ -61,8 +61,8 @@ pub fn open_bazaar(w: &mut World) {
 
 /// Mode 3 (type 0x73) edits the linkshell message's lines, block 3. Nothing opens it: retail's only opener,
 /// menu_comment_fn (FUN_101e7530), is called from case 4 of link2 / link3's handlers, the caption's number, and the
-/// submenus carry registry flag 0x200000, so their caption never takes the cursor. The mode's store and close are kept
-/// as the window class has them.
+/// caption is in state 0x10 from the window's open (registry flag 0x200000, `GameUi::caption`), so the cursor is
+/// never on it. The mode's store and close are kept as the window class has them.
 fn store(w: &mut World, mode: u8) -> &mut Store {
     match mode {
         0 => &mut w.bazaar_msg,
@@ -360,6 +360,7 @@ pub fn bars(gu: &GameUi, w: &World, bars: &mut super::hudtop::BarText) {
 /// x0 + 4, x1 - x0 - 8 wide, no dot. A line not being edited is expanded with the auto-translate brackets
 /// (FUN_101b8850(.., 1, 0)) before it is fitted.
 pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
+    use crate::dat::font::german_quotes_str;
     let mut rects = Vec::new();
     let Some(e) = w.seacom_edit.filter(|_| !w.modern) else {
         gu.force_flags(EDITOR, None);
@@ -373,11 +374,12 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
     for (k, l) in s.lines.iter().enumerate() {
         let (x, y) = (x0 + dx, y0 + 4.0 + 16.0 * k as f32);
         if k == e.line {
-            let l = super::fep::plain(w, l);
+            // The live box (FUN_101c76b0) and the drawn lines (0x200 bytes) take German's quotation marks.
+            let l = german_quotes_str(&super::fep::plain(w, l), 0x41a).into_owned();
             let caret = if (w.started.elapsed().as_secs_f32() * 60.0) as u32 % 30 < 20 { "|" } else { "" };
             gu.text(&format!("{l}{caret}"), x, y, 0, [0x80; 4]);
         } else {
-            gu.text_fit(&super::fep::braced(w, l), x, y, width, WHITE);
+            gu.text_fit(&german_quotes_str(&super::fep::braced(w, l), 0x200), x, y, width, WHITE);
         }
     }
     let list = w

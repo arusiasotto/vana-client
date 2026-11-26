@@ -56,6 +56,8 @@ struct DrawU {
     /// The light colour (eased, x the light scale; w = the light count) and AMBIENT (trunc(min(a, 1) x 128) / 255).
     light_col: [f32; 4],
     ambient: [f32; 4],
+    /// x: the textures' LOD bias (render lod_bias).
+    lod: [f32; 4],
 }
 
 /// The ground projections' images: 256x256 (FUN_10044270's DAT_1047bb88).
@@ -286,7 +288,7 @@ impl DistIter {
                 buf_entry(5, cs, rw, false),
                 buf_entry(6, cs, rw, false),
                 tex_entry(8, wgpu::TextureSampleType::Float { filterable: false }),
-                tex_entry(9, wgpu::TextureSampleType::Depth),
+                tex_entry(9, wgpu::TextureSampleType::Float { filterable: false }),
                 buf_entry(10, cs, rw, false),
             ],
         });
@@ -489,6 +491,42 @@ struct Staging {
     words: usize,
 }
 
+/// The effects update pass's storage buffers in one stage (Mali's GLES drivers allow 8).
+pub const STORAGE_NEEDED: u32 = 8;
+
+/// The keyframe tables as effects.wgsl `keytab` reads them, one storage buffer for both: the number of curves, each
+/// curve's (start, count) with the start moved past the table, then the keys (time, value).
+fn key_words(desc: &[[u32; 2]], keys: &[[f32; 2]]) -> Vec<u32> {
+    let base = 1 + desc.len() as u32;
+    let mut w = Vec::with_capacity(2 * (base as usize + keys.len()));
+    w.extend([desc.len() as u32, 0]);
+    w.extend(desc.iter().flat_map(|&[start, count]| [start + base, count]));
+    w.extend(keys.iter().flat_map(|&[t, v]| [t.to_bits(), v.to_bits()]));
+    w
+}
+
+/// `slot`'s effects pipelines, made on first use; None (logged once) on a GPU short of what they need. The game never
+/// gets here with such a GPU (Gpu::with_adapter stops first); headless tools without a window can.
+pub fn kept<'a>(
+    slot: &'a mut Option<EffectsGpu>,
+    gpu: &Gpu,
+    format: wgpu::TextureFormat,
+) -> Option<&'a mut EffectsGpu> {
+    static LOGGED: AtomicBool = AtomicBool::new(false);
+    if slot.is_none() {
+        match EffectsGpu::new(gpu, format) {
+            Ok(eg) => *slot = Some(eg),
+            Err(e) => {
+                if !LOGGED.swap(true, Ordering::Relaxed) {
+                    log::error!("no effects: {e:#}");
+                }
+                return None;
+            }
+        }
+    }
+    slot.as_mut()
+}
+
 pub struct EffectsGpu {
     update: wgpu::ComputePipeline,
     update_layout: wgpu::BindGroupLayout,
@@ -571,8 +609,8 @@ pub struct EffectsGpu {
     parts: wgpu::Buffer,
     staging: Vec<Staging>,
     ops: (wgpu::Buffer, usize),
+    /// The keyframe tables (key_words).
     keys: (wgpu::Buffer, usize),
-    key_desc: (wgpu::Buffer, usize),
     paths: (wgpu::Buffer, usize),
     /// The zone's point-light table (ZoneRenderer::lights), or a black one of ours until a zone gives it.
     lights: wgpu::Buffer,
@@ -633,7 +671,13 @@ impl EffectsGpu {
         self.light = l;
     }
 
-    pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Self {
+    /// The effects pipelines; an error on a GPU with fewer than STORAGE_NEEDED storage buffers per shader stage.
+    pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> anyhow::Result<Self> {
+        let n = gpu.device.limits().max_storage_buffers_per_shader_stage;
+        anyhow::ensure!(
+            n >= STORAGE_NEEDED,
+            "the effects need {STORAGE_NEEDED} storage buffers per shader stage; this GPU has {n}"
+        );
         let device = &gpu.device;
         let consts = crate::fx::elem::wgsl_consts();
         let src = include_str!("effects.wgsl");
@@ -674,7 +718,6 @@ impl EffectsGpu {
                 storage(1, false, cs),
                 storage(2, true, cs),
                 storage(3, true, cs),
-                storage(4, true, cs),
                 storage(5, true, cs),
                 storage(6, false, cs),
                 storage(7, false, cs),
@@ -684,7 +727,7 @@ impl EffectsGpu {
                     binding: 10,
                     visibility: cs,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -746,7 +789,7 @@ impl EffectsGpu {
                     binding: 7,
                     visibility: wgpu::ShaderStages::FRAGMENT | cs,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -844,7 +887,7 @@ impl EffectsGpu {
                     binding: 4,
                     visibility: cs,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -1145,7 +1188,7 @@ impl EffectsGpu {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        Self {
+        Ok(Self {
             update,
             update_layout,
             depth: None,
@@ -1215,7 +1258,6 @@ impl EffectsGpu {
             staging,
             ops: table("effects ops"),
             keys: table("effects keys"),
-            key_desc: table("effects key table"),
             paths: table("effects paths"),
             lights: buf("effects lights", (crate::render::LIGHTS * 32) as u64, U::STORAGE | U::COPY_DST),
             slots: table("effects slots"),
@@ -1238,7 +1280,7 @@ impl EffectsGpu {
             count: 0,
             linearize: format.is_srgb(),
             light: None,
-        }
+        })
     }
 
     pub fn has_dmgnum(&self) -> bool {
@@ -1501,10 +1543,9 @@ impl EffectsGpu {
             reg.ops_dirty = false;
         }
         if reg.keys_dirty {
-            rebind |= Self::fit(gpu, &mut self.keys, reg.key_data.len() * 8, "effects keys");
-            rebind |= Self::fit(gpu, &mut self.key_desc, reg.key_desc.len() * 8, "effects key table");
-            q.put(&self.keys.0, 0, bytemuck::cast_slice(&reg.key_data));
-            q.put(&self.key_desc.0, 0, bytemuck::cast_slice(&reg.key_desc));
+            let words = key_words(&reg.key_desc, &reg.key_data);
+            rebind |= Self::fit(gpu, &mut self.keys, words.len() * 4, "effects keys");
+            q.put(&self.keys.0, 0, bytemuck::cast_slice(&words));
             reg.keys_dirty = false;
         }
         if reg.paths_dirty {
@@ -1592,7 +1633,6 @@ impl EffectsGpu {
                     wgpu::BindGroupEntry { binding: 1, resource: self.elems.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: self.ops.0.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 3, resource: self.keys.0.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: self.key_desc.0.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 5, resource: self.slots.0.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 6, resource: self.outs.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 7, resource: self.back.as_entire_binding() },
@@ -1941,6 +1981,7 @@ impl EffectsGpu {
                 let g = crate::fx::elem::ambient_ref(a);
                 [g.x, g.y, g.z, 0.0]
             }),
+            lod: [super::lod_bias(), 0.0, 0.0, 0.0],
         };
         gpu.queue.put(&self.draw_u, 0, bytemuck::bytes_of(&u));
         let mut u_rt = u;
@@ -2379,6 +2420,26 @@ fn break_before(breaks: &[f32], next: usize, key: f32) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    /// The keyframe tables in one buffer: the curve count, each curve's start moved past the table, then the keys as
+    /// f32 bits, so effects.wgsl key_ov finds curve id's keys at keytab[keytab[1 + id].x ..].
+    #[test]
+    fn key_words_point_past_the_table() {
+        let desc = [[0u32, 2], [2, 1], [3, 0]];
+        let keys = [[0.0f32, 1.5], [1.0, -2.0], [0.25, 7.0]];
+        let w = super::key_words(&desc, &keys);
+        let pair = |i: u32| [w[2 * i as usize], w[2 * i as usize + 1]];
+        assert_eq!(pair(0)[0], 3);
+        for (id, &[start, count]) in desc.iter().enumerate() {
+            let [at, n] = pair(1 + id as u32);
+            assert_eq!(n, count);
+            for k in 0..count {
+                let [t, v] = pair(at + k);
+                assert_eq!([f32::from_bits(t), f32::from_bits(v)], keys[(start + k) as usize]);
+            }
+        }
+        assert_eq!(w.len(), 2 * (1 + desc.len() + keys.len()));
+    }
+
     /// A faded actor at view depth 10 between effects at 30, 12 (behind it) and 8, 2 (in front): it goes after the
     /// farther two and before the nearer two; a second one at 1 goes after all of them (the caller draws it).
     #[test]
@@ -2436,7 +2497,7 @@ mod tests {
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
             src.size(),
         );
-        let eg = EffectsGpu::new(&gpu, fmt);
+        let eg = EffectsGpu::new(&gpu, fmt).unwrap();
         let view = src.create_view(&Default::default());
         let g = EffectsGpu::tex_group(&gpu.device, &eg.tex_layout, &eg.copy_sampler, &view);
         let dst = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -2615,7 +2676,7 @@ mod tests {
             fx.writes.push(Write::Full(k as u32, Box::new(el)));
             fx.elems.push(None);
         }
-        let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb).unwrap();
         let mut shown = Vec::new();
         for _ in 0..2 {
             let mut enc = gpu.device.create_command_encoder(&Default::default());
@@ -2637,7 +2698,7 @@ mod tests {
         // One device and one EffectsGpu for every case: EffectsGpu::new compiles every effects pipeline, the bulk of
         // the test's time (once per case, this test took minutes on some drivers).
         let Ok(gpu) = Gpu::headless() else { return };
-        let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb).unwrap();
         let eye = glam::Vec3::new(0.0, 0.0, -10.0);
         let view = glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::NEG_Y);
         let mut view_rot = view;
@@ -2761,7 +2822,7 @@ mod tests {
             fx.set_keys(Arc::new(crate::dat::zone::Keys::from_ffximain(&dll).unwrap()));
             fx.set_global(crate::fx::lib::Library::load(0, index.read(0).unwrap()).unwrap());
             fx.load_zone(crate::fx::lib::Library::load(129, index.read(129).unwrap()).unwrap());
-            let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb);
+            let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb).unwrap();
             let eye = at + glam::Vec3::new(0.0, 0.0, d);
             let view = glam::camera::rh::view::look_at_mat4(eye, at, glam::Vec3::NEG_Y);
             let mut view_rot = view;
@@ -2836,7 +2897,7 @@ mod tests {
         fx.set_keys(Arc::new(crate::dat::zone::Keys::from_ffximain(&dll).unwrap()));
         fx.set_global(crate::fx::lib::Library::load(0, index.read(0).unwrap()).unwrap());
         fx.load_zone(crate::fx::lib::Library::load(zone, index.read(zone).unwrap()).unwrap());
-        let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb).unwrap();
         let mut cpu: HashMap<u32, Elem> = HashMap::new();
         for tick in 0..40 {
             let eye = glam::Vec3::new(20.0 + tick as f32 * 3.0, -12.0, -40.0 + tick as f32 * 9.0);
@@ -2949,7 +3010,7 @@ mod tests {
         fx.set_keys(Arc::new(crate::dat::zone::Keys::from_ffximain(&dll).unwrap()));
         fx.set_global(crate::fx::lib::Library::load(0, index.read(0).unwrap()).unwrap());
         fx.load_zone(crate::fx::lib::Library::load(218, index.read(218).unwrap()).unwrap());
-        let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let mut eg = EffectsGpu::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb).unwrap();
         let mut cpu: HashMap<u32, Elem> = HashMap::new();
         let mut start: HashMap<u32, glam::Vec3> = HashMap::new();
         let eye = glam::Vec3::new(460.0, 15.0, -140.0);

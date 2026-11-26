@@ -231,6 +231,28 @@ M.JOBS = {
     M.ABILITY_SETS.RUN),
 }
 
+-- The window's set groups: weapon skill and ability sets by their kind, the others by name.
+local GROUP_OF = {}
+for group, names in pairs({
+  ["Combat"] = { "TP", "TP_Hybrid", "TP_Acc", "TP_MNK", "TP_Pet", "TH" },
+  ["Weapon Skills"] = { "WS", "RangedWS" },
+  ["Ranged"] = { "Preshot", "Midshot" },
+  ["Magic"] = { "Precast", "Precast_Cure", "Precast_Song", "Cure", "Healing", "NaSpells", "Divine", "Enhancing",
+    "Stoneskin", "Phalanx", "RefreshSpell", "RegenSpell", "Enfeebling_MND", "Enfeebling_INT", "Nuke", "Nuke_MB",
+    "MagicAcc", "Dark", "DrainAspir", "Stun", "Songs_Buff", "Songs_Debuff", "Utsusemi", "Ninjutsu_Nuke",
+    "Ninjutsu_Debuff", "BluPhys", "BluMag", "BluDebuff", "BluHeal", "BluBuff", "Geo" },
+  ["Pet"] = { "BP_Delay", "BloodPact", "Ready", "Ready_Magic", "Reward", "Charm", "Automaton", "Breath" },
+  ["Abilities"] = { "Enmity", "Waltz", "Steps", "Jump", "Roll", "QuickDraw", "Steal" },
+  ["Idle and Defence"] = { "Idle", "Resting", "Movement", "PDT", "MDT", "Idle_Avatar", "Idle_Luopan", "Idle_Pet" },
+}) do
+  for _, n in ipairs(names) do GROUP_OF[n] = group end
+end
+function M.group(name, def)
+  if def and def.ws then return "Weapon Skills" end
+  if def and def.ability then return "Abilities" end
+  return GROUP_OF[name] or "Other"
+end
+
 -- The combat skill stats (ws.lua's skill names) a job's weapon types use: their skill counts in TP and WS sets.
 M.SKILL_STAT = { hand_to_hand = "sk_h2h", dagger = "sk_dagger", sword = "sk_sword", great_sword = "sk_gsword",
   axe = "sk_axe", great_axe = "sk_gaxe", scythe = "sk_scythe", polearm = "sk_polearm", katana = "sk_katana",

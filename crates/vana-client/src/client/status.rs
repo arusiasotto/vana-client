@@ -199,16 +199,11 @@ pub(super) fn show_page(w: &mut World) {
     }
 }
 
-/// Mouse: hover over a row moves the cursor, a click on the cursor row is Enter, a right click Escape *(inf: the
-/// generic window events)*.
+/// Mouse: hover over a row moves the cursor, a click on the cursor row is Enter (`GameUi::hit`), a right click
+/// Escape.
 pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), moved: bool, clicked: bool, right: bool) {
     let Some(s) = w.status.clone() else { return };
-    let Some((wx, wy)) = gu.window_xy(STATCOM, sw, sh) else { return };
-    let Some(layout) = gu.layout(STATCOM) else { return };
-    let hit = layout.elements.iter().skip(1).filter(|e| e.links[2] != 0xff).find(|e| {
-        let (x, y) = (wx + e.x as f32, wy + e.y as f32);
-        p.0 >= x && p.0 < x + e.w as f32 && p.1 >= y && p.1 < y + e.h as f32
-    });
+    let hit = gu.hit(STATCOM, sw, sh, p);
     if right
         && gu
             .window_rect(STATCOM, sw, sh)
@@ -217,13 +212,13 @@ pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), move
         key(w, gu, egui::Key::Escape);
         return;
     }
-    let Some(e) = hit else { return };
+    let Some(id) = hit else { return };
     gu.hover.set(true);
     if (moved || clicked)
-        && e.id != s.sel
+        && id != s.sel
         && let Some(st) = w.status.as_mut()
     {
-        st.sel = e.id;
+        st.sel = id;
         w.sounds.push(Ui::Cursor as u32);
     } else if clicked {
         key(w, gu, egui::Key::Enter);

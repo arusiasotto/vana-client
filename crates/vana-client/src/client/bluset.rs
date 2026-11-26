@@ -529,7 +529,7 @@ fn list_window(
     let win = gu.lobby_window_off(name, sw, sh, (0.0, 0.0), None, false, &rows)?;
     let (x, y) = gu.window_xy(name, sw, sh)?;
     if focused {
-        gu.cursor(x + 3.0, y + 6.0 + 18.0 * (c.0 - c.1) as f32);
+        gu.cursor_child(name, (c.0 - c.1) as u16 + 1, x + 3.0, y + 6.0 + 18.0 * (c.0 - c.1) as f32, x, y);
     }
     Some((win.frame, (x + 3.0, y + 4.0)))
 }

@@ -85,11 +85,20 @@ pub fn open(w: &mut World) {
 pub fn key(w: &mut World, key: egui::Key) {
     let Some(mut c) = w.chatctrl.clone() else { return };
     match key {
+        // Child 8, the arrow beside the tell name, links nowhere: a cursor the mouse put there stays.
+        egui::Key::ArrowDown | egui::Key::ArrowUp if c.sel > 7 => {}
         egui::Key::ArrowDown | egui::Key::ArrowUp => {
             c.sel = if key == egui::Key::ArrowDown { c.sel % 7 + 1 } else { (c.sel + 5) % 7 + 1 };
             w.sounds.push(Ui::Cursor as u32);
         }
-        egui::Key::ArrowRight if c.sel == 2 => {
+        // Right on Tell, or Enter on child 8 (message 5's case 8 jumps to the same code, 0x1012e6b0): the next name.
+        // The window stays open.
+        egui::Key::ArrowRight | egui::Key::Enter
+            if (key == egui::Key::ArrowRight && c.sel == 2) || (key == egui::Key::Enter && c.sel == 8) =>
+        {
+            if key == egui::Key::Enter {
+                w.sounds.push(Ui::Select as u32);
+            }
             let v = choices(w, &c.names);
             c.tell = match v.iter().position(|&x| x == c.tell) {
                 Some(i) => v[(i + 1) % v.len()],
@@ -208,7 +217,7 @@ pub fn pointer(w: &mut World, gu: &GameUi, p: (f32, f32), moved: bool, clicked: 
         gu,
         WINDOW,
         sel,
-        1..=7,
+        1..=8,
         p,
         moved,
         clicked,

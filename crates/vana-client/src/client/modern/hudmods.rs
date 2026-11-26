@@ -139,6 +139,14 @@ fn element(
             }
             r
         }
+        Kind::Tri { pts, colour } => {
+            let (px, py) = (at.x * ppp, at.y * ppp);
+            let verts: Vec<Pos2> = pts.iter().map(|p| pos2(pt(px + p[0]), pt(py + p[1]))).collect();
+            let r = Rect::from_points(&verts);
+            // One colour: a convex shape, which egui feathers (a mesh has hard edges).
+            painter.add(egui::Shape::convex_polygon(verts, rgba(*colour), Stroke::NONE));
+            r
+        }
         Kind::Bar { w: bw, h: bh, value, colour, kind } => {
             let r = Rect::from_min_size(at, vec2(pt(*bw), pt(*bh)));
             // The pack's gauge for its kind, as the panels' bars; a colour of the mod's: flat.

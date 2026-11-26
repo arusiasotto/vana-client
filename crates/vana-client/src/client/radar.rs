@@ -75,7 +75,7 @@ pub fn kind_bits(w: &World, id: u32, e: &Entity) -> u32 {
 /// Not modelled: +0x120 bit 15.
 pub fn shown(e: &Entity) -> bool {
     !matches!(e.sub_kind, 2..=4)
-        && e.flags & 6 == 0
+        && !e.server_hidden()
         && !e.invisible
         && !e.untargetable
         && !e.radar_off

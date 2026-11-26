@@ -141,7 +141,7 @@ run.action(cast())
 assert(ring_sent(), "the used ring kept its slot")
 EQUIP[rs] = nil
 
--- At level 30 the Healer Hat (40) is out: the Mender Hat, the most of the reference we hold; the Shop Hat
+-- At level 30 the Healer Hat (40) is out: the Mender Hat, the best by score we hold; the Shop Hat
 -- (20, not held) is worth getting.
 level = 30
 core.sent = {}
@@ -151,4 +151,4 @@ local low = ITEMS[cure.pick.id].name .. " " .. cure.how .. " / " .. (cure.worth 
 -- The midcast in slot order: the Cure hat, the light obi on Lightsday (waist), the MND ring.
 local seq = table.concat(order, " ")
 assert(seq == "050:1 01A 050:2 050:6 050:5", seq)
-assert(low == "Mender Hat bis / Shop Hat", low)
+assert(low == "Mender Hat score / Shop Hat", low)

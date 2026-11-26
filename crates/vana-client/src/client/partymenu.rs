@@ -593,22 +593,17 @@ pub fn focused(w: &World) -> bool {
         && w.levelsync.is_none()
 }
 
-/// Mouse: hover over a row moves the cursor, a click on the cursor row is Enter *(inf: the generic child hit test)*.
+/// Mouse (the hover in FUN_101267f0 and the release FUN_1015f420, over `GameUi::hit`): hover moves the cursor, a
+/// click on the cursor row is Enter.
 pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), moved: bool, clicked: bool) {
     let Some(top) = w.partymenu.as_ref().and_then(|m| m.stack.last()).cloned() else { return };
-    let Some((wx, wy)) = gu.window_xy(top.name, sw, sh) else { return };
-    let Some(layout) = gu.layout(top.name) else { return };
-    let hit = layout.elements.iter().skip(1).filter(|e| e.links[2] != 0xff).find(|e| {
-        let (x, y) = (wx + e.x as f32, wy + e.y as f32);
-        p.0 >= x && p.0 < x + e.w as f32 && p.1 >= y && p.1 < y + e.h as f32
-    });
-    let Some(e) = hit else { return };
+    let Some(id) = gu.hit(top.name, sw, sh, p) else { return };
     gu.hover.set(true);
     if (moved || clicked)
-        && e.id != top.sel
+        && id != top.sel
         && let Some(t) = w.partymenu.as_mut().and_then(|m| m.stack.last_mut())
     {
-        t.sel = e.id;
+        t.sel = id;
         w.sounds.push(Ui::Cursor as u32);
     } else if clicked {
         key(w, gu, egui::Key::Enter);
@@ -659,7 +654,7 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
                 if on { 0x8080_5020 } else { 0x8080_8080 },
             );
             if on && focused {
-                gu.cursor(cx, cy);
+                gu.cursor_child(win.name, c, cx, cy, wx, wy);
             }
         }
         match win.name {

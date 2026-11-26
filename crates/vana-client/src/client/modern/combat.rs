@@ -234,19 +234,21 @@ pub fn draw(p: &mut Panels, w: &mut World) {
                             Color32::WHITE,
                         );
                     }
-                    painter.text(
-                        pos2(r.rect.min.x + 42.0, r.rect.center().y),
-                        Align2::LEFT_CENTER,
-                        name,
-                        FontId::proportional(m.theme.ui),
-                        super::kit::ink(m, r),
-                    );
-                    painter.text(
+                    let mp_r = painter.text(
                         pos2(r.rect.max.x - 10.0, r.rect.center().y),
                         Align2::RIGHT_CENTER,
                         mp,
                         FontId::proportional(m.theme.small),
                         m.theme.color("muted"),
+                    );
+                    let room = mp_r.min.x - 8.0 - r.rect.min.x - 42.0;
+                    let (shown, font) = super::kit::fit(ui, name, &FontId::proportional(m.theme.ui), room, 0.85);
+                    ui.painter().text(
+                        pos2(r.rect.min.x + 42.0, r.rect.center().y),
+                        Align2::LEFT_CENTER,
+                        shown,
+                        font,
+                        super::kit::ink(m, r),
                     );
                 },
             );

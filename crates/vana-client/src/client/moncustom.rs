@@ -856,7 +856,8 @@ fn draw_list(
     let [x, y, fw, fh] = win.frame;
     if focused {
         gu.sprite("menu    keytops3", 428, x, y + 6.0 + 18.0 * (c.0 - c.1) as f32, WHITE);
-        gu.cursor(x + 3.0, y + 6.0 + 18.0 * (c.0 - c.1) as f32);
+        let ry = y + 6.0 + 18.0 * (c.0 - c.1) as f32;
+        gu.cursor_on(INVNT, (c.0 - c.1) as u16 + 1, x + 3.0, ry, [x + 3.0, ry, fw - 6.0, 18.0]);
     }
     let names_col = if src == Source::Names { 5.0 } else { 0.0 };
     let left = left(w, s);

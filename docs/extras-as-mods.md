@@ -346,9 +346,11 @@ Each conversion removes the Rust it replaces, keeps the extra's look in both UIs
   a second to what is in range). Seen live: an NPC renamed, our plate hidden, our size 1.3. Not yet: tints by kind
   and the name colour table.
 - **Visual Tweaks** (assets/mods/visual-tweaks; toon, shades, clearcolor, Render knobs): Brightness, Colour
-  (saturation) and Cel Shading (brightness in four bands with the hue kept, outlines where the depth jumps) as one
-  post pass (render.shader), Wireframe through the client's switch; the menus untouched. Seen live: the cel look in
-  Southern San d'Oria. Not yet: the weather shown, Indi- bubbles hidden.
+  (saturation) and Cel Shading (soft brightness bands picked from the light around, not the texture grain;
+  outlines where 1 / distance bends, so a slope draws none) as one post pass (render.shader), Painting (Kuwahara)
+  before it and Sobel Outlines (depth, optionally colour) after it as their own passes, Wireframe through the
+  client's switch; the menus untouched. Seen live: the cel look in Southern San d'Oria, West Ronfaure and Windurst
+  Woods. Not yet: the weather shown, Indi- bubbles hidden.
 - **Window Placement** (assets/mods/window-placement; position_manager, WinControl, affinity and kin): `//winpos save`
   keeps the character's window size (and place where the system tells it; not on Wayland), restored at the next
   login; Always on Top; Priority. Seen live: the save and forget; the restore not tried (it would move the window).
@@ -560,6 +562,13 @@ Each conversion removes the Rust it replaces, keeps the extra's look in both UIs
   by the hint lines (LandSandBoat's caskets: greater / less, even / odd digits, one digit is N, a digit is one of
   three) and wrong guesses; after each, how many are left (listed when 12 or fewer) and the middle one to try. A Rust
   test walks a casket to its answer; not seen live (it needs a casket drop).
+- **RDM Buffs** (assets/mods/rdm-buffs; ours, the user's design): while the main job is Red Mage, an edge window lists
+  the self-buffs that are down or wearing off (Recast Early, 20 s), each with the best tier our jobs can cast now (job
+  point gifts on the main job only), its recast or "no MP". Cast All (or `//buffs`) casts them in order (Composure
+  first, then Haste, Refresh, Phalanx, Temper, Gain, the enspell, Protect / Shell, Regen, Stoneskin, Aquaveil, shadows,
+  spikes), skipping any on recast; Cancel (`//buffs cancel`) stops after the spell under way; a row casts that one;
+  `//buffs list` puts them in the log. Support jobs: Utsusemi with NIN (else Blink), Reraise with WHM, Sublimation with
+  SCH. Each buff, the Gain stat, the enspell element and the spikes are settings. Used live by the user on RDM/NIN.
 - Not ported: Discord Status (it needs a Discord application id: the user's call); Safety Catches' call-for-help block (the game's /blockhelp does it; the cast hold while moving is
   not done); GM Helper (gmcommand: LSB takes `!` lines as they are); Mod Profiles (plugin_manager: mod sets per character) waits for a settings API across mods; the emote
   picker is the game's Emotes list.

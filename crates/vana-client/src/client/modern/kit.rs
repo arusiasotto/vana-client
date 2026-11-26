@@ -426,6 +426,23 @@ pub fn elide(ui: &Ui, s: &str, font: &FontId, w: f32) -> String {
     format!("{}…", chars[..lo].iter().collect::<String>().trim_end())
 }
 
+/// `s` fitted to `w`: `font` shrunk as far as `min_scale` of its size, then cut with an ellipsis.
+/// The size steps snap to a few values, so a fitted text keeps its size while the room beside it changes a little (and
+/// the glyph atlas gets no new size each frame).
+pub fn fit(ui: &Ui, s: &str, font: &FontId, w: f32, min_scale: f32) -> (String, FontId) {
+    let width = ui.fonts_mut(|f| f.layout_no_wrap(s.to_string(), font.clone(), Color32::WHITE).size().x);
+    if width <= w {
+        return (s.to_string(), font.clone());
+    }
+    let mut steps = FIT_STEPS.iter().copied().filter(|&k| k > min_scale).chain([min_scale]);
+    let scale = steps.find(|&k| width * k <= w).unwrap_or(min_scale);
+    let small = FontId::new(font.size * scale, font.family.clone());
+    (elide(ui, s, &small, w), small)
+}
+
+/// `fit`'s sizes between whole and its floor.
+const FIT_STEPS: [f32; 2] = [0.9, 0.8];
+
 /// A click of the left button inside a row's rect this frame: the row is to take the cursor.
 pub fn row_clicked(ui: &Ui, r: Rect) -> bool {
     ui.rect_contains_pointer(r) && ui.input(|i| i.pointer.primary_clicked())
@@ -687,7 +704,10 @@ pub struct ComboOut {
     pub away: bool,
 }
 
-/// A combo field's open list under `field`, over everything, as the login form's: `items`, the cursor's lit.
+/// A combo field's open list under `field` (over it when there is more room there), over everything, as the login
+/// form's: `items`, the cursor's lit. A list taller than the screen allows scrolls; the cursor's row is scrolled into
+/// view when `follow` (the keys moved it, or it just opened).
+#[allow(clippy::too_many_arguments)]
 pub fn combo_list(
     ctx: &egui::Context,
     m: &Modern,
@@ -695,41 +715,68 @@ pub fn combo_list(
     field: Rect,
     items: &[String],
     cursor: usize,
+    follow: bool,
     font: FontId,
 ) -> ComboOut {
     const H: f32 = 26.0;
-    // Under the field, or over it when it would run off the bottom of the screen and fits there.
-    let (h, screen) = (H * items.len() as f32, ctx.content_rect());
-    let below = field.max.y + 3.0;
-    let top = if below + h + 3.0 > screen.max.y && field.min.y - 3.0 - h >= screen.min.y {
-        field.min.y - 3.0 - h
-    } else {
-        below
-    };
-    let rows: Vec<(Rect, &str)> = items
-        .iter()
-        .enumerate()
-        .map(|(k, s)| (Rect::from_min_size(pos2(field.min.x, top + H * k as f32), vec2(field.width(), H)), s.as_str()))
-        .collect();
+    let (full, screen) = (H * items.len() as f32, ctx.content_rect());
+    let below = (screen.max.y - field.max.y - 12.0).max(H);
+    let above = (field.min.y - screen.min.y - 12.0).max(H);
+    // Below when it fits there or has the more room; whole rows only.
+    let down = full <= below || below >= above;
+    let room = if down { below } else { above };
+    let h = full.min((room / H).floor() * H).max(H.min(full));
+    let top = if down { field.max.y + 3.0 } else { field.min.y - 3.0 - h };
+    let frame = Rect::from_min_size(pos2(field.min.x, top), vec2(field.width(), h));
     let mut out = ComboOut::default();
+    // Sized to the list: an area is otherwise held to egui's default 600 x 400 points, and a longer list's rows past
+    // that were cut off inside its frame.
     let area = egui::Area::new(id)
         .order(egui::Order::Foreground)
-        .fixed_pos(pos2(field.min.x, top - 3.0))
+        .fixed_pos(frame.min - vec2(0.0, 3.0))
+        .default_size(vec2(field.width(), h + 6.0))
         .constrain(false)
         .show(ctx, |ui| {
-            ui.allocate_exact_size(vec2(field.width(), 6.0 + H * rows.len() as f32), Sense::hover());
-            paint_combo_list(ui.painter(), m, &rows, cursor, &font);
-            for (k, (r, _)) in rows.iter().enumerate() {
-                let resp = ui.interact(*r, ui.scope_id().with(("combo row", k)), Sense::click());
-                if resp.hovered() {
-                    out.hovered = Some(k);
-                }
-                if resp.clicked() {
-                    out.picked = Some(k);
-                }
-            }
+            // Solid under its frame: the window it opens over must not show through its rows.
+            ui.painter().rect_filled(frame.expand(3.0), 4.0, m.theme.color("surface").to_opaque());
+            ui.painter().add(super::borders::window(m, "window_normal", frame.expand(3.0)));
+            ui.add_space(3.0);
+            // The scroll area inside the frame, clear of its border; its rows what the bar leaves.
+            ui.set_width(field.width() - 4.0);
+            egui::ScrollArea::vertical()
+                .id_salt(("combo scroll", id))
+                .max_height(h)
+                .min_scrolled_height(h)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                    for (k, text) in items.iter().enumerate() {
+                        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), H), Sense::click());
+                        let lit = k == cursor;
+                        if lit {
+                            ui.painter().rect_filled(r, 2.0, m.theme.color("focus").gamma_multiply(0.45));
+                            if follow {
+                                ui.scroll_to_rect(r, None);
+                            }
+                        }
+                        let c = if lit { m.theme.color("gold") } else { m.theme.color("text") };
+                        ui.painter().with_clip_rect(r).text(
+                            pos2(r.min.x + 6.0, r.center().y),
+                            Align2::LEFT_CENTER,
+                            text,
+                            font.clone(),
+                            c,
+                        );
+                        if resp.hovered() {
+                            out.hovered = Some(k);
+                        }
+                        if resp.clicked() {
+                            out.picked = Some(k);
+                        }
+                    }
+                });
         });
-    let shown = area.response.rect;
+    let shown = area.response.rect.union(frame.expand(3.0));
     out.away = ctx.input(|i| {
         i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|q| !shown.contains(q) && !field.contains(q))
     });

@@ -36,7 +36,7 @@ line = ui.get("manager", "line").text
 assert(line == '/ja "Tenebrae" <me>', line)
 -- Its line, saved with the entry and run in place of the built one.
 H("manager", { kind = "change", id = "line", text = '/ja "Tenebrae" <stpc>' })
-H("manager", { kind = "press", id = "bbtn", index = 1 })
+H("manager", { kind = "press", id = "bbar", index = 2 })
 local e = data.library("RUN")[1].entry
 assert(e.action.name == "Tenebrae" and e.action.line == '/ja "Tenebrae" <stpc>', e.action.line)
 assert(data.entry_lines(e)[1] == '/ja "Tenebrae" <stpc>')

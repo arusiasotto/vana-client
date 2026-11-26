@@ -71,6 +71,13 @@ pub struct Hold {
     drag: Option<(usize, f32)>,
 }
 
+impl Hold {
+    /// The thumb is being dragged (the mouse kind retail sets for it is 3, `mousecur::SCROLL_DRAG`).
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+}
+
 /// FUN_10234680's thumb: (length, offset) in whole pixels.
 fn thumb(h: f32, total: usize, visible: usize, top: usize) -> (i64, i64) {
     let (h, t, v) = (h as i64, total as i64, visible as i64);

@@ -283,7 +283,9 @@ fn rank_text(gu: &GameUi, r: u8) -> String {
 fn plate(gu: &mut GameUi, x: f32, y: f32, on: bool, focused: bool) {
     gu.sprite("menu    quest", 0, x - on as u8 as f32, y - on as u8 as f32, if on { 0x8080_5020 } else { WHITE });
     if on && focused {
-        gu.cursor(x, y);
+        // The plate (quest 0's first cell) is the cursor part.
+        let [x0, y0, x1, y1] = gu.cell_bounds("menu    quest", 0, 0).unwrap_or_default();
+        gu.cursor_on(CHOOSER, 0, x, y, [x + x0, y + y0, x1 - x0, y1 - y0]);
     }
 }
 

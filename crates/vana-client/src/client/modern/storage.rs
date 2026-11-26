@@ -300,6 +300,8 @@ pub fn draw(p: &mut Panels, w: &mut World) {
     let manual_held = b.manual.and_then(|(side, h)| h.map(|i| (side, b.held_part, i)));
     let mut mouse = Mouse::default();
     let mut found = super::lists::found(p, w, "storage");
+    let bag_title = format!("{}  {used} / {room}", BAGS[g].0);
+    let inv_title = format!("Inventory  {} / {inv_room}", inv.len());
     p.panel("window", Some(Title { icon: Some("icons/mog_safe"), text: "Storage", note: b.read_only.then_some("Away from the moogle"), name: false }), 720.0, |ui| {
         let labels: Vec<&str> = tabs.iter().map(|&k| BAGS[k].0).collect();
         for (i, resp) in super::tabs::strip(ui, m, "storage tabs", &labels, tabs.iter().position(|&k| k == g), None).into_iter().enumerate() {
@@ -310,24 +312,23 @@ pub fn draw(p: &mut Panels, w: &mut World) {
         ui.add_space(8.0);
         let tall = ui.ctx().content_rect().height() * 0.55;
         ui.horizontal_top(|ui| {
-            let lists = [(true, format!("{}  {used} / {room}", BAGS[g].0), &bag_names, &bag_icons, &tints_bag, &why_bag, bcur), (false, format!("Inventory  {} / {inv_room}", inv.len()), &inv_names, &inv_icons, &tints_inv, &why_inv, icur)];
+            let lists = [(true, bag_title, &bag_names, &bag_icons, &tints_bag, &why_bag, bcur), (false, inv_title, &inv_names, &inv_icons, &tints_inv, &why_inv, icur)];
             for (bank_side, title, names, icons, tints, whys, cur) in lists {
                 // The cursor's row kept in view as the keys move it (bag and side in the key).
                 let follow = m.moved(if bank_side { "storage bag" } else { "storage inventory" }, cur + g * 100_000);
                 let (auto_on, manual_on, sort_cursor, sort_off) = switches[usize::from(!bank_side)];
                 let col = ui.vertical(|ui| {
                     ui.set_width(340.0);
+                    // The title and its counts on their own line, the sort buttons on the next.
+                    ui.label(egui::RichText::new(title).size(m.theme.small).color(m.theme.color("gold")));
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(title).size(m.theme.small).color(m.theme.color("gold")));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for (child, label, on) in [(2u16, "Manual Sort", manual_on), (1, "Auto-sort", auto_on)] {
-                                let s = super::kit::Btn { lit: on && !sort_off, cursor: sort_cursor == Some(child), off: sort_off };
-                                if super::kit::clicked(&super::kit::button(ui, m, label, 0.0, s), s) {
-                                    mouse.sort = Some((bank_side, child));
-                                }
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for (child, label, on) in [(1u16, "Auto-sort", auto_on), (2, "Manual Sort", manual_on)] {
+                            let s = super::kit::Btn { lit: on && !sort_off, cursor: sort_cursor == Some(child), off: sort_off };
+                            if super::kit::clicked(&super::kit::button(ui, m, label, 0.0, s), s) {
+                                mouse.sort = Some((bank_side, child));
                             }
-                        });
+                        }
                     });
                     // A search runs over every bag in the side with the cursor.
                     if bank_side == on_bank && super::lists::rows_or(ui, m, &mut found) {
@@ -356,15 +357,16 @@ pub fn draw(p: &mut Panels, w: &mut World) {
                                 ui.painter().image(t, Rect::from_min_size(pos2(r.min.x + 10.0, r.center().y - ICON / 2.0), vec2(ICON, ICON)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
                             }
                             let c = if held_row { m.theme.color("gold") } else if dim { m.theme.color("muted") } else if tints[k] == TINT_WHITE { m.theme.color("text") } else { super::chat::colour(tints[k].to_le_bytes()) };
-                            ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, name, FontId::proportional(m.theme.ui), c);
                             let count = s.count;
                             let mut right = r.max.x - 12.0;
                             if count > 1 {
                                 right = ui.painter().text(pos2(right, r.center().y), Align2::RIGHT_CENTER, count.to_string(), FontId::proportional(m.theme.ui), m.theme.color("text")).min.x - 8.0;
                             }
                             if let Some(price) = (!bank_side).then(|| inv_bazaar[k]).flatten() {
-                                super::items::bazaar_tag(ui, m, right, r.center().y, price);
+                                right = super::items::bazaar_tag(ui, m, right, r.center().y, price) - 8.0;
                             }
+                            let (shown, font) = super::kit::fit(ui, name, &FontId::proportional(m.theme.ui), right - 2.0 - r.min.x - 42.0, 0.85);
+                            ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, shown, font, c);
                             if resp.clicked() {
                                 mouse.take = Some((bank_side, k, if shift { How::Split } else { How::Stack }));
                             }

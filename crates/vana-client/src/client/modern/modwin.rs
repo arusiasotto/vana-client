@@ -30,7 +30,8 @@ pub enum Click {
     /// An edge window's edge: "top", "bottom", "left", "right" or "free".
     Docked(&'static str),
     /// A canvas drag: element, phase (0 start, 1 move, 2 release), where.
-    CanvasDrag(usize, u8, f32, f32),
+    /// A canvas drag: element, phase, where in it, and whether a window or panel is under the pointer.
+    CanvasDrag(usize, u8, f32, f32, bool),
     /// Where a canvas is on screen this frame, in window pixels: its origin, the part of it shown (min, max), the
     /// pixels per point, and whether it is on top under the pointer. The client keeps it so a HUD drag let go over it
     /// drops there (lua::window_click; it is no click on the window).
@@ -174,7 +175,11 @@ impl Click {
             Click::Canvas(i, x, y, right) => win.canvas_click(i, x, y, right),
             Click::CanvasHover(i, x, y) => win.canvas_hover(i, x, y),
             Click::Docked(side) => win.docked(side),
-            Click::CanvasDrag(i, phase, x, y) => win.canvas_drag(i, phase, x, y),
+            Click::CanvasDrag(i, phase, x, y, covered) => {
+                let (mut ev, se) = win.canvas_drag(i, phase, x, y);
+                model::Event::set_covered(&mut ev, covered);
+                (ev, se)
+            }
             Click::Fold(i, line) => win.fold(i, line),
             // The client takes these (lua::window_click).
             Click::Pick(_) | Click::CanvasAt(..) => (Vec::new(), Vec::new()),
@@ -245,6 +250,49 @@ pub fn draw(p: &mut Panels, w: &mut World) {
     }
 }
 
+/// A list's columns widened to its cells in the modern list's font, and the width its rows need (an icon 24, each
+/// cell 8 beside its text).
+fn fit_list(
+    ctx: &egui::Context,
+    m: &super::Modern,
+    rows: &[model::Row],
+    columns: &[model::Col],
+) -> (Vec<model::Col>, f32) {
+    let small = FontId::proportional(m.theme.small);
+    model::fit_columns(
+        columns,
+        rows,
+        24.0,
+        8.0,
+        |t| ctx.fonts_mut(|f| f.layout_no_wrap(t.to_string(), small.clone(), Color32::WHITE).size().x),
+        |t| super::items::tags_w(ctx, m, t),
+    )
+}
+
+/// The panel width a window's lists need: the rows, the scroll bar's 28 and the panel's margins (44).
+fn list_need(ctx: &egui::Context, m: &super::Modern, win: &model::Window) -> f32 {
+    win.elems
+        .iter()
+        .map(|e| match e {
+            Elem::List { rows, columns, .. } => fit_list(ctx, m, rows, columns).1 + 28.0 + 44.0,
+            _ => 0.0,
+        })
+        .fold(0.0, f32::max)
+}
+
+/// Whether a choice's options fit side by side on one line (kit::button's widths, 6 apart).
+fn choice_fits(ui: &egui::Ui, m: &super::Modern, items: &[String]) -> bool {
+    let font = FontId::proportional(m.theme.small);
+    let w: f32 = items
+        .iter()
+        .map(|t| {
+            (ui.fonts_mut(|f| f.layout_no_wrap(t.clone(), font.clone(), Color32::WHITE).size().x) + 24.0).max(64.0)
+        })
+        .sum::<f32>()
+        + 6.0 * items.len().saturating_sub(1) as f32;
+    items.len() >= 2 && w <= ui.available_width()
+}
+
 /// One window as a panel, `t` of the way open (an animated one: faded, and grown up from its bottom edge): the clicks
 /// on it and its rect.
 fn panel(
@@ -258,6 +306,8 @@ fn panel(
     let (ctx, gu) = (p.ctx, p.gu);
     {
         let width = if win.width > 0.0 { win.width } else { 360.0 };
+        // Wider when a list's cells need it, up to half the screen.
+        let width = width.max(list_need(ctx, m, win).min(ctx.content_rect().width() * 0.5)).ceil();
         let mut clicks: Vec<Click> = Vec::new();
         let title = (!win.title.is_empty()).then_some(Title { icon: None, text: &win.title, note: None, name: false });
         let frame = if win.framed { "window_normal" } else { "none" };
@@ -316,11 +366,14 @@ pub(super) fn body(
     // A list row's tip under the pointer: before its element's.
     let mut row_tip: Option<&str> = None;
     let hidden = win.hidden();
+    // The cursor's element scrolls into view when it comes there, not every frame: the wheel can leave it.
+    let came = win.moved("element", win.focus.then_some(win.at));
     for (i, e) in win.elems.iter().enumerate() {
         if hidden[i] {
             continue;
         }
         let here = win.focus && i == win.at;
+        let follow = here && came;
         let top = ui.cursor().min.y;
         match e {
             // The Timers' panels draw their sections, the minimap's its map (extras.rs).
@@ -351,20 +404,24 @@ pub(super) fn body(
                 let lit = marked.map_or(0, |k| 1u64 << k.min(63));
                 let cursor = (here && !win.edit).then_some(win.col);
                 let (hit, _) =
-                    kit::setting(ui, m, label, here, false, here, |ui| kit::buttons(ui, m, &labels, cursor, lit, 0));
+                    kit::setting(ui, m, label, here, false, follow, |ui| kit::buttons(ui, m, &labels, cursor, lit, 0));
                 if let Some(c) = hit {
                     clicks.push(Click::Button(i, c));
                 }
             }
             Elem::Slider { label, n, at, shown, .. } => {
-                let (hit, _) = kit::slider_setting(ui, m, label, here, here, *n, *at, shown);
+                let (hit, _) = kit::slider_setting(ui, m, label, here, follow, *n, *at, shown);
                 if let Some(s) = hit {
                     clicks.push(Click::Slide(i, s));
                 }
             }
             Elem::List { id, rows, columns, at, height, .. } => {
                 let h = 26.0;
-                let cols = model::columns(columns, ui.available_width() - 28.0);
+                let lw = ui.available_width() - 28.0;
+                let (fit, _) = fit_list(ctx, m, rows, columns);
+                let fit = model::fit_within(columns, &fit, lw);
+                let columns = &fit;
+                let cols = model::columns(columns, lw);
                 if model::has_header(columns) {
                     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
                     for (c, &(cx, cw, right)) in cols.iter().enumerate() {
@@ -395,6 +452,10 @@ pub(super) fn body(
                     }
                 }
                 let mut pointed = None;
+                // The item of the cell under the pointer.
+                let mut pointed_item = None;
+                // Its cursor row scrolls into view when the row or the element's cursor moves there.
+                let row_moved = win.moved(&format!("row {i}"), Some(*at));
                 let out = kit::list(
                     ui,
                     m,
@@ -402,7 +463,7 @@ pub(super) fn body(
                     rows.len(),
                     Some(*at),
                     here,
-                    here,
+                    here && (came || row_moved),
                     h,
                     kit::list_height(ui, h, *height),
                     |_| false,
@@ -427,6 +488,9 @@ pub(super) fn body(
                         }
                         if cols.is_empty() {
                             ui.painter().text(pos2(x, cy), Align2::LEFT_CENTER, r.cells.join("  "), small.clone(), ink);
+                            if ui.rect_contains_pointer(row.rect) {
+                                pointed_item = r.cell_items.first().copied().flatten();
+                            }
                         }
                         for (c, &(cx, cw, right)) in cols.iter().enumerate() {
                             let Some(cell) = r.cells.get(c) else { continue };
@@ -436,10 +500,22 @@ pub(super) fn body(
                                 pos2(row.rect.min.x + 10.0 + cx + cw - 4.0, row.rect.max.y),
                             );
                             let p = ui.painter().with_clip_rect(cr.intersect(row.rect));
-                            if right {
-                                p.text(pos2(cr.max.x - 2.0, cy), Align2::RIGHT_CENTER, cell, small.clone(), ink);
+                            if ui.rect_contains_pointer(cr.intersect(row.rect)) {
+                                pointed_item = r.cell_items.get(c).copied().flatten();
+                            }
+                            let ink = r.cell_colours.get(c).copied().flatten().map_or(ink, rgba);
+                            let tags = r.cell_tags.get(c).filter(|t| !t.is_empty());
+                            let end = if right {
+                                let tw = tags.map_or(0.0, |t| super::items::tags_w(ctx, m, t));
+                                p.text(pos2(cr.max.x - 2.0 - tw, cy), Align2::RIGHT_CENTER, cell, small.clone(), ink)
+                                    .max
+                                    .x
                             } else {
-                                p.text(pos2(cr.min.x, cy), Align2::LEFT_CENTER, cell, small.clone(), ink);
+                                p.text(pos2(cr.min.x, cy), Align2::LEFT_CENTER, cell, small.clone(), ink).max.x
+                            };
+                            let mut tx = end + 8.0;
+                            for t in tags.into_iter().flatten() {
+                                tx = super::items::tag(&p, m, tx, cy, t) + 4.0;
                             }
                         }
                     },
@@ -450,26 +526,27 @@ pub(super) fn body(
                 if let Some(t) = pointed.and_then(|k| rows.get(k)).map(|r| r.tip.as_str()).filter(|t| !t.is_empty()) {
                     row_tip = Some(t);
                 }
+                if let (Some(item), Some(gu), Some(w), Some(at)) =
+                    (pointed_item, gu, world, ctx.input(|i| i.pointer.hover_pos()))
+                {
+                    super::items::tip(ctx, m, gu, w, at, item.id, item.ext(w));
+                }
                 ui.add_space(6.0);
             }
             // The training regime's row: the label, the count at the right, a thin bar under; dim when done.
             Elem::Gauge { label, value, text, row: true, dim, .. } => {
                 let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
                 let colour = if *dim { muted } else { text_c };
-                ui.painter().text(
-                    pos2(rect.min.x, rect.min.y + 2.0),
-                    Align2::LEFT_TOP,
-                    label,
-                    FontId::proportional(m.theme.small),
-                    colour,
-                );
-                ui.painter().text(
+                let count = ui.painter().text(
                     pos2(rect.max.x, rect.min.y + 2.0),
                     Align2::RIGHT_TOP,
                     text,
                     FontId::monospace(m.theme.small),
                     colour,
                 );
+                let room = count.min.x - 8.0 - rect.min.x;
+                let (label, font) = super::kit::fit(ui, label, &FontId::proportional(m.theme.small), room, 0.85);
+                ui.painter().text(pos2(rect.min.x, rect.min.y + 2.0), Align2::LEFT_TOP, label, font, colour);
                 let bar = Rect::from_min_max(pos2(rect.min.x, rect.max.y - 6.0), pos2(rect.max.x, rect.max.y - 2.0));
                 ui.painter().rect_filled(bar, 2.0, m.theme.color("charcoal"));
                 if *value > 0.0 {
@@ -500,7 +577,7 @@ pub(super) fn body(
                 } else {
                     crate::client::lua::combo_label(text)
                 };
-                let (field, _) = kit::setting(ui, m, label, here, false, here, |ui| {
+                let (field, _) = kit::setting(ui, m, label, here, false, follow, |ui| {
                     let r = kit::field(ui, m, "", listening.then_some(0), ui.available_width(), small.clone(), None);
                     let c = if listening || text.is_empty() { muted } else { text_c };
                     let x = r.min.x + if listening { 16.0 } else { 10.0 };
@@ -518,7 +595,7 @@ pub(super) fn body(
                 } else {
                     (win.focus && !win.typing() && win.type_into() == Some(i)).then(|| text.chars().count())
                 };
-                let (field, _) = kit::setting(ui, m, label, here, false, here, |ui| {
+                let (field, _) = kit::setting(ui, m, label, here, false, follow, |ui| {
                     kit::field(ui, m, text, caret, ui.available_width(), small.clone(), None)
                 });
                 if ui.interact(field, ui.scope_id().with(("mod input", &win.id, i)), Sense::click()).clicked() {
@@ -528,7 +605,7 @@ pub(super) fn body(
             // As the login form's combo fields: the arrow at the right end, the open list under it over the window.
             Elem::Choice { label, items, at, drop: true, .. } => {
                 let v = items.get(*at).map_or("", String::as_str);
-                let (field, _) = kit::setting(ui, m, label, here, false, here, |ui| {
+                let (field, _) = kit::setting(ui, m, label, here, false, follow, |ui| {
                     let r = kit::field(ui, m, v, None, ui.available_width(), small.clone(), None);
                     let a = Rect::from_min_max(pos2(r.max.x - 28.0, r.min.y), r.max);
                     kit::combo_arrow(ui.painter(), m, a, m.theme.small);
@@ -537,12 +614,17 @@ pub(super) fn body(
                 if ui.interact(field, ui.scope_id().with(("mod dropdown", &win.id, i)), Sense::click()).clicked() {
                     clicks.push(Click::Button(i, 0));
                 }
-                if win.drop_open() == Some(i) {
+                let open = win.drop_open() == Some(i);
+                // The highlight scrolls into view when the keys move it (the pointer's is under the pointer already).
+                let pointer_moved = ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+                let keyed = win.moved(&format!("drop {i}"), open.then_some(win.drop_at)) && !pointer_moved;
+                if open {
                     let id = egui::Id::unique("mod dropdown list").with((pid, &win.id, i));
-                    let out = kit::combo_list(ctx, m, id, field, items, win.drop_at, small.clone());
+                    let out = kit::combo_list(ctx, m, id, field, items, win.drop_at, keyed, small.clone());
                     if let Some(k) = out.picked {
                         clicks.push(Click::DropPick(i, k));
-                    } else if let Some(k) = out.hovered.filter(|k| *k != win.drop_at) {
+                    } else if let Some(k) = out.hovered.filter(|k| *k != win.drop_at && pointer_moved) {
+                        // Only a pointer that moves takes the highlight: a key moved it away from a resting one.
                         clicks.push(Click::DropHover(i, k));
                     }
                     if out.away {
@@ -550,9 +632,16 @@ pub(super) fn body(
                     }
                 }
             }
+            // As the Settings pages' values: the options side by side, the one held lit, when they fit on a line.
+            Elem::Choice { label, items, at, .. } if choice_fits(ui, m, items) => {
+                let (hit, _) = kit::setting(ui, m, label, here, true, follow, |ui| kit::choice(ui, m, items, *at, 0));
+                if let Some(k) = hit.filter(|k| k != at) {
+                    clicks.push(Click::TurnTo(i, k));
+                }
+            }
             Elem::Choice { label, items, at, .. } => {
                 let v = items.get(*at).map_or("", String::as_str);
-                let (hit, _) = kit::setting(ui, m, label, here, false, here, |ui| {
+                let (hit, _) = kit::setting(ui, m, label, here, false, follow, |ui| {
                     let mut hit = None;
                     ui.horizontal(|ui| {
                         let s = kit::Btn { lit: false, cursor: false, off: items.len() < 2 };
@@ -584,7 +673,7 @@ pub(super) fn body(
             }
             Elem::Colour { label, value, alpha, .. } => {
                 let open = here && win.edit;
-                kit::setting(ui, m, label, here, false, here, |ui| {
+                kit::setting(ui, m, label, here, false, follow, |ui| {
                     ui.horizontal(|ui| {
                         let (r, resp) = ui.allocate_exact_size(vec2(64.0, 26.0), Sense::click());
                         ui.painter().rect_filled(r, 4.0, rgba(*value));
@@ -665,12 +754,17 @@ pub(super) fn body(
                     _ => {}
                 }
                 if let Some((x, y)) = at {
+                    // Any window or panel under the pointer (this one too): only the background layer is the HUD's.
+                    let covered = ctx.pointer_latest_pos().is_some_and(|q| {
+                        ctx.layer_id_at(q)
+                            .is_some_and(|l| !matches!(l.order, egui::Order::Background | egui::Order::Tooltip))
+                    });
                     if resp.drag_started() {
-                        clicks.push(Click::CanvasDrag(i, 0, x, y));
+                        clicks.push(Click::CanvasDrag(i, 0, x, y, covered));
                     } else if resp.drag_stopped() {
-                        clicks.push(Click::CanvasDrag(i, 2, x, y));
+                        clicks.push(Click::CanvasDrag(i, 2, x, y, covered));
                     } else if resp.dragged() {
-                        clicks.push(Click::CanvasDrag(i, 1, x, y));
+                        clicks.push(Click::CanvasDrag(i, 1, x, y, covered));
                     }
                 }
                 ui.add_space(6.0);

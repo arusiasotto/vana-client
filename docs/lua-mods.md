@@ -86,7 +86,7 @@ Built (client/lua/, modern/modwin.rs), each checked live:
     `animate` windows (the modern UI fades them in and grows them up from their bottom edge, and folds them back)
   - keys and mouse in both UIs: the classic UI draws Config pages, the modern UI kit panels with saved places
   - HUD windows (no focus, frameless, placed)
-  - the HUD layer (`hud`): retained text (size, colour, background, alignment, lines), rects, bars and item / status
+  - the HUD layer (`hud`): retained text (size, colour, background, alignment, lines), rects, filled triangles, bars and item / status
     icons in window pixels (negative from the right or bottom edge), drawn under the windows and hidden with the UI;
     text in the active UI's face or a chosen one in either UI (the game font, alpha blended so dark text shows; the
     modern regular or bold), with an outline (colour, width) or a drop shadow (checked live in both UIs);

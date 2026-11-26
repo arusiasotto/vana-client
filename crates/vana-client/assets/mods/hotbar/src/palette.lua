@@ -157,6 +157,17 @@ function M.draw()
         ghost.follow(e, id, TILE_BG, TILE_DIM, function()
           return math.floor(settings.get("size") * u), act, label
         end)
+        if e.kind == "drag" and not e.window and M.dragging then
+          local overlay = require("src.overlay")
+          if overlay.on() then
+            local key = overlay.hover_at(e.x, e.y)
+            if require("src.mode").is_pad() then
+              require("src.pad").hover_overlay(key)
+            else
+              require("src.bar").hover_overlay(key)
+            end
+          end
+        end
         if e.kind == "drag_start" then
           M.start_drag(it.id, act, label)
         elseif e.kind == "drag_end" then

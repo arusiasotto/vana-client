@@ -322,18 +322,8 @@ fn list_key(w: &mut World, l: &mut List, key: egui::Key, page: bool) {
 /// Mouse: rows, the cursor row's click as Enter, the arrows (quest01 children 9 / 10) as Left / Right.
 pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), moved: bool, clicked: bool, page: bool) {
     let Some(q) = w.quests.clone() else { return };
-    let hit = |name: &str| -> Option<u16> {
-        let (x, y) = gu.window_xy(name, sw, sh)?;
-        let lay = gu.layout(name)?;
-        lay.elements
-            .iter()
-            .skip(1)
-            .find(|e| {
-                let (ex, ey) = (x + e.x as f32, y + e.y as f32);
-                p.0 >= ex && p.0 < ex + e.w as f32 && p.1 >= ey && p.1 < ey + e.h as f32
-            })
-            .map(|e| e.id)
-    };
+    // The shared hit test: the arrows' boxes are moved by their header offsets ((-2, 2) and (0, 2)).
+    let hit = |name: &str| gu.hit(name, sw, sh, p);
     if let Some(l) = &q.roe {
         let c = hit(LIST);
         if c.is_some() {
@@ -469,7 +459,7 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
                 };
                 text(gu, label, cx + 16.0, cy, tint);
                 if on && focused {
-                    gu.cursor(cx, cy);
+                    gu.cursor_child(CHOOSER, k as u16 + 1, cx, cy, x, y);
                 }
             }
             // FUN_10233560: the Records of Eminence panel.

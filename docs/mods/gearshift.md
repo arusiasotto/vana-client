@@ -7,23 +7,29 @@ Gearshift is a bundled mod that changes your gear around your actions from the j
 ## The set builder (no file needed)
 
 With no file for the job, Gearshift builds your sets itself from the gear you hold. `//gearshift` opens its window;
-turn **Wear These Sets** on there (per character, off until you do) and it wears them around your actions too. The
+turn **Enable Gearshift** on there (per character, off until you do) and it wears them around your actions too. The
 Gear Swapping and Set Builder settings switch it off whatever the window says.
 
 - **Sets:** every set of your job: idle, resting, movement, PDT / MDT, TP (hybrid and accuracy too), a set per weapon
   skill of the weapon types you hold, Fast Cast, each kind of magic, songs, blood pacts, ninjutsu, blue magic,
   geomancy, pet and job ability sets.
 - **Item stats** come from each item's description and its augments. Lines that need a condition (Set:, Latent
-  effect:, weather, days, an element) are not counted; a pet's stats count for pet sets.
+  effect:, weather, days, an element) are not counted; a pet's stats count for pet sets. A line such as
+  `Enhances "Dual Wield" effect` gives no amount and counts as +1 of that stat.
 - **For your level:** each slot's reference is the best piece for the set at the level cap (75 or 99: the Level Cap
   setting, Auto by your level): from public gear guides where they list one (src/build/bis.lua names its sources),
-  else the best-scoring piece in the whole item list. Your pick is the piece you hold that gives the most of that piece's kind of stats; if
-  nothing you hold is at least a quarter alike, the set's stat weights pick. "Worth getting" names a piece wearable
-  at your level that would do better. The sets follow your level, so level sync needs nothing.
-- **The window:** the job's sets, each set's score against the best for your level and the cap's best in slot, and per
-  slot the piece, how alike it is ("Match"), the best in slot and what is worth getting. Pick a slot to compare the
-  pieces' stats and choose one yourself (marked `*`, kept through rebuilds; "Automatic" frees it). Better pieces kept
-  where gear cannot be worn from are named.
+  else the best-scoring piece in the whole item list. Your pick is that piece when you hold it (worn even when the set's stat weights give it nothing: the
+  guides count what the weights miss), else the piece you hold that the set's weights score highest. In
+  the combat, idle and defence sets a slot none of your pieces help still gets your generally strongest piece
+  (defence, attributes, accuracy, attack, evasion; not weapons, ammo or element gear). "Worth getting"
+  names the highest-scoring piece wearable at your level when it would do better. The sets follow your level, so level sync needs nothing.
+- **The window:** the job's sets by category (Combat, Weapon Skills, Ranged, Magic, Pet, Abilities, Idle and
+  Defence: pick one, then its set), each set's score against the best for your level and the cap's best in slot, and
+  per slot the piece, its value for the set as a share of the best in slot's ("Match"), the best in slot and what is worth getting (with its Rare and Ex tags, as the item
+  window shows them). Rest the pointer on a piece in any column to see its item description. Pick a slot to compare the
+  pieces' stats and choose one yourself (marked `*`, kept through rebuilds; "Automatic" frees it). **Wear This Set**
+  Off keeps a set from being worn on its own (your gear stays as it is when it would be; marked "(off)" in the list),
+  per character and job; **Wear Now** still puts it on. Better pieces kept where gear cannot be worn from are named.
 - **Around actions:** Fast Cast before a spell and the spell's set after it (held until the cast lands or is
   interrupted); a weapon skill's or an ability's set before it (they land at once); Preshot and Midshot. Between
   actions the set for your status goes on when it changes or after an action, so a piece you change by hand stays on

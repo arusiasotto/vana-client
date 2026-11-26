@@ -100,6 +100,13 @@ pub fn size(w: &World, aura: u32) -> Option<u8> {
     a.shown.map(|i| i.size)
 }
 
+impl Aura {
+    /// The owner's model went (FUN_10092900): the aura goes with it and is made again, its `init` too, with the next.
+    pub fn forget(&mut self) {
+        (self.shown, self.dying, self.init_done) = (None, None, false);
+    }
+}
+
 /// Drops an aura actor and unlinks its effects (FUN_10092800, the actor's destructor FUN_10082b10).
 fn remove(w: &mut World, id: u32) {
     w.actors.remove(&id);
@@ -119,6 +126,10 @@ pub fn update(w: &mut World, dt: f32) {
         .collect();
     owners.push(w.my_id);
     for owner in owners {
+        // No aura while the owner is under an unload mark (event::unload_models): it went with the model.
+        if w.unload_marks.contains(&owner) {
+            continue;
+        }
         let me = owner == w.my_id;
         let monster = !me && w.entities.get(&owner).is_some_and(|e| e.flags & 1 != 0);
         let c = crate::fx::filter_class(me, monster, me || party.contains(&owner), false);

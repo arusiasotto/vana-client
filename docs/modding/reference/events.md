@@ -127,7 +127,8 @@ Some things hold for all of them:
 ## `load`
 
 Fires once, right after the mod's entry file has run: when the character enters the world (or, for a lobby mod, when
-the lobby first shows), and after `/lua load` or `/lua reload`. Register the handler in the entry file.
+the lobby first shows), when the mod is turned on in the Mods window or by a character or job switch (in the next mod
+phase), and after `/lua load` or `/lua reload`. Register the handler in the entry file.
 
 No arguments.
 

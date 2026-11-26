@@ -99,6 +99,8 @@ pub struct UiBatch {
     pub ttf: bool,
     /// The opacity of the window being drawn (per-window opacity), multiplied into what is pushed; None = 1.
     opacity: Option<f32>,
+    /// The hand drawn last (the focused window's cursor): the window, its cursor child and that child's rect.
+    pub hand: Option<(String, u16, [f32; 4])>,
 }
 
 impl UiBatch {
@@ -602,6 +604,20 @@ impl UiBatch {
             r.first += base;
             self.runs.push(r);
         }
+        if other.hand.is_some() {
+            self.hand = other.hand;
+        }
+    }
+
+    /// The hand was drawn on element `e` of window `m` placed at (x, y).
+    pub fn hand_on(&mut self, m: &crate::dat::ui::Menu, e: &crate::dat::ui::MenuElement, x: f32, y: f32) {
+        self.set_hand(&m.name, e.id, [x + e.x as f32, y + e.y as f32, e.w as f32, e.h as f32]);
+    }
+
+    /// The hand was drawn on child `child` of window `name`, whose rect is `rect` (UI pixels): the one place it is
+    /// recorded.
+    pub fn set_hand(&mut self, name: &str, child: u16, rect: [f32; 4]) {
+        self.hand = Some((name.to_string(), child, rect));
     }
 
     /// One cell at (x, y) scaled by (sx, sy); `tint` is ARGB with 0x80 = 1.0, as the client passes it.
@@ -955,7 +971,7 @@ const SHADER: &str = r#"
 // screen.xy: the layout size the vertices are in; dst.xy: the pixels they land on.
 struct U { screen: vec4<f32>, dst: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
-@group(0) @binding(1) var scene_depth: texture_depth_2d;
+@group(0) @binding(1) var scene_depth: texture_2d<f32>;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 struct VOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) color: vec4<f32>, @location(2) depth: f32 };
@@ -972,7 +988,7 @@ struct VOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32>, @l
     if i.depth >= 0.0 && i.depth < 2.0 {
         let dims = vec2<f32>(textureDimensions(scene_depth));
         let t = vec2<i32>(clamp(i.clip.xy / u.dst.xy * dims, vec2<f32>(0.0), dims - 1.0));
-        if i.depth > textureLoad(scene_depth, t, 0) {
+        if i.depth > textureLoad(scene_depth, t, 0).x {
             discard;
         }
     }
@@ -1032,7 +1048,7 @@ impl UiRenderer {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },

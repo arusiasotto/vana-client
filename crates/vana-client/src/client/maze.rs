@@ -743,7 +743,8 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
     {
         let (x, y) = (x + off.0, y + off.1);
         if w.confirm.is_none() && s.sibo.is_none() && s.focus == Focus::List {
-            gu.cursor(x + 3.0, y + 6.0 + 18.0 * (s.list.0 - s.list.1) as f32);
+            let row = (s.list.0 - s.list.1) as u16 + 1;
+            gu.cursor_child(INVEN, row, x + 3.0, y + 6.0 + 18.0 * (s.list.0 - s.list.1) as f32, x, y);
         }
         let (ox, oy) = (x + 3.0, y + 4.0);
         for (k, r) in list.iter().skip(s.list.1).take(VISIBLE).enumerate() {

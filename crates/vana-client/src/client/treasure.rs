@@ -144,10 +144,9 @@ fn line(w: &mut World, id: u16, actor: Option<u32>, target: u32, para0: i32, str
     let ctx = Ctx {
         actor: actor.and_then(|a| super::combat::who(w, a)),
         target: super::combat::who(w, target),
-        me: w.name.clone(),
         work: [para0, 0, 0, 0, 0],
         strings,
-        names: super::combat::tables(w),
+        ..super::combat::ctx(w)
     };
     match bt.system(id, &ctx) {
         Some(l) => {

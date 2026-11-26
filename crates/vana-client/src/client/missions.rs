@@ -305,28 +305,24 @@ fn list_key(w: &mut World, l: &mut List, key: egui::Key, page: bool) {
 /// click on the arrows (children 9 / 10) Left / Right; on missionm the generic hover and click.
 pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), moved: bool, clicked: bool, page: bool) {
     let Some(m) = w.missions.clone() else { return };
-    let inside = |x: f32, y: f32, e: &crate::dat::ui::MenuElement| {
-        let (ex, ey) = (x + e.x as f32, y + e.y as f32);
-        p.0 >= ex && p.0 < ex + e.w as f32 && p.1 >= ey && p.1 < ey + e.h as f32
-    };
     if let Some(l) = &m.list {
-        let (Some((x, y)), Some(lay)) = (gu.window_xy(LIST, sw, sh), gu.layout(LIST)) else { return };
-        let Some(e) = lay.elements.iter().skip(1).find(|e| inside(x, y, e)) else { return };
+        // The shared hit test: the arrows' boxes are moved by their header offsets ((-2, 2) and (0, 2)).
+        let Some(id) = gu.hit(LIST, sw, sh, p) else { return };
         // FUN_10221cd0: over the page arrows the list is disabled, so no hand and no list keys; a click on them is
         // Left / Right through the 0xa8 test, which with Ctrl / Alt held is a page on the disabled list, i.e. nothing.
-        if matches!(e.id, 9 | 10) && l.state == 1 {
+        if matches!(id, 9 | 10) && l.state == 1 {
             // The click's Left / Right goes to the window (the log switch), not the list, so it is sent before the
             // hover disables the list.
             if clicked && !page {
                 w.list_arrow_hover = false;
-                key(w, gu, if e.id == 9 { egui::Key::ArrowLeft } else { egui::Key::ArrowRight }, false);
+                key(w, gu, if id == 9 { egui::Key::ArrowLeft } else { egui::Key::ArrowRight }, false);
             } else if moved {
                 w.list_arrow_hover = true;
             }
             return;
         }
         gu.hover.set(true);
-        match e.id {
+        match id {
             c @ 1..=8 if l.state == 1 => {
                 let row = l.top + c as usize - 1;
                 if row >= l.rows.len() || matches!(l.rows[row], Row::CurHead | Row::DoneHead) {
@@ -346,11 +342,10 @@ pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), move
         }
         return;
     }
-    let (Some(sel), Some((x, y)), Some(lay)) = (m.menu, gu.window_xy(MENU, sw, sh), gu.layout(MENU)) else { return };
-    let Some(e) = lay.elements.iter().skip(1).filter(|e| e.links[2] != 0xff).find(|e| inside(x, y, e)) else { return };
+    let (Some(sel), Some(id)) = (m.menu, gu.hit(MENU, sw, sh, p)) else { return };
     gu.hover.set(true);
-    if e.id != sel && (moved || clicked) {
-        w.missions.as_mut().unwrap().menu = Some(e.id);
+    if id != sel && (moved || clicked) {
+        w.missions.as_mut().unwrap().menu = Some(id);
         w.sounds.push(Ui::Cursor as u32);
     } else if clicked {
         key(w, gu, egui::Key::Enter, false);

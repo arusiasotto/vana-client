@@ -22,9 +22,17 @@ local GHOST_BG = { 20, 24, 38, 120 }
 local DROP = { 255, 214, 120, 200 }
 local DRAGGED = { 0, 0, 0, 120 }
 
-local LABEL = 0.78
-local LABEL_LINE = 13
-local ROUND = 7
+M.LABEL = 0.78
+M.LABEL_LINE = 13
+M.ROUND = 7
+M.ICON_FRAC = 0.58
+M.ICON_TOP = 4
+M.HINT_SIZE = 0.9
+M.HINT_PAD = 4
+M.EDGE_W = 1.5
+local LABEL = M.LABEL
+local LABEL_LINE = M.LABEL_LINE
+local ROUND = M.ROUND
 
 -- hover: key under the pointer; flash: key -> until; drag: {cell, x, y}; tile_at: a palette tile over us {x, y}.
 function M.state()
@@ -39,7 +47,7 @@ end
 function M.fit(text, w)
   local n = math.max(1, math.floor((w - 8) / (6.5 * LABEL)))
   if utf8.len(text) and utf8.len(text) > n then
-    return text:sub(1, utf8.offset(text, n) - 1) .. "…"
+    return text:sub(1, utf8.offset(text, n) - 1) .. "..."
   end
   return text
 end

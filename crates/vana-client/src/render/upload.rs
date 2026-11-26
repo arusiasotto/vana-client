@@ -17,25 +17,31 @@ pub struct Budget {
     left: i64,
     /// Measured bytes per ms (starts at 1 GB/s).
     rate: f64,
+    /// Wall-clock end of this frame's copies. The byte budget starts from the measured rate, which is optimistic
+    /// until a slow copy corrects it, so a phone would otherwise decode a whole zone before the rate moved.
+    until: Option<Instant>,
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Budget { left: 0, rate: 1e6 }
+        Budget { left: 0, rate: 1e6, until: None }
     }
 }
 
 impl Gpu {
-    /// Starts a frame's copies: `ms` of them at the measured rate.
+    /// Starts a frame's copies: `ms` of them at the measured rate, and no longer than `ms` on the clock.
     pub fn begin_uploads(&self, ms: f64) {
         if let Ok(mut b) = self.uploads.lock() {
             b.left = ((b.rate * ms) as i64).clamp(MIN_PIECE as i64, 64 << 20);
+            b.until = Instant::now().checked_add(std::time::Duration::from_secs_f64((ms / 1000.0).max(0.0)));
         }
     }
 
-    /// Bytes this frame may still copy.
+    /// Bytes this frame may still copy. Zero once the frame's time is spent.
     pub fn upload_room(&self) -> u64 {
-        self.uploads.lock().map_or(0, |b| b.left.max(0) as u64)
+        self.uploads
+            .lock()
+            .map_or(0, |b| if b.until.is_some_and(|t| Instant::now() >= t) { 0 } else { b.left.max(0) as u64 })
     }
 
     /// Runs one copy of `bytes`, charging it and measuring the rate.
@@ -55,6 +61,9 @@ impl Gpu {
     /// Room for a piece: up to the budget, rounded down to `unit` (at least one unit, so work always moves).
     pub fn piece(&self, remaining: u64, unit: u64) -> u64 {
         let room = self.upload_room().max(unit.max(1));
+        // One write has to finish before the clock is checked again. A whole texture here stalls the phone.
+        #[cfg(target_os = "android")]
+        let room = room.min((256 << 10).max(unit));
         remaining.min(room / unit.max(1) * unit.max(1)).max(unit.min(remaining))
     }
 }
@@ -92,6 +101,10 @@ pub struct TexUp {
     rows: u32,
     block_h: u32,
     done: u32,
+    /// Level 0's mips, queued once it is in.
+    seq: Option<u64>,
+    /// The texture's material maps (material.rs) not on the GPU yet: they go up after the image, under the same budget.
+    mat: Option<MatUp>,
 }
 
 impl TexUp {
@@ -110,11 +123,16 @@ impl TexUp {
         });
         let bytes: u64 = (0..levels).map(|k| level_bytes(kind, (t.width >> k).max(1), (t.height >> k).max(1))).sum();
         super::TEXTURE_BYTES.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
-        TexUp { texture, kind, srgb, row, rows, block_h, done: 0 }
+        let mat = t
+            .material
+            .as_ref()
+            .filter(|m| m.gpu.get().is_none() && crate::material::gpu_supported())
+            .map(|m| MatUp::new(gpu, m.clone()));
+        TexUp { texture, kind, srgb, row, rows, block_h, done: 0, seq: None, mat }
     }
 
     /// Copies bands of `t` (the same image `new` saw) as the budget allows, all of it when `all`; once level 0 is
-    /// in, queues the mips and returns their sequence number.
+    /// in, queues the mips, then sends the material maps; returns the mips' sequence number when all of it is in.
     pub fn step(&mut self, gpu: &Gpu, t: &crate::dat::zone::Texture, all: bool) -> Option<u64> {
         let (_, _, data, ..) = level0(gpu, t, self.srgb);
         while self.done < self.rows && (all || gpu.upload_room() > 0) {
@@ -141,12 +159,89 @@ impl TexUp {
             });
             self.done += n;
         }
-        (self.done >= self.rows).then(|| {
+        if self.done < self.rows {
+            return None;
+        }
+        let seq = *self.seq.get_or_insert_with(|| {
             gpu.mips
                 .lock()
                 .map(|mut m| m.push(self.texture.clone(), t.width, t.height, self.kind, !self.srgb))
                 .unwrap_or(0)
-        })
+        });
+        if let Some(m) = &mut self.mat {
+            if !m.step(gpu, all) {
+                return None;
+            }
+            self.mat = None;
+        }
+        Some(seq)
+    }
+}
+
+/// A texture's two BC5 maps (normal, roughness / metal) written a band of block rows at a time, level by level.
+struct MatUp {
+    m: std::sync::Arc<crate::material::Material>,
+    tex: [wgpu::Texture; 2],
+    /// The chain (0 normal, 1 roughness / metal), its level and the block rows done in it.
+    at: (usize, u32, u32),
+}
+
+impl MatUp {
+    fn new(gpu: &Gpu, m: std::sync::Arc<crate::material::Material>) -> Self {
+        let make = || {
+            gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("material"),
+                size: wgpu::Extent3d { width: m.width, height: m.height, depth_or_array_layers: 1 },
+                mip_level_count: m.levels,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Bc5RgUnorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let tex = [make(), make()];
+        super::TEXTURE_BYTES.fetch_add((m.normal.len() * 2) as u64, std::sync::atomic::Ordering::Relaxed);
+        MatUp { m, tex, at: (0, 0, 0) }
+    }
+
+    /// Writes as the budget allows (all when `all`); true once both chains are in (their views kept on the material).
+    fn step(&mut self, gpu: &Gpu, all: bool) -> bool {
+        let m = &self.m;
+        while self.at.0 < 2 && (all || gpu.upload_room() > 0) {
+            let (chain, level, done) = self.at;
+            let (w, h) = (m.width >> level, m.height >> level);
+            let (row, rows) = ((w / 4 * 16) as u64, h / 4);
+            let start: usize = (0..level).map(|l| crate::material::level_size(m.width >> l, m.height >> l)).sum();
+            let data = if chain == 0 { &m.normal } else { &m.rough_metal };
+            let left = (rows - done) as u64;
+            let n = if all { left } else { gpu.piece(left * row, row) / row } as u32;
+            let at = start + (done as u64 * row) as usize;
+            let len = (n as u64 * row) as usize;
+            gpu.upload(len as u64, || {
+                gpu.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.tex[chain],
+                        mip_level: level,
+                        origin: wgpu::Origin3d { x: 0, y: done * 4, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &data[at..at + len],
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row as u32), rows_per_image: Some(n) },
+                    wgpu::Extent3d { width: w, height: n * 4, depth_or_array_layers: 1 },
+                )
+            });
+            self.at.2 += n;
+            if self.at.2 >= rows {
+                self.at = if level + 1 < m.levels { (chain, level + 1, 0) } else { (chain + 1, 0, 0) };
+            }
+        }
+        if self.at.0 < 2 {
+            return false;
+        }
+        let view = |t: &wgpu::Texture| t.create_view(&Default::default());
+        m.gpu.get_or_init(|| (view(&self.tex[0]), view(&self.tex[1])));
+        true
     }
 }
 

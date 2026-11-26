@@ -13,14 +13,15 @@ pub(super) fn chip(ui: &mut egui::Ui, m: &super::Modern, text: &str, note: &str,
         4.0,
         if tone == 0 { m.theme.color("focus") } else { colour },
     );
-    ui.painter().text(pos2(r.min.x + 16.0, r.center().y), Align2::LEFT_CENTER, text, font, m.theme.color("text"));
-    ui.painter().text(
+    let note_r = ui.painter().text(
         pos2(r.max.x, r.center().y),
         Align2::RIGHT_CENTER,
         note,
         FontId::proportional(m.theme.small),
         colour,
     );
+    let (text, font) = super::kit::fit(ui, text, &font, note_r.min.x - 8.0 - r.min.x - 16.0, 0.85);
+    ui.painter().text(pos2(r.min.x + 16.0, r.center().y), Align2::LEFT_CENTER, text, font, m.theme.color("text"));
     if !detail.is_empty() {
         ui.add_space(2.0);
         ui.label(egui::RichText::new(detail).size(m.theme.small).color(colour));

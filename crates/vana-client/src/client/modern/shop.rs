@@ -70,27 +70,10 @@ fn list(ui: &mut Ui, m: &super::Modern, gu: &GameUi, info: &ItemCache, v: &Look,
                 );
             }
             let name = r.text.clone().unwrap_or_else(|| info.item(r.id).map(|it| it.name.clone()).unwrap_or_default());
-            let right = rect.max.x - 110.0;
-            let clip = Rect::from_min_max(rect.min, pos2(right - 6.0, rect.max.y));
             let x = if r.id != 0 { rect.min.x + 42.0 } else { rect.min.x + 14.0 };
-            ui.painter().with_clip_rect(clip).text(
-                pos2(x, rect.center().y),
-                Align2::LEFT_CENTER,
-                name,
-                FontId::proportional(m.theme.ui),
-                name_tint,
-            );
-            if let Some(req) = r.req {
-                ui.painter().text(
-                    pos2(right, rect.center().y),
-                    Align2::RIGHT_CENTER,
-                    req_text(m, gu, req),
-                    FontId::proportional(m.theme.small),
-                    name_tint,
-                );
-            }
             let cell = r.price.clone().or_else(|| r.count.map(|n| n.to_string()));
-            // A bazaar row's tax "(+T G)" in yellow at the right, the price before it.
+            // From the right: a bazaar row's tax "(+T G)" in yellow, the price before it, the requirement in its column
+            // (or left of a long price), then the name in the room left.
             let mut end = rect.max.x - 12.0;
             if let Some(t) = &r.tax {
                 end = ui
@@ -107,14 +90,36 @@ fn list(ui: &mut Ui, m: &super::Modern, gu: &GameUi, info: &ItemCache, v: &Look,
                     - 8.0;
             }
             if let Some(c) = cell {
-                ui.painter().text(
-                    pos2(end, rect.center().y),
-                    Align2::RIGHT_CENTER,
-                    c,
-                    FontId::proportional(m.theme.ui),
-                    tint(m, r.price_tint),
-                );
+                end = ui
+                    .painter()
+                    .text(
+                        pos2(end, rect.center().y),
+                        Align2::RIGHT_CENTER,
+                        c,
+                        FontId::proportional(m.theme.ui),
+                        tint(m, r.price_tint),
+                    )
+                    .min
+                    .x
+                    - 10.0;
             }
+            let mut right = (rect.max.x - 110.0).min(end);
+            if let Some(req) = r.req {
+                right = ui
+                    .painter()
+                    .text(
+                        pos2(right, rect.center().y),
+                        Align2::RIGHT_CENTER,
+                        req_text(m, gu, req),
+                        FontId::proportional(m.theme.small),
+                        name_tint,
+                    )
+                    .min
+                    .x
+                    - 2.0;
+            }
+            let (shown, font) = super::kit::fit(ui, &name, &FontId::proportional(m.theme.ui), right - 6.0 - x, 0.85);
+            ui.painter().text(pos2(x, rect.center().y), Align2::LEFT_CENTER, shown, font, name_tint);
             if k == v.cursor && follow {
                 ui.scroll_to_rect(rect, None);
             }

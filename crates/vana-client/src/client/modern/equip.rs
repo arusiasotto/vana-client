@@ -384,13 +384,6 @@ fn list(
             (_, Reach::Far) => m.theme.color("muted"),
             _ => m.theme.color("text"),
         };
-        ui.painter().text(
-            pos2(r.min.x + 42.0, r.center().y),
-            Align2::LEFT_CENTER,
-            &names[k],
-            FontId::proportional(m.theme.ui),
-            c,
-        );
         // Where it is; out of reach, why.
         let place = match (x.worn, x.reach) {
             (Some(s), _) if s == slot => "Equipped".to_string(),
@@ -400,13 +393,22 @@ fn list(
             (None, Reach::Far) => format!("{} (locked)", bag(x.c)),
             (None, _) => bag(x.c).to_string(),
         };
-        ui.painter().text(
+        let place_r = ui.painter().text(
             pos2(r.max.x - 12.0, r.center().y),
             Align2::RIGHT_CENTER,
             place,
             FontId::proportional(m.theme.small),
             m.theme.color("muted"),
         );
+        // The name in the room left of the place.
+        let (shown, font) = super::kit::fit(
+            ui,
+            &names[k],
+            &FontId::proportional(m.theme.ui),
+            place_r.min.x - 10.0 - r.min.x - 42.0,
+            0.85,
+        );
+        ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, shown, font, c);
         if resp.clicked() {
             mouse.row_click = Some(k);
         }

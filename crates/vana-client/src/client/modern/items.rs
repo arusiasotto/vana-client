@@ -179,13 +179,6 @@ fn list(p: &mut Panels, w: &mut World) {
                     Color32::WHITE,
                 );
             }
-            painter.text(
-                pos2(r.min.x + 42.0, r.center().y),
-                Align2::LEFT_CENTER,
-                &row.name,
-                FontId::proportional(m.theme.ui),
-                tint(m, row.tint),
-            );
             let starred = !direct
                 && super::favs::star(ui, m, r, favs.get(k).copied().unwrap_or(false), resp.hovered() && sub.is_none());
             if starred {
@@ -207,8 +200,12 @@ fn list(p: &mut Panels, w: &mut World) {
                     - 8.0;
             }
             if let Some(price) = bazaar.get(k).copied().flatten() {
-                bazaar_tag(ui, m, right, r.center().y, price);
+                right = bazaar_tag(ui, m, right, r.center().y, price) - 8.0;
             }
+            // The name in the room left of the count and the bazaar tag.
+            let (name, font) =
+                super::kit::fit(ui, &row.name, &FontId::proportional(m.theme.ui), right - 2.0 - r.min.x - 42.0, 0.85);
+            ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, name, font, tint(m, row.tint));
             if resp.clicked() && !starred {
                 mouse.click = Some(k);
             }
@@ -391,6 +388,53 @@ fn info(p: &mut Panels, w: &World) {
     });
 }
 
+/// An item's description by the pointer (a mod list's cell): the info panel's body in its frame.
+pub(super) fn tip(
+    ctx: &egui::Context,
+    m: &super::Modern,
+    gu: &super::super::game_ui::GameUi,
+    w: &World,
+    at: egui::Pos2,
+    id: u16,
+    ext: Option<[u8; 24]>,
+) {
+    let Some(cache) = w.item_info.clone() else { return };
+    let Some(it) = cache.item(id) else { return };
+    let aug = gu.aug_ctx();
+    let voucher = super::super::maze::tabula_voucher(w, &it, ext.as_ref());
+    let cx = iteminfo::Ctx { now: super::super::vana_now(w) as u32, voucher, ..Default::default() };
+    let info = iteminfo::build(&it, ext.as_ref(), &cx, &|g, k| gu.item_msg(g, k), &|_| 0.0, aug.as_ref());
+    let icon = m.item_icon(ctx, &cache, id);
+    m.tip_framed(ctx, at, "window_normal", 396.0, |ui| {
+        ui.set_width(396.0);
+        body(ui, m, &info, icon);
+    });
+}
+
+/// An item mark's tag ("Rare") from x, centred on y: its right edge.
+pub(super) fn tag(p: &egui::Painter, m: &super::Modern, x: f32, y: f32, label: &str) -> f32 {
+    let f = tag_font(m);
+    let tw = p.layout_no_wrap(label.to_string(), f.clone(), Color32::WHITE).size().x;
+    let r = Rect::from_min_size(pos2(x, y - 9.0), vec2(tw + 10.0, 18.0));
+    p.rect_filled(r, 4.0, m.theme.color("charcoal"));
+    p.rect_stroke(r, 4.0, egui::Stroke::new(1.0, m.theme.color("bronze")), egui::StrokeKind::Inside);
+    p.text(r.center(), Align2::CENTER_CENTER, label, f, m.theme.color("gold"));
+    r.max.x
+}
+
+/// The room tags take after a text: the 8 before them, each tag and the 4 after it.
+pub(super) fn tags_w(ctx: &egui::Context, m: &super::Modern, labels: &[String]) -> f32 {
+    let f = tag_font(m);
+    8.0 + labels
+        .iter()
+        .map(|l| ctx.fonts_mut(|fo| fo.layout_no_wrap(l.clone(), f.clone(), Color32::WHITE).size().x) + 14.0)
+        .sum::<f32>()
+}
+
+fn tag_font(m: &super::Modern) -> FontId {
+    FontId::new(m.theme.small - 2.0, FontFamily::Name(super::STRONG.into()))
+}
+
 /// One item's description in the panel.
 fn body(ui: &mut Ui, m: &super::Modern, info: &iteminfo::Info, icon: Option<egui::TextureId>) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::hover());
@@ -421,13 +465,7 @@ fn body(ui: &mut Ui, m: &super::Modern, info: &iteminfo::Info, icon: Option<egui
             842 => "Alt",
             _ => continue,
         };
-        let f = FontId::new(m.theme.small - 2.0, FontFamily::Name(super::STRONG.into()));
-        let tw = ui.fonts_mut(|fo| fo.layout_no_wrap(label.to_string(), f.clone(), Color32::WHITE).size().x);
-        let tag = Rect::from_min_size(pos2(x, r.center().y - 9.0), vec2(tw + 10.0, 18.0));
-        ui.painter().rect_filled(tag, 4.0, m.theme.color("charcoal"));
-        ui.painter().rect_stroke(tag, 4.0, egui::Stroke::new(1.0, m.theme.color("bronze")), egui::StrokeKind::Inside);
-        ui.painter().text(tag.center(), Align2::CENTER_CENTER, label, f, m.theme.color("gold"));
-        x = tag.max.x + 4.0;
+        x = tag(ui.painter(), m, x, r.center().y, label) + 4.0;
     }
     // Game text: its element gaiji as the pack's icons.
     let line = |ui: &mut Ui, s: &str, size: f32, c: Color32| super::gametext::label(ui, m, s, size, c);

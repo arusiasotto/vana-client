@@ -547,8 +547,8 @@ for _, e in ipairs(hits or {}) do
 end
 ```
 
-Since a search with no match falls back to the group titles, check `id ~= 0` to keep only phrases. Only the English
-dictionary is loaded.
+Since a search with no match falls back to the group titles, check `id ~= 0` to keep only phrases. The dictionary is
+the client's language's (config.json `language`, English by default).
 
 ## `res.autotranslate_groups`
 

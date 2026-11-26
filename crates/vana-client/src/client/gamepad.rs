@@ -16,6 +16,16 @@ pub const DEFAULT_PADSIN: &str =
 pub const DEFAULT_PADEXSIN: &str =
     "-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-33,-33,32,32,-36,-36,35,35,6,7,5,4,-1,-1,-1,-1,-1,-1,-1";
 
+/// FFXiPadConfig's Pattern A (menu 0x410, record 0x6ef598, applied by FUN_0040dfc0): "for console-type gamepads
+/// with 2 directional control devices and 16 buttons". The default for a DirectInput controller (not read through
+/// XInput) when nothing is saved: the XInput layout's axis codes are XInput's, so on such a pad the camera would read
+/// the triggers. Its flags (force feedback, sliders, hat switch on) are padmode000's defaults already. *(Not retail:
+/// the game itself has no default per device; the tool applies a pattern only when the player picks it.)*
+pub const DINPUT_PADSIN: &str = "4,6,11,7,10,1,0,2,3,8,-1,-1,9,33,33,32,32,37,37,34,34,41,41,40,40,5,-1,-1,-1,-1,-1,-1";
+/// Pattern A's alternate map, made as DEFAULT_PADEXSIN is from DEFAULT_PADSIN: the sticks and d-pad only.
+pub const DINPUT_PADEXSIN: &str =
+    "-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,33,33,32,32,37,37,34,34,41,41,40,40,-1,-1,-1,-1,-1,-1,-1";
+
 /// padsin position -> slot (0x1034f930).
 const PERM: [u8; 32] = [
     8, 9, 14, 13, 10, 3, 1, 0, 2, 16, 25, 26, 15, 23, 24, 22, 21, 19, 20, 18, 17, 6, 7, 5, 4, 12, 31, 32, 33, 34, 35,
@@ -104,10 +114,13 @@ impl PadMap {
     }
 }
 
-/// One poll's device state: the virtual buttons down and the axes (-127 ..= 127, XInput's signs: up positive).
+/// One poll's device state: the buttons down (XInput's virtual numbers, or a DirectInput device's 0 ..= 31) and the
+/// axes by code (-127 ..= 127; XInput's signs, up positive, or DirectInput's, down positive). `di`: FUN_10005a40's
+/// DirectInput branch reads it (axis codes 1 ..= 10, gamepad_dinput.rs), else its XInput branch.
 pub struct Device<'a> {
     pub buttons: &'a [u8],
     pub axis: &'a dyn Fn(u8) -> f32,
+    pub di: bool,
 }
 
 /// What FUN_10005a40's XInput branch makes of a poll: the held pad word and the stick values (-127 ..= 127): camera
@@ -120,14 +133,14 @@ pub fn read(map: &PadMap, alt: &PadMap, dev: &Device, mode: u8, modes: (bool, bo
         let m = if use_alt && map.buttons[b as usize] != bit(slot::ALT_MAP) { alt } else { map };
         held |= m.buttons.get(b as usize).copied().unwrap_or(0);
     }
-    // [cam X, cam Y, move X, move Y, d-pad X, d-pad Y]. Axes (jump table 0x100077fc, padsin's map only): each slot's
-    // code copies ±axis into its destination; code 3 is zero and 6 none in XInput.
+    // [cam X, cam Y, move X, move Y, d-pad X, d-pad Y]. Axes (jump tables 0x100077fc XInput, 0x10007788 DirectInput;
+    // padsin's map only): each slot's code copies ±axis into its destination; in XInput code 3 is zero and 6 none.
     let mut v = [0f32; 6];
     for (s, d) in [(17, 0), (19, 1), (21, 2), (23, 3), (4, 4), (6, 5)] {
         for code in [map.axes[s], map.axes[s + 1]] {
             if code != 0 {
-                let a =
-                    if matches!(code.unsigned_abs(), 1 | 2 | 4 | 5) { (dev.axis)(code.unsigned_abs()) } else { 0.0 };
+                let c = code.unsigned_abs();
+                let a = if dev.di || matches!(c, 1 | 2 | 4 | 5) { (dev.axis)(c) } else { 0.0 };
                 v[d] = a * code.signum() as f32;
             }
         }
@@ -154,10 +167,12 @@ pub fn read(map: &PadMap, alt: &PadMap, dev: &Device, mode: u8, modes: (bool, bo
     if modes.1 {
         (v[0], v[1]) = (0.0, 0.0);
     }
-    // Slot 25 (its d-pad bits dropped), then slot 26, then mode 2, then mode 1: the movement stick drives the d-pad
-    // or the camera.
+    // Slot 25 (the XInput branch drops its d-pad bits), then slot 26, then mode 2, then mode 1: the movement stick
+    // drives the d-pad or the camera.
     if held & bit(slot::STICK_DPAD) != 0 {
-        held &= !DPAD;
+        if !dev.di {
+            held &= !DPAD;
+        }
         (v[4], v[5], v[2], v[3]) = (v[2], v[3], 0.0, 0.0);
     } else if held & bit(slot::STICK_CAMERA) != 0 || mode == 2 {
         (v[0], v[1], v[2], v[3]) = (v[2], v[3], 0.0, 0.0);
@@ -171,6 +186,11 @@ pub fn read(map: &PadMap, alt: &PadMap, dev: &Device, mode: u8, modes: (bool, bo
         if v[x].hypot(v[y]) < dead {
             (v[x], v[y]) = (0.0, 0.0);
         }
+    }
+    // The DirectInput branch then pushes the movement stick out to the square's corners (0x10006753).
+    if dev.di {
+        let (x, y) = super::gamepad_dinput::square(v[2] as i32, v[3] as i32);
+        (v[2], v[3]) = (x as f32, y as f32);
     }
     for x in &mut v {
         *x = x.clamp(-127.0, 127.0);
@@ -276,8 +296,11 @@ pub struct Frame {
 pub struct Capture {
     /// Buttons that went down this frame (padsin's numbers).
     pub pressed: Vec<u8>,
-    /// The sticks: left X / Y, right X / Y, -127 ..= 127 in XInput's signs (up positive).
-    pub axes: [f32; 4],
+    /// Axes by padsin's code, -127 ..= 127: an XInput pad's sticks (1, 2, 4, 5, up positive), or a DirectInput
+    /// device's axes that moved since the window started waiting (1 ..= 10, down positive).
+    pub axes: Vec<(u8, f32)>,
+    /// The pad is a DirectInput device.
+    pub di: bool,
 }
 
 /// Where the button settings in use come from.
@@ -300,9 +323,29 @@ pub struct Settings {
     pub background: bool,
     /// The pad rumbles (padmode000's second flag, "Enable Force Feedback": DAT_10455c39).
     pub rumble: bool,
+    /// padmode000's [5] (an XInput controller through XInput), [2] (sliders) and [3] (hat switch).
+    pub xinput: bool,
+    pub sliders: bool,
+    pub hat: bool,
+    /// padguid000, the controller that plays ("" the first).
+    pub padguid: String,
     pub source: Source,
     /// config.json holds a map (either): Use Retail Settings has something to clear.
     pub saved: bool,
+}
+
+impl Settings {
+    /// With nothing saved and a DirectInput controller playing, FFXiPadConfig's Pattern A instead of its XInput
+    /// setup (DINPUT_PADSIN).
+    pub fn for_dinput(mut self, dinput: bool) -> Settings {
+        if dinput && self.source == Source::Default {
+            self.padsin = DINPUT_PADSIN.into();
+            if self.padexsin == DEFAULT_PADEXSIN {
+                self.padexsin = DINPUT_PADEXSIN.into();
+            }
+        }
+        self
+    }
 }
 
 /// What a frame's settings are. config.json's maps win (the Controller window writes them); else retail's registry
@@ -310,16 +353,40 @@ pub struct Settings {
 /// the background ([4]) and rumbles ([1]); else FFXiPadConfig's XInput layout. config gamepad off always turns it
 /// off, and so does gamepad_rumble the rumble.
 /// A config.json gamepad_padexsin is used whatever the main map's source.
+/// config.json's padguid and XInput / sliders / hat options win, else retail's whatever the maps' source (the game reads padguid000 on its own,
+/// FUN_10002840).
 pub fn settings(cfg: &Config, retail: Option<&crate::padreg::Retail>) -> Settings {
     let mut s = settings_of(cfg, retail);
     if !cfg.gamepad_padexsin.trim().is_empty() {
         (s.padexsin, s.saved) = (cfg.gamepad_padexsin.clone(), true);
     }
+    // padmode000's XInput / sliders / hat: config.json's when the Controller window set them, whatever the maps' source.
+    s.xinput = cfg.gamepad_xinput.unwrap_or(s.xinput);
+    s.sliders = cfg.gamepad_sliders.unwrap_or(s.sliders);
+    s.hat = cfg.gamepad_hat.unwrap_or(s.hat);
+    s.padguid = if !cfg.gamepad_padguid.trim().is_empty() {
+        cfg.gamepad_padguid.trim().to_string()
+    } else {
+        retail.and_then(|r| r.padguid.clone()).unwrap_or_default()
+    };
+    // The controller choice saved is a saved setting too: Use Retail Settings has something to take back.
+    s.saved |= device_saved(cfg);
     s
+}
+
+/// The Controller window saved a controller or its options (config.json's padguid / XInput / sliders / hat).
+pub fn device_saved(cfg: &Config) -> bool {
+    !cfg.gamepad_padguid.trim().is_empty()
+        || cfg.gamepad_xinput.is_some()
+        || cfg.gamepad_sliders.is_some()
+        || cfg.gamepad_hat.is_some()
 }
 
 fn settings_of(cfg: &Config, retail: Option<&crate::padreg::Retail>) -> Settings {
     let (on, background, rumble) = (cfg.gamepad, cfg.gamepad_background, cfg.gamepad_rumble);
+    // padmode000's [5] / [2] / [3] from retail's settings whatever the maps' source (on without them).
+    let flag = |i: usize| retail.and_then(|r| r.mode(i)) != Some(false);
+    let (xinput, sliders, hat, padguid) = (flag(5), flag(2), flag(3), String::new());
     if !cfg.gamepad_padsin.trim().is_empty() {
         let padexsin = DEFAULT_PADEXSIN.to_string();
         return Settings {
@@ -328,6 +395,10 @@ fn settings_of(cfg: &Config, retail: Option<&crate::padreg::Retail>) -> Settings
             on,
             background,
             rumble,
+            xinput,
+            sliders,
+            hat,
+            padguid,
             source: Source::Config,
             saved: true,
         };
@@ -340,6 +411,10 @@ fn settings_of(cfg: &Config, retail: Option<&crate::padreg::Retail>) -> Settings
             on: on && r.mode(0) != Some(false),
             background: background || r.mode(4) == Some(true),
             rumble: rumble && r.mode(1) != Some(false),
+            xinput,
+            sliders,
+            hat,
+            padguid,
             source: Source::Retail,
             saved: false,
         };
@@ -350,6 +425,10 @@ fn settings_of(cfg: &Config, retail: Option<&crate::padreg::Retail>) -> Settings
         on,
         background,
         rumble,
+        xinput,
+        sliders,
+        hat,
+        padguid,
         source: Source::Default,
         saved: false,
     }
@@ -379,15 +458,25 @@ const RETRY: Duration = Duration::from_secs(5);
 
 /// One poll of the pad that plays, from gilrs or SDL: the buttons held (VIRTUAL's numbers, sorted) and the sticks and
 /// triggers (lx, ly, rx, ry in -1 ..= 1, up positive; lt, rt in 0 ..= 1).
+#[derive(Clone)]
 pub struct Pad {
     pub buttons: Vec<u8>,
     pub axes: [f32; 6],
+    /// A DirectInput device's axes by code 1 ..= 10 (gamepad_dinput::axis): its buttons are then its own numbers.
+    pub di: Option<[f32; 10]>,
 }
 
+/// A gilrs pad as XInput reads one: the sticks unfiltered (gilrs's default filters are off: its dead zone rescales
+/// radially, retail takes the raw value, v x 127 >> 15), and a trigger held at any value above 0 (FUN_10005a40 tests
+/// the trigger byte against 0; gilrs's own press threshold is 0.75).
 fn gilrs_pad(pad: &gilrs::Gamepad) -> Pad {
     let trigger = |b: Button| pad.button_data(b).map_or(0.0, |d| d.value());
+    let held = |b: Button| match b {
+        Button::LeftTrigger2 | Button::RightTrigger2 => trigger(b) > 0.0,
+        _ => pad.is_pressed(b),
+    };
     Pad {
-        buttons: VIRTUAL.iter().filter(|(b, _)| pad.is_pressed(*b)).map(|(_, n)| *n).collect(),
+        buttons: VIRTUAL.iter().filter(|(b, _)| held(*b)).map(|(_, n)| *n).collect(),
         axes: [
             pad.value(Axis::LeftStickX),
             pad.value(Axis::LeftStickY),
@@ -396,6 +485,7 @@ fn gilrs_pad(pad: &gilrs::Gamepad) -> Pad {
             trigger(Button::LeftTrigger2),
             trigger(Button::RightTrigger2),
         ],
+        di: None,
     }
 }
 
@@ -410,6 +500,34 @@ pub struct Gamepad {
     sdl: Option<super::gamepad_sdl::Sdl>,
     #[cfg(target_os = "linux")]
     sdl_tried: bool,
+    /// XInput's pads (Windows): started once when gilrs fails or finds none, played while gilrs has none; whether
+    /// the pad that plays is XInput's (the rumble goes to it).
+    #[cfg(windows)]
+    xinput: Option<super::gamepad_xinput::XInput>,
+    #[cfg(windows)]
+    xinput_tried: bool,
+    #[cfg(windows)]
+    xinput_plays: bool,
+    /// Retail's controller choice and DirectInput read (gamepad_dinput.rs), made once the window is known; gilrs
+    /// is not started while it is up. The settings it was set up with (a change is DAT_10456df0), the focus last
+    /// frame (WM_ACTIVATE acquires), whether its DirectInput device plays (the rumble goes to it), the window, and
+    /// the ticks not yet a retail frame (the 0x5a frames after a loss).
+    #[cfg(windows)]
+    dinput: Option<Box<super::gamepad_dinput::DInput>>,
+    #[cfg(windows)]
+    dinput_tried: bool,
+    #[cfg(windows)]
+    di_key: Option<(String, bool, bool, bool, bool)>,
+    #[cfg(windows)]
+    di_focus: Option<bool>,
+    #[cfg(windows)]
+    di_plays: bool,
+    #[cfg(windows)]
+    hwnd: isize,
+    #[cfg(windows)]
+    di_clock: f32,
+    /// The axes when the Controller window started waiting (a DirectInput slider rests away from 0).
+    cap_axes: Option<[f32; 10]>,
     active: Option<GamepadId>,
     maps: Option<(String, String, PadMap, PadMap)>,
     /// DAT_10455c3e: the left stick's mode (0 move, 1 d-pad, 2 camera), stepped by slot 31.
@@ -489,37 +607,65 @@ impl Gamepad {
             }
             self.retail = r;
         }
-        let set = settings(cfg, self.retail.as_ref());
+        let set = settings(cfg, self.retail.as_ref()).for_dinput(self.plays_dinput());
         if !set.on && !capture {
             mods(&[], [0.0; 6], false);
+            // The pad turned off lets the DirectInput device go (a changed padmode000, DAT_10456df0), so a background
+            // exclusive acquisition does not hold it from other programs; turned on again it is picked anew.
+            #[cfg(windows)]
+            if self.di_key.take().is_some()
+                && let Some(d) = &mut self.dinput
+            {
+                d.reset();
+            }
             return self.release_all();
         }
         self.connect();
+        #[cfg(windows)]
+        if let Some(d) = &mut self.dinput
+            && self.di_focus.replace(focused).is_some_and(|f| f != focused)
+        {
+            d.acquire();
+        }
+        #[cfg(windows)]
+        if let (true, Some(x)) = (self.xinput_plays, &mut self.xinput) {
+            x.enable(focused || set.background);
+        }
         let (padsin, padexsin) = (set.padsin.as_str(), set.padexsin.as_str());
         if self.maps.as_ref().is_none_or(|m| m.0 != padsin || m.1 != padexsin) {
             self.maps =
                 Some((padsin.to_string(), padexsin.to_string(), PadMap::parse(padsin), PadMap::parse(padexsin)));
         }
-        let pad = match self.read_pad() {
+        // NativeActivity's focus reports are unreliable: Android takes the pad regardless.
+        let focused = focused || cfg!(target_os = "android");
+        let pad = match self.read_pad(&set, dt) {
             Some(p) if focused || set.background => p,
             _ => {
                 mods(&[], [0.0; 6], false);
                 return self.release_all();
             }
         };
-        let Pad { mut buttons, axes } = pad;
+        let Pad { mut buttons, axes, di } = pad;
         if capture {
             // Buttons already down when it starts (the A that asked) are not presses.
             if !self.capturing {
                 (self.capturing, self.cap_prev) = (true, buttons.clone());
+                self.cap_axes = di;
             }
             let pressed = buttons.iter().copied().filter(|b| !self.cap_prev.contains(b)).collect();
-            let axes = [axes[0] * 127.0, axes[1] * 127.0, axes[2] * 127.0, axes[3] * 127.0];
+            // A DirectInput device's axes that moved since it started (by code), else the sticks (XInput's codes).
+            let axes = match (di, self.cap_axes) {
+                (Some(a), Some(base)) => (0..10)
+                    .filter(|&i| (a[i] - base[i]).abs() >= super::padcfg::PUSH)
+                    .map(|i| (i as u8 + 1, a[i]))
+                    .collect(),
+                _ => vec![(1, axes[0] * 127.0), (2, axes[1] * 127.0), (4, axes[2] * 127.0), (5, axes[3] * 127.0)],
+            };
             self.cap_prev = buttons;
             mods(&[], [0.0; 6], false);
             let mut f = self.release_all();
             f.used = true;
-            f.capture = Some(Capture { pressed, axes });
+            f.capture = Some(Capture { pressed, axes, di: di.is_some() });
             return f;
         }
         if std::mem::take(&mut self.capturing) {
@@ -527,13 +673,17 @@ impl Gamepad {
         }
         self.mute.retain(|b| buttons.contains(b));
         buttons.retain(|b| !self.mute.contains(b));
-        let taken = mods(&buttons, axes, true);
+        // Mods read XInput's button numbers (lua/input.rs pad_filter): a DirectInput device's own numbers are not
+        // given to them, so its buttons all go to the game.
+        let taken = if di.is_some() { mods(&[], [0.0; 6], false) } else { mods(&buttons, axes, true) };
         buttons.retain(|b| !taken.contains(b));
-        let axis = |code: u8| match code {
-            1 => axes[0] * 127.0,
-            2 => axes[1] * 127.0,
-            4 => axes[2] * 127.0,
-            5 => axes[3] * 127.0,
+        let axis = |code: u8| match (di, code) {
+            (Some(a), 1..=10) => a[code as usize - 1],
+            (Some(_), _) => 0.0,
+            (None, 1) => axes[0] * 127.0,
+            (None, 2) => axes[1] * 127.0,
+            (None, 4) => axes[2] * 127.0,
+            (None, 5) => axes[3] * 127.0,
             _ => 0.0,
         };
         let (_, _, map, alt) = self.maps.as_ref().unwrap();
@@ -542,8 +692,8 @@ impl Gamepad {
         if !modes.0 && !modes.1 {
             self.mode = 0;
         }
-        let (held, v) =
-            read(map, alt, &Device { buttons: &buttons, axis: &axis }, self.mode, modes, cfg.gamepad_deadzone);
+        let dev = Device { buttons: &buttons, axis: &axis, di: di.is_some() };
+        let (held, v) = read(map, alt, &dev, self.mode, modes, cfg.gamepad_deadzone);
         if held & !self.prev & bit(slot::STICK_MODE) != 0 {
             self.mode = next_mode(self.mode, modes);
         }
@@ -573,6 +723,21 @@ impl Gamepad {
 
     /// Both motors at `level` (XInputSetState's scale).
     fn motors(&mut self, level: u16) {
+        // A DirectInput device takes FUN_10007ae0's level itself (level x 10000 / 256, a quarter of XInput's).
+        #[cfg(windows)]
+        if self.di_plays {
+            if let Some(d) = &mut self.dinput {
+                d.force(level as i32 / 4);
+            }
+            return;
+        }
+        #[cfg(windows)]
+        if self.xinput_plays {
+            if let Some(x) = &mut self.xinput {
+                x.motors(level);
+            }
+            return;
+        }
         let Some(g) = &mut self.gilrs else { return };
         if self.ff.as_ref().is_some_and(|(id, _)| Some(*id) != self.active) {
             // Another pad plays now: the old one's effect goes with its handle.
@@ -613,12 +778,32 @@ impl Gamepad {
         self.ff_level = level;
     }
 
-    /// Starts gilrs, again every RETRY while it fails, and on Linux SDL once when gilrs failed or found no pad.
+    /// Starts gilrs, again every RETRY while it fails, and once when gilrs failed or found no pad SDL (Linux) or
+    /// XInput (Windows).
     fn connect(&mut self) {
+        #[cfg(windows)]
+        if !self.dinput_tried && self.hwnd != 0 {
+            self.dinput_tried = true;
+            match super::gamepad_dinput::DInput::new(self.hwnd) {
+                Ok(mut d) => {
+                    for l in d.list() {
+                        log::info!("gamepad (DirectInput): {} {}", l.guid.text(), l.name);
+                    }
+                    self.dinput = Some(d);
+                }
+                Err(e) => log::warn!("gamepad: {e}; gilrs instead"),
+            }
+        }
+        #[cfg(windows)]
+        if self.dinput.is_some() || (!self.dinput_tried && self.hwnd != 0) {
+            return;
+        }
         let now = Instant::now();
-        if self.gilrs.is_none() && self.next_try.is_none_or(|t| now >= t) {
+        // gilrs has no Android backend; the patched winit feeds gamepad_android instead.
+        if !cfg!(target_os = "android") && self.gilrs.is_none() && self.next_try.is_none_or(|t| now >= t) {
             self.next_try = Some(now + RETRY);
-            match Gilrs::new() {
+            // No default filters (dead zone, jitter): read_pad keeps the d-pad one itself.
+            match gilrs::GilrsBuilder::new().with_default_filters(false).set_update_state(false).build() {
                 Ok(g) => {
                     for (id, pad) in g.gamepads() {
                         log::info!("gamepad {id}: {}", pad.name());
@@ -647,39 +832,179 @@ impl Gamepad {
                 Err(e) => log::warn!("gamepad: SDL: {e}"),
             }
         }
+        #[cfg(windows)]
+        if !self.xinput_tried && self.gilrs.as_ref().is_none_or(|g| g.gamepads().next().is_none()) {
+            self.xinput_tried = true;
+            match super::gamepad_xinput::XInput::new() {
+                Ok(x) => self.xinput = Some(x),
+                Err(e) => log::warn!("gamepad: XInput: {e}"),
+            }
+        }
     }
 
-    /// The pad that plays (the last one touched): gilrs's, else SDL's.
-    fn read_pad(&mut self) -> Option<Pad> {
+    /// The pad that plays: on Windows retail's (read_retail); else gilrs's (padguid's when connected, else the last
+    /// one touched), else SDL's (Linux) or XInput's (Windows without DirectInput).
+    fn read_pad(&mut self, set: &Settings, dt: f32) -> Option<Pad> {
+        #[cfg(target_os = "android")]
+        if let Some(p) = super::gamepad_android::state() {
+            return Some(p);
+        }
+        #[cfg(windows)]
+        if self.dinput.is_some() {
+            return self.read_retail(set, dt);
+        }
+        let _ = dt;
         #[cfg(target_os = "linux")]
         if let Some(s) = &mut self.sdl {
             s.update();
         }
         if let Some(g) = &mut self.gilrs {
+            use gilrs::ev::filter::{Filter as _, axis_dpad_to_button};
             while let Some(ev) = g.next_event() {
-                match ev.event {
-                    gilrs::EventType::Connected => {
-                        log::info!("gamepad {} connected: {}", ev.id, g.gamepad(ev.id).name());
-                        self.active.get_or_insert(ev.id);
-                    }
-                    gilrs::EventType::Disconnected => {
-                        if self.active == Some(ev.id) {
-                            self.active = g.gamepads().map(|(id, _)| id).find(|&id| id != ev.id);
-                        }
-                    }
-                    gilrs::EventType::ButtonPressed(..) => self.active = Some(ev.id),
-                    _ => {}
+                // A hat reported as axes is still the d-pad's buttons (gilrs's d-pad filter, the one kept).
+                let Some(ev) = Some(ev).filter_ev(&axis_dpad_to_button, g).filter(|e| !e.is_dropped()) else {
+                    continue;
+                };
+                g.update(&ev);
+                if let gilrs::EventType::Connected = ev.event {
+                    log::info!("gamepad {} connected: {}", ev.id, g.gamepad(ev.id).name());
                 }
             }
-            if let Some(p) = self.active.and_then(|id| g.connected_gamepad(id)) {
-                return Some(gilrs_pad(&p));
+            // FUN_100057d0's choice on gilrs's list: padguid's pad, else the first one (not the last one touched).
+            // *(Not retail: padguid000 names a DirectInput instance, which gilrs has not; here it holds gilrs's pad
+            // UUID as the Controller window saved it, and "first" is gilrs's order, not DirectInput's.)*
+            let named = g.gamepads().find(|(_, p)| !set.padguid.is_empty() && uuid_text(p.uuid()) == set.padguid);
+            self.active = named.or_else(|| g.gamepads().next()).map(|p| p.0);
+            if let Some(p) = self.active.and_then(|id| g.connected_gamepad(id)).map(|p| gilrs_pad(&p)) {
+                #[cfg(windows)]
+                self.xinput_off();
+                return Some(p);
             }
         }
+        // XInput only while gilrs has no pad: a pad both see plays once.
+        #[cfg(windows)]
+        if let Some(x) = &mut self.xinput {
+            x.update(false);
+            if let Some(p) = x.state() {
+                self.xinput_plays = true;
+                return Some(p);
+            }
+        }
+        #[cfg(windows)]
+        self.xinput_off();
         #[cfg(target_os = "linux")]
         if let Some(p) = self.sdl.as_ref().and_then(|s| s.state()) {
             return Some(p);
         }
         None
+    }
+
+    /// FUN_10005a40 with retail's controller choice (gamepad_dinput.rs): a change of padguid000 or of the options
+    /// that pick it lets the device go and picks again (DAT_10456df0); with no device the XInput branch reads the
+    /// picked slot, or with nothing picked the pick runs again after 0x5a frames; else the DirectInput branch.
+    #[cfg(windows)]
+    fn read_retail(&mut self, set: &Settings, dt: f32) -> Option<Pad> {
+        use super::gamepad_dinput as di;
+        let key = (set.padguid.clone(), set.on, set.xinput, set.rumble, set.background);
+        let frame = super::camera::retail_frame(&mut self.di_clock, dt, 8.0).is_some();
+        let want = di::Guid::parse(&set.padguid);
+        let again = if self.di_key.as_ref() != Some(&key) {
+            self.di_key = Some(key);
+            self.dinput.as_mut()?.reset();
+            true
+        } else {
+            // Every 0x5b frames with nothing picked the enumeration runs again (a thread's, DInput::probe); the setup
+            // follows once it found a controller it would pick.
+            let d = self.dinput.as_mut()?;
+            if !d.has_device() && !d.pick.xinput && frame && d.lost_frame() {
+                d.probe();
+            }
+            d.probed().is_some_and(|found| di::would_pick(&want, &found))
+        };
+        if again {
+            // FUN_10008d90 / FUN_10008e10: the XInput DLL, with the option.
+            let loaded = set.xinput.then(|| {
+                if self.xinput.is_none() && !self.xinput_tried {
+                    self.xinput_tried = true;
+                    match super::gamepad_xinput::XInput::new() {
+                        Ok(x) => self.xinput = Some(x),
+                        Err(e) => log::warn!("gamepad: XInput: {e}"),
+                    }
+                }
+                self.xinput.is_some()
+            });
+            self.dinput.as_mut()?.setup(&want, loaded, set.rumble, set.background);
+        }
+        if self.dinput.as_ref()?.has_device() {
+            self.xinput_off();
+            let d = self.dinput.as_mut()?;
+            let s = d.read();
+            self.di_plays = d.has_device();
+            let s = s?;
+            let a: [f32; 10] = std::array::from_fn(|i| di::axis(&s, i as u8 + 1, set.sliders, set.hat) as f32);
+            return Some(Pad {
+                buttons: di::buttons(&s),
+                axes: [a[0] / 127.0, -a[1] / 127.0, a[3] / 127.0, -a[4] / 127.0, 0.0, 0.0],
+                di: Some(a),
+            });
+        }
+        self.di_plays = false;
+        // The XInput branch at the picked slot; *(not retail: with nothing picked, slot 0, #423's fallback for front
+        // ends that hook XInput only)*.
+        let pick = self.dinput.as_ref()?.pick;
+        let slot = if pick.xinput { pick.slot.max(0) as u32 } else { 0 };
+        if self.xinput.is_none() && !self.xinput_tried {
+            self.xinput_tried = true;
+            match super::gamepad_xinput::XInput::new() {
+                Ok(x) => self.xinput = Some(x),
+                Err(e) => log::warn!("gamepad: XInput: {e}"),
+            }
+        }
+        let x = self.xinput.as_mut()?;
+        x.set_slot(slot);
+        x.update(pick.xinput);
+        let p = x.state();
+        self.xinput_plays = p.is_some();
+        p
+    }
+
+    /// The window DirectInput's cooperative level is set on (retail: the game window, DAT_103d4d64 +0x18).
+    #[cfg(windows)]
+    pub fn set_window(&mut self, window: &winit::window::Window) {
+        if self.hwnd == 0 {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(h) = window.window_handle()
+                && let RawWindowHandle::Win32(h) = h.as_raw()
+            {
+                self.hwnd = h.hwnd.get();
+            }
+        }
+    }
+
+    /// The controllers the Controller window lists: (padguid000 text, name). On Windows DirectInput's attached game
+    /// controllers (FFXiPadConfig's list); else gilrs's pads by UUID *(not retail)*.
+    pub fn devices(&mut self) -> Vec<(String, String)> {
+        #[cfg(windows)]
+        if let Some(d) = &mut self.dinput {
+            return d.list().into_iter().map(|l| (l.guid.text(), l.name)).collect();
+        }
+        self.gilrs.iter().flat_map(|g| g.gamepads()).map(|(_, p)| (uuid_text(p.uuid()), p.name().to_string())).collect()
+    }
+
+    /// The pad that plays is a DirectInput device (its buttons and axes are DirectInput's numbers).
+    pub fn plays_dinput(&self) -> bool {
+        #[cfg(windows)]
+        return self.di_plays;
+        #[cfg(not(windows))]
+        false
+    }
+
+    /// XInput's pad no longer plays: its motors stop.
+    #[cfg(windows)]
+    fn xinput_off(&mut self) {
+        if let (true, Some(x)) = (std::mem::take(&mut self.xinput_plays), &mut self.xinput) {
+            x.motors(0);
+        }
     }
 
     /// Reads retail's registry values again, on a thread (at start, and when the Controller window asks).
@@ -698,6 +1023,14 @@ impl Gamepad {
 
     /// The connected pads' names (gilrs's, else SDL's), the one that plays first.
     pub fn pads(&self) -> Vec<String> {
+        #[cfg(target_os = "android")]
+        if let Some(name) = super::gamepad_android::name() {
+            return vec![name];
+        }
+        #[cfg(windows)]
+        if let (true, Some(d)) = (self.di_plays, &self.dinput) {
+            return vec![d.name.clone()];
+        }
         let mut v: Vec<(bool, String)> = self
             .gilrs
             .iter()
@@ -706,15 +1039,29 @@ impl Gamepad {
             .collect();
         v.sort();
         let mut v: Vec<String> = v.into_iter().map(|p| p.1).collect();
-        // SDL sees gilrs's pads too: its list only when gilrs has none.
+        // SDL and XInput see gilrs's pads too: their list only when gilrs has none.
         #[cfg(target_os = "linux")]
         if let (true, Some(s)) = (v.is_empty(), &self.sdl) {
             v = s.names();
+        }
+        #[cfg(windows)]
+        if let (true, Some(x)) = (v.is_empty(), &self.xinput) {
+            v = x.names();
         }
         v
     }
 
     fn release_all(&mut self) -> Frame {
+        // The DirectInput effect is infinite: it stops before the device stops taking the rumble.
+        #[cfg(windows)]
+        {
+            if self.di_plays
+                && let Some(d) = &mut self.dinput
+            {
+                d.force(0);
+            }
+            self.di_plays = false;
+        }
         let f = self.step(0, &[], 0.0);
         self.prev = 0;
         f
@@ -791,12 +1138,24 @@ impl Gamepad {
     }
 }
 
+/// A gilrs pad's UUID in padguid000's form.
+fn uuid_text(u: [u8; 16]) -> String {
+    let d = |i: usize| u[i];
+    super::gamepad_dinput::Guid {
+        data1: u32::from_le_bytes([d(0), d(1), d(2), d(3)]),
+        data2: u16::from_le_bytes([d(4), d(5)]),
+        data3: u16::from_le_bytes([d(6), d(7)]),
+        data4: [d(8), d(9), d(10), d(11), d(12), d(13), d(14), d(15)],
+    }
+    .text()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn dev<'a>(buttons: &'a [u8], axis: &'a dyn Fn(u8) -> f32) -> Device<'a> {
-        Device { buttons, axis }
+        Device { buttons, axis, di: false }
     }
 
     const DEAD: f32 = 42.0 / 127.0;
@@ -847,6 +1206,26 @@ mod tests {
         assert!(settings(&cfg, Some(&retail("1,0,0,0,0,1"))).rumble);
         cfg.gamepad_rumble = false;
         assert!(!settings(&cfg, None).rumble);
+    }
+
+    /// A controller choice or option saved alone (no maps) counts as saved settings, so Use Retail Settings is offered
+    /// and, cleared, retail's padmode000 decides again.
+    #[test]
+    fn device_options_count_as_saved() {
+        let retail = crate::padreg::Retail {
+            padmode: Some("1,0,0,0,0,1".into()),
+            padsin: Some(DEFAULT_PADSIN.into()),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        let s = settings(&cfg, Some(&retail));
+        assert!(!s.saved && s.xinput);
+        cfg.gamepad_xinput = Some(false);
+        let s = settings(&cfg, Some(&retail));
+        assert!(s.saved && !s.xinput);
+        cfg.gamepad_xinput = None;
+        cfg.gamepad_padguid = "{55DDF31E-8F9C-11F1-8001-000044455354}".into();
+        assert!(settings(&cfg, Some(&retail)).saved);
     }
 
     /// The default padsin: A confirm (slot 0), B cancel (3), X slot 1, Y slot 2, LB 8, LT 9, L3 10, RB 12, RT 13, R3 14,
@@ -905,6 +1284,75 @@ mod tests {
 
     /// Slot 25 takes the movement stick as the d-pad (its d-pad bits dropped), over slot 26 and the modes; the
     /// alternate map changes buttons, never axes; slot 31 steps only through the modes a map allows.
+    /// FUN_10005a40's DirectInput branch on the same map: every axis code reads (9, the hat, too), a diagonal
+    /// goes out to the corner, and slot 25 keeps the d-pad buttons.
+    #[test]
+    fn directinput_branch() {
+        let mut m = PadMap::parse("");
+        (m.axes[21], m.axes[23]) = (1, 2);
+        (m.buttons[0], m.buttons[1]) = (bit(slot::STICK_DPAD), bit(slot::UP));
+        let diag = |c: u8| if c == 1 || c == 2 { 90.0 } else { 0.0 };
+        let di = Device { buttons: &[], axis: &diag, di: true };
+        assert_eq!(read(&m, &m, &di, 0, (false, false), DEAD).1[2..], [127.0, 127.0]);
+        assert_eq!(read(&m, &m, &dev(&[], &diag), 0, (false, false), DEAD).1[2..], [90.0, 90.0]);
+        let still = |_: u8| 0.0;
+        let di = Device { buttons: &[0, 1], axis: &still, di: true };
+        assert_eq!(read(&m, &m, &di, 0, (false, false), DEAD).0 & DPAD, bit(slot::UP));
+        assert_eq!(read(&m, &m, &dev(&[0, 1], &still), 0, (false, false), DEAD).0 & DPAD, 0);
+        m.axes[21] = 9;
+        let hat = |c: u8| if c == 9 { 127.0 } else { 0.0 };
+        let di = Device { buttons: &[], axis: &hat, di: true };
+        assert_eq!(read(&m, &m, &di, 0, (false, false), DEAD).1[2], 127.0);
+        assert_eq!(read(&m, &m, &dev(&[], &hat), 0, (false, false), DEAD).1[2], 0.0);
+    }
+
+    /// padmode000's XInput, sliders and hat flags, and padguid000: config.json's guid first, else retail's.
+    #[test]
+    fn device_settings() {
+        let retail = crate::padreg::Retail {
+            padmode: Some("1,1,0,1,0,0".into()),
+            padsin: Some(DEFAULT_PADSIN.into()),
+            padguid: Some("{55DDF31E-8F9C-11F1-8001-000044455354}".into()),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        let s = settings(&cfg, Some(&retail));
+        assert_eq!((s.xinput, s.sliders, s.hat), (false, false, true));
+        // Saved maps keep retail's flags; the window's own choice wins over them either way.
+        cfg.gamepad_padsin = DEFAULT_PADSIN.into();
+        assert!(!settings(&cfg, Some(&retail)).xinput);
+        cfg.gamepad_xinput = Some(true);
+        assert!(settings(&cfg, Some(&retail)).xinput);
+        cfg.gamepad_padsin.clear();
+        cfg.gamepad_xinput = None;
+        assert_eq!(s.padguid, "{55DDF31E-8F9C-11F1-8001-000044455354}");
+        let s = settings(&cfg, None);
+        assert_eq!((s.xinput, s.sliders, s.hat, s.padguid.as_str()), (true, true, true, ""));
+        cfg.gamepad_padguid = "{00000001-0000-0000-0000-000000000000}".into();
+        assert_eq!(settings(&cfg, Some(&retail)).padguid, cfg.gamepad_padguid);
+    }
+
+    /// A DirectInput controller with nothing saved takes the tool's Pattern A; saved or retail maps stay.
+    #[test]
+    fn dinput_default_pattern() {
+        let cfg = Config::default();
+        let s = settings(&cfg, None).for_dinput(true);
+        assert_eq!((s.padsin.as_str(), s.padexsin.as_str()), (DINPUT_PADSIN, DINPUT_PADEXSIN));
+        assert_eq!(settings(&cfg, None).for_dinput(false).padsin, DEFAULT_PADSIN);
+        let saved = Config { gamepad_padsin: "1".into(), ..Default::default() };
+        assert_eq!(settings(&saved, None).for_dinput(true).padsin, "1");
+        // The alternate map: padsin's sticks and d-pad (positions 13..25), nothing else.
+        let (m, alt): (Vec<&str>, Vec<&str>) =
+            (DINPUT_PADSIN.split(',').collect(), DINPUT_PADEXSIN.split(',').collect());
+        assert!((0..32).all(|i| alt[i] == if (13..25).contains(&i) { m[i] } else { "-1" }));
+    }
+
+    #[test]
+    fn uuid_as_padguid() {
+        let u = [0x1e, 0xf3, 0xdd, 0x55, 0x9c, 0x8f, 0xf1, 0x11, 0x80, 0x01, 0, 0, 0x44, 0x45, 0x53, 0x54];
+        assert_eq!(uuid_text(u), "{55DDF31E-8F9C-11F1-8001-000044455354}");
+    }
+
     #[test]
     fn stick_slots_and_modes() {
         // Slot 25 on LB (button 8), slot 26 on RB (11), slot 34 on Back (15).

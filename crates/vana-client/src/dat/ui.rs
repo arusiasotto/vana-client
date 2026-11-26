@@ -168,6 +168,36 @@ pub struct Menu {
     pub elements: Vec<MenuElement>,
 }
 
+impl MenuElement {
+    /// The header's offset (+0xe, +0x10): where a child's sprite is drawn from its place, and its mouse box with it.
+    pub fn offset(&self) -> (i16, i16) {
+        (i16::from_le_bytes([self.head[0xe], self.head[0xf]]), i16::from_le_bytes([self.head[0x10], self.head[0x11]]))
+    }
+}
+
+impl Menu {
+    /// The child under the mouse (the hit test FUN_1011a140, run on the active window every frame by the mouse
+    /// routine FUN_101267f0 and again on the button's release, FUN_1015f420). `at` is the window's place, `off` the
+    /// children in state 0x10. The first child in file order whose box holds the mouse wins; the box is the child's
+    /// place moved by its header offset, both ends included (`jg` / `jl` around each bound). Every child is the same
+    /// kind of part (type 1), so a caption or an arrow sprite that no cursor link reaches takes the mouse like a row
+    /// does. The window frame is not asked: only the hover while the button is held (FUN_1015f360) wants the mouse
+    /// inside it (FUN_1011a0a0).
+    pub fn hit(&self, at: (f32, f32), p: (f32, f32), off: &[u16]) -> Option<u16> {
+        self.elements
+            .iter()
+            .skip(1)
+            .filter(|e| !off.contains(&e.id))
+            .find(|e| {
+                let (ox, oy) = e.offset();
+                let (x, y) = (at.0 + (e.x + ox) as f32, at.1 + (e.y + oy) as f32);
+                p.0 >= x && p.0 <= x + e.w as f32 && p.1 >= y && p.1 <= y + e.h as f32
+            })
+            .map(|e| e.id)
+            .filter(|&id| id > 0)
+    }
+}
+
 /// Window header keeps its counts at 0x14..0x16, child headers at 0x1B..0x1E (FUN_10118090 / FUN_10118390).
 fn parse_element(p: &[u8], at: usize, child: bool) -> Result<(MenuElement, usize)> {
     let e = p.get(at..at + 32).ok_or_else(|| anyhow::anyhow!("element header cut"))?;
@@ -353,6 +383,41 @@ mod tests {
         assert_eq!(cell_color([0x7f, 0x40, 0, 0x7f]), [0x80, 0x41, 1, 192]);
         assert_eq!(cell_color([0xff, 0xfe, 0x7f, 0x20]), [0xff, 0xff, 0x80, 49]);
         assert_eq!([0, 8, 0x40, 0x70, 0xa9, 0xff].map(|a| cell_color([0, 0, 0, a])[3]), [0, 13, 97, 169, 255, 255]);
+    }
+
+    fn child(id: u16, x: i16, y: i16, w: u16, h: u16, off: (i16, i16)) -> MenuElement {
+        let mut head = [0u8; 32];
+        head[0xe..0x10].copy_from_slice(&off.0.to_le_bytes());
+        head[0x10..0x12].copy_from_slice(&off.1.to_le_bytes());
+        MenuElement { x, y, w, h, head, id, links: [0xff; 6], refs: Vec::new(), strings: Default::default() }
+    }
+
+    /// FUN_1011a140 on a window at (100, 50): boxes at place + header offset with both ends in, the first child in
+    /// file order, the children in state 0x10 passed over; the frame plays no part.
+    #[test]
+    fn hit_boxes() {
+        let m = Menu {
+            name: "menu    test".into(),
+            elements: vec![
+                child(0, 100, 50, 112, 58, (0, 0)),
+                child(1, 16, 6, 88, 16, (0, 0)),
+                child(2, 16, 22, 88, 16, (0, 0)),
+                child(3, -16, 7, 15, 9, (0, 0)),
+                child(4, 0, 0, 73, 9, (19, -3)),
+            ],
+        };
+        let at = (100.0, 50.0);
+        assert_eq!(m.hit(at, (116.0, 56.0), &[]), Some(1));
+        assert_eq!(m.hit(at, (204.0, 72.0), &[]), Some(1));
+        assert_eq!(m.hit(at, (204.0, 73.0), &[]), Some(2));
+        assert_eq!(m.hit(at, (205.0, 73.0), &[]), None);
+        // An arrow left of the frame and a caption across its top edge are hit where they are drawn.
+        assert_eq!(m.hit(at, (90.0, 60.0), &[]), Some(3));
+        assert_eq!(m.hit(at, (119.0, 47.0), &[]), Some(4));
+        assert_eq!(m.hit(at, (105.0, 52.0), &[]), None);
+        assert_eq!(m.hit(at, (119.0, 47.0), &[4]), None);
+        assert_eq!(m.hit(at, (130.0, 56.0), &[4]), Some(1));
+        assert_eq!(m.elements[4].offset(), (19, -3));
     }
 
     /// Needs the installed game; skipped without it.

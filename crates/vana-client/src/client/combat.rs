@@ -402,6 +402,16 @@ pub(super) fn tables(w: &World) -> Option<crate::dat::battle::Tables> {
     w.names.clone().map(crate::dat::battle::Tables)
 }
 
+/// The name tables `7f b0` / `b1` / `b5` / `b7` read (none without game data).
+fn texts(w: &World) -> Option<crate::dat::battle::Texts> {
+    w.index.is_some().then(|| crate::dat::battle::Texts(super::event::point_texts(w)))
+}
+
+/// A battle line's context with the client's tables and our name; callers set the actors, work and strings.
+pub(super) fn ctx(w: &World) -> Ctx {
+    Ctx { me: w.name.clone(), names: tables(w), texts: texts(w), ..Default::default() }
+}
+
 pub(super) fn who(w: &World, id: u32) -> Option<Who> {
     if id == w.my_id {
         // Our gender from the race (inf: retail reads 0x40db0): 2, 4, 6 and 7 are female.
@@ -457,14 +467,7 @@ pub(super) fn on_emote(w: &mut World, caster: u32, target: u32, emote: u16, para
     if mode > 1 || w.game.get(0x32) & 8 != 0 {
         return;
     }
-    let ctx = Ctx {
-        actor: who(w, caster),
-        target: (target != 0).then(|| who(w, target)).flatten(),
-        me: w.name.clone(),
-        work: [0; 5],
-        names: tables(w),
-        ..Default::default()
-    };
+    let ctx = Ctx { actor: who(w, caster), target: (target != 0).then(|| who(w, target)).flatten(), ..ctx(w) };
     let entry = emote as u32 * 2 + (target == 0) as u32;
     let Some(line) = bt.emote(entry, &ctx) else { return };
     let colour = bt.colour_in(if target == 0 && caster == w.my_id { 7 } else { 0x0f }, &w.game);
@@ -813,14 +816,7 @@ fn print(w: &mut World, m: Msg) {
     if bt.off_channel(m.id, 0, &w.game) {
         return;
     }
-    let mut ctx = Ctx {
-        actor: who(w, m.actor),
-        target: who(w, m.target),
-        me: w.name.clone(),
-        work: m.work,
-        names: tables(w),
-        ..Default::default()
-    };
+    let mut ctx = Ctx { actor: who(w, m.actor), target: who(w, m.target), work: m.work, ..ctx(w) };
     let rel = relation(w, m.actor, m.target);
     let mut lines = render(&bt, m.id, rel, &ctx, &w.game);
     // The mods' battle filters (filters.battle): they drop the message, colour its names or replace its lines (not
@@ -939,14 +935,7 @@ pub fn action_messages(a: &Action) -> Vec<(u16, u32, [i32; 5])> {
 pub(super) fn on_system_message(w: &mut World, id: u16, work: [i32; 2]) {
     let Some(bt) = w.battle.clone() else { return };
     let me = w.my_id;
-    let ctx = Ctx {
-        actor: who(w, me),
-        target: who(w, me),
-        me: w.name.clone(),
-        work: [work[0], work[1], 0, 0, 0],
-        names: tables(w),
-        ..Default::default()
-    };
+    let ctx = Ctx { actor: who(w, me), target: who(w, me), work: [work[0], work[1], 0, 0, 0], ..ctx(w) };
     match bt.system(id, &ctx) {
         Some(line) => {
             let colour = bt.colour_in(line.mode.unwrap_or(0), &w.game);
@@ -977,10 +966,9 @@ pub(super) fn on_message_std(w: &mut World, id: u16, cas: u32, para: [i32; 4], s
     let ctx = Ctx {
         actor: if cas != 0 { who(w, cas) } else { None },
         target: None,
-        me: w.name.clone(),
         work: [para[0], para[1], para[2], para[3], 0],
         strings,
-        names: tables(w),
+        ..ctx(w)
     };
     match bt.system(id, &ctx) {
         Some(line) => {

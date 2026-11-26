@@ -9,8 +9,10 @@ use std::time::Instant;
 
 #[derive(Default)]
 pub struct HudTop {
-    /// A Lua mod hides the Network window (ui.native.hide "network").
+    /// Whether the Network widget (netstat) is hidden (ui.native.hide "network"); independent of the title and helper.
     net_hidden: bool,
+    /// Whether the complete top bar (title, helper and Network widget) is hidden (ui.native.hide "topbar").
+    topbar_hidden: bool,
     /// netstat: S / R bytes a second (stat[1] / stat[0]), the percentage, totals at the last 3 s tick.
     sent_rate: u64,
     recv_rate: u64,
@@ -51,6 +53,8 @@ pub struct HudTop {
 /// The top bar's state for the modern layer: the shown texts, the fade, the busy strip's frame, the network numbers.
 #[derive(Default, Clone, Debug)]
 pub struct TopView {
+    /// The game's complete title, helper and Network group is shown.
+    pub visible: bool,
     pub title: String,
     pub help: String,
     pub alpha: f32,
@@ -247,6 +251,7 @@ impl HudTop {
             self.step_meter(ticks);
             let base = self.meter_base();
             self.view = TopView {
+                visible: !w.lua.hides("topbar"),
                 title: title.to_string(),
                 help: help.to_string(),
                 alpha: self.fade.alpha(),
@@ -271,6 +276,7 @@ impl HudTop {
             };
         } else {
             self.net_hidden = w.lua.hides("network");
+            self.topbar_hidden = w.lua.hides("topbar");
             self.draw_bars(gu, sw, sh, title, help, ticks, busy);
         }
         // The compass alone is hidden in events, and in the modern layer (its location panel).
@@ -286,6 +292,9 @@ impl HudTop {
 
     /// titlewin, helpwind and netstat at the current fade (also the offscreen topbar-shot).
     pub fn draw_bars(&mut self, gu: &mut GameUi, sw: f32, sh: f32, title: &str, help: &str, ticks: f32, busy: bool) {
+        if self.topbar_hidden {
+            return;
+        }
         let a = self.fade.alpha();
         // titlewin (16, 16) 112 x 30: the title at (+4, +8), clipped to width - 8 (FUN_1014a3b0); content always.
         if let Some((x, y)) = gu.window_alpha("menu    titlewin", sw, sh, a)
@@ -735,6 +744,8 @@ pub fn topbar_shot(
             &mut Vec::new(),
             None,
             1.0,
+            #[cfg(target_os = "android")]
+            &mut None,
         );
         if let Some(t) = twofa.as_mut() {
             super::twofa::window(&mut gu, &input, [width, height], t, false, &mut Vec::new(), None);

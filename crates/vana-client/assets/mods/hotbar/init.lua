@@ -6,6 +6,7 @@ local bar = require("src.bar")
 local manager = require("src.manager")
 local stock = require("src.stock")
 local palette = require("src.palette")
+local ghost = require("src.ghost")
 local jobs = require("src.jobs")
 local chooser = require("src.chooser")
 local mode = require("src.mode")
@@ -86,13 +87,27 @@ local function apply_stock_palette()
   ui.native.hide("palette", hide)
 end
 
+local function clear_drag_state()
+  ghost.stop()
+  if palette.dragging then palette.end_drag() end
+  bar.clear_drag()
+  pad.clear_drag()
+end
+
 local function refresh()
   apply_stock_palette()
+  clear_drag_state()
   bar.rebind()
   changed()
 end
 
 local detect
+events.on("unload", function()
+  pcall(function()
+    require("src.overlay").clear("ovb")
+    require("src.overlay").clear("ovp")
+  end)
+end)
 events.on("job_change", changed)
 events.on("settings_changed", function(key)
   if key == "mode" then mode.use_setting() end

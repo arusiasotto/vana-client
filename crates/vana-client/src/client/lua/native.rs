@@ -19,8 +19,9 @@ pub(super) const PIECES: &[(&str, &[&str])] = &[
     ("log", &["chat"]),
     ("timers", &["timers"]),
     ("regime", &["regime"]),
-    // Parts drawn inside other windows, hidden where they draw.
+    // Standalone HUD pieces and elements drawn within the game-owned windows.
     ("network", &[]),
+    ("topbar", &[]),
     ("palette", &[]),
     ("clock", &[]),
     ("experience", &[]),

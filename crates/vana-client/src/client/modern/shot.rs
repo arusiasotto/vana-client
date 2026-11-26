@@ -481,6 +481,7 @@ fn titles_sample(p: &mut Panels) {
 
 fn sample(m: &Modern, ctx: &egui::Context, layout: &mut Layout, opts: &Opts) {
     let top = crate::client::hudtop::TopView {
+        visible: true,
         title: "Status".into(),
         help: "View status.".into(),
         alpha: 1.0,
@@ -632,8 +633,8 @@ fn sample(m: &Modern, ctx: &egui::Context, layout: &mut Layout, opts: &Opts) {
             row(0, "Lenon", 5, true, 0.98, false, vec![]),
             row(1, "Raven", 1, true, 0.88, false, theirs.clone()),
             row(2, "Koru", 3, true, 0.62, true, vec![]),
-            row(3, "Shantotto", 4, true, 0.95, false, vec![]),
-            row(4, "Prishe", 2, false, 1.0, false, vec![]),
+            row(3, "Wynnefrederique", 4, true, 0.95, false, vec![]),
+            row(4, "Sophronisbanist", 2, false, 1.0, false, vec![]),
         ],
         &[hud::PetRow {
             id: 9,
@@ -855,7 +856,7 @@ pub fn shot(width: u32, height: u32, scale: u32, backdrop: Option<&Path>, out: &
     let view = target.create_view(&Default::default());
     let ctx = egui::Context::default();
     // The atlases load at once: the context learns the GPU's texture limit first (egui assumes 2048 until told).
-    let side = Some(gpu.device.limits().max_texture_dimension_2d as usize);
+    let side = Some(gpu.max_texture_2d as usize);
     let mut warm = ctx.run_ui(egui::RawInput { max_texture_side: side, ..Default::default() }, |_| {});
     let mut deltas: Vec<_> = warm.textures_delta.set.drain().collect();
     warm.textures_delta.clear();

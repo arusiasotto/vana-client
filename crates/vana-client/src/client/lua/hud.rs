@@ -1,4 +1,4 @@
-//! The mods' HUD layer (docs/lua-mods.md 4.10): retained text, rectangles, bars and icons placed in window pixels
+//! The mods' HUD layer (docs/lua-mods.md 4.10): retained text, rectangles, triangles, bars and icons placed in window pixels
 //! (negative from the right or bottom edge), drawn under the windows in the active UI's fonts. Hidden with the UI.
 
 use super::super::game_ui::HudFace;
@@ -75,6 +75,11 @@ pub(in crate::client) enum Kind {
         edge: Option<[u8; 4]>,
         edge_w: f32,
         tail: Option<Tail>,
+    },
+    /// A filled triangle: its three corners in window pixels from the element's `x` and `y`.
+    Tri {
+        pts: [[f32; 2]; 3],
+        colour: [u8; 4],
     },
 }
 
@@ -541,6 +546,16 @@ fn apply(e: &mut Elem, t: &Table) -> mlua::Result<()> {
                 *size = v.max(1.0);
             }
         }
+        Kind::Tri { pts, colour: c } => {
+            for (i, k) in ["x1", "y1", "x2", "y2", "x3", "y3"].into_iter().enumerate() {
+                if let Some(v) = t.get::<Option<f32>>(k)? {
+                    pts[i / 2][i % 2] = v;
+                }
+            }
+            if let Some(v) = colour(t.get("colour")?)? {
+                *c = v;
+            }
+        }
     }
     Ok(())
 }
@@ -665,6 +680,21 @@ pub(super) fn install(lua: &Lua, g: &Table, vm: &super::vm::Vm) -> mlua::Result<
         "rect",
         lua.create_function(|lua, (id, spec): (String, Table)| {
             put(lua, id, Kind::Rect { w: 100.0, h: 20.0, colour: [0, 0, 0, 160], line: None, round: 0.0 }, spec)
+        })?,
+    )?;
+    t.set(
+        "tri",
+        lua.create_function(|lua, (id, spec): (String, Table)| {
+            let n = |k: &str| spec.get::<f32>(k).unwrap_or(0.0);
+            put(
+                lua,
+                id,
+                Kind::Tri {
+                    pts: [[n("x1"), n("y1")], [n("x2"), n("y2")], [n("x3"), n("y3")]],
+                    colour: [255, 255, 255, 255],
+                },
+                spec,
+            )
         })?,
     )?;
     t.set(
@@ -1038,6 +1068,13 @@ pub(super) fn draw(gu: &mut super::super::game_ui::GameUi, w: &World) {
                 }
                 [x, y, bw * k.0, bh * k.1]
             }
+            Kind::Tri { pts, colour } => {
+                let p = pts.map(|pt| [(px + pt[0]) * k.0, (py + pt[1]) * k.1]);
+                let col = rgba(*colour);
+                gu.quad([p[0], p[1], p[2], p[2]], [col, col, col, col]);
+                let b = tri_bounds(px, py, pts);
+                [b[0] * k.0, b[1] * k.1, b[2] * k.0, b[3] * k.1]
+            }
             // Nothing until the actor has been drawn into one (none while it is not posed).
             Kind::Portrait { entity, w: iw, h: ih, tint, .. } => {
                 let (pw, ph) = (iw * k.0, ih * k.1);
@@ -1081,6 +1118,17 @@ fn draw_tip(gu: &mut super::super::game_ui::GameUi, title: &str, text: &str, at:
 
 fn inside(r: &[f32; 4], x: f32, y: f32) -> bool {
     x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]
+}
+
+/// The smallest axis-aligned box round a triangle in window pixels (from `px`, `py` and relative `pts`).
+pub(super) fn tri_bounds(px: f32, py: f32, pts: &[[f32; 2]; 3]) -> [f32; 4] {
+    let xs = pts.map(|p| px + p[0]);
+    let ys = pts.map(|p| py + p[1]);
+    let (min_x, max_x) =
+        (xs.iter().copied().reduce(f32::min).unwrap_or(px), xs.iter().copied().reduce(f32::max).unwrap_or(px));
+    let (min_y, max_y) =
+        (ys.iter().copied().reduce(f32::min).unwrap_or(py), ys.iter().copied().reduce(f32::max).unwrap_or(py));
+    [min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0)]
 }
 
 /// The topmost element with a handler (or, with `tips`, a tooltip) under a window pixel: (mod, element).

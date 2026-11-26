@@ -151,7 +151,7 @@ impl LobbyFx {
         alive: Option<Vec<u32>>,
     ) {
         let (fx, (view, color_tex, bg)) = (&mut self.fx, target);
-        let eg = self.gpu.get_or_insert_with(|| crate::render::effects::EffectsGpu::new(gpu, format));
+        let Some(eg) = crate::render::effects::kept(&mut self.gpu, gpu, format) else { return };
         if fx.reg.light_keys != zone.light_keys {
             fx.reg.light_keys = zone.light_keys.clone();
         }
@@ -426,8 +426,33 @@ impl SelectScene {
         alive: Option<Vec<u32>>,
     ) {
         let view = target.0;
+        #[cfg(not(target_os = "android"))]
         let zone = self.zone.get_or_insert_with(|| ZoneRenderer::new(gpu, &self.data.scene, format));
+        #[cfg(target_os = "android")]
+        let zone = self.zone.get_or_insert_with(|| {
+            let geo = std::sync::Arc::new(crate::render::ZoneGeometry::build(&self.data.scene));
+            let textures = std::mem::take(&mut self.data.scene.textures);
+            ZoneRenderer::streamed(gpu, geo, textures, format)
+        });
+        #[cfg(target_os = "android")]
+        {
+            use crate::render::upload::LOADING_MS;
+            gpu.begin_uploads(LOADING_MS * 15.0);
+            zone.upload_step(gpu, encoder);
+            gpu.run_mips(encoder, crate::render::MIP_BUDGET);
+            if !zone.ready(gpu) {
+                return;
+            }
+        }
         zone.lighting = self.data.lighting;
+        // One character a frame on Android: every model's textures at once is what makes the system offer to close
+        // the app while the ring is coming up.
+        #[cfg(target_os = "android")]
+        if self.actors.len() < self.data.models.len() {
+            let i = self.actors.len();
+            self.actors.push(self.data.models[i].as_ref().map(|(model, _)| zone.new_actor(gpu, model)));
+        }
+        #[cfg(not(target_os = "android"))]
         if self.actors.len() != self.data.models.len() {
             self.actors =
                 self.data.models.iter().map(|m| m.as_ref().map(|(model, _)| zone.new_actor(gpu, model))).collect();
@@ -445,8 +470,13 @@ impl SelectScene {
             let feet = self.data.slots[i % SLOTS].feet;
             zone.update_actor(gpu, actor, &mesh, placement(feet, model.scale(*size)));
         }
-        let camera =
-            Camera { eye: self.eye, target: self.target, up: Vec3::NEG_Y, fov_y: crate::dat::title::fov_y(350.0) };
+        let camera = Camera {
+            jitter: glam::Vec2::ZERO,
+            eye: self.eye,
+            target: self.target,
+            up: Vec3::NEG_Y,
+            fov_y: crate::dat::title::fov_y(350.0),
+        };
         let actors: Vec<&ActorGpu> = self.actors.iter().flatten().collect();
         zone.render(gpu, encoder, view, depth, &camera, aspect, &actors);
         if let Some(fx) = &mut self.effects {

@@ -391,20 +391,15 @@ pub fn focused(w: &World) -> bool {
         && w.confirm.is_none()
 }
 
-/// Mouse: hover moves the cursor, a click on the cursor row is Enter *(inf: the generic child hit test)*.
+/// Mouse (the hover in FUN_101267f0 and the release FUN_1015f420, over `GameUi::hit`): hover moves the cursor, a
+/// click on the cursor row is Enter.
 pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), moved: bool, clicked: bool) {
     let Some(top) = w.searchmenu.as_ref().and_then(|m| m.stack.last()).cloned() else { return };
-    let (Some((x, y)), Some(lay)) = (gu.window_xy(top.name, sw, sh), gu.layout(top.name)) else { return };
-    let Some(e) = lay.elements.iter().skip(1).filter(|e| e.links[2] != 0xff).find(|e| {
-        let (ex, ey) = (x + e.x as f32, y + e.y as f32);
-        p.0 >= ex && p.0 < ex + e.w as f32 && p.1 >= ey && p.1 < ey + e.h as f32
-    }) else {
-        return;
-    };
+    let Some(id) = gu.hit(top.name, sw, sh, p) else { return };
     gu.hover.set(true);
-    if e.id != top.sel && (moved || clicked) {
+    if id != top.sel && (moved || clicked) {
         if let Some(t) = w.searchmenu.as_mut().and_then(|m| m.stack.last_mut()) {
-            t.sel = e.id;
+            t.sel = id;
         }
         w.sounds.push(Ui::Cursor as u32);
     } else if clicked {

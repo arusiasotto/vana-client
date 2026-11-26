@@ -35,6 +35,11 @@ M.H = {
     return false
   end,
   storage = function() return storage.character end,
+  -- Our superior level (0 before the server sent our stats).
+  su = function()
+    local s = game.stats and game.stats()
+    return s and s.superior_level or 0
+  end,
   cap_setting = function() return settings.get("cap") end,
   ws_line = function() return settings.get("ws_line") ~= false end,
   -- Gear Swapping and Set Builder on: the sets are built (worn only with the window's switch on too).
@@ -47,7 +52,7 @@ M.SLICE = 600
 
 local state = {
   index = {}, next_id = nil, range = 1, ready = false,
-  job = nil, level = nil, owned = nil, owned_sig = nil,
+  job = nil, level = nil, su = 0, owned = nil, owned_sig = nil,
   at_cap = nil, at_level = nil, need_cands = false,
   -- built: the sets (stale ones kept through a rebuild); fresh: those built since the last rebuild began.
   built = {}, queue = {}, names = {}, fresh = {}, built_job = nil,
@@ -71,6 +76,19 @@ function M.hand(job, set_name)
 end
 
 function M.modes() return saved().modes end
+
+-- The sets the player turned off in the window, per job: never worn (the gear stays as it is).
+function M.set_off(job, name)
+  local off = saved().off
+  return off ~= nil and off[job] ~= nil and off[job][name] == true
+end
+-- No re-wear here: tick wears the status set again once it is back on, and an unrelated set changes nothing.
+function M.set_set_off(job, name, off)
+  local b = saved()
+  b.off = b.off or {}
+  b.off[job] = b.off[job] or {}
+  b.off[job][name] = off or nil
+end
 
 -- The player turned the builder's swapping on (the window's switch), per character.
 function M.active() return saved().active == true end
@@ -155,10 +173,11 @@ end
 local function ctx()
   local p = M.H.player() or {}
   local me = M.H.me() or {}
-  local owns = {}
+  local owns, kept = {}, {}
   for _, o in ipairs(state.owned or {}) do owns[o.id] = true end
-  return { job = state.job, job_id = p.main_job, race = me.race, level = state.level, cap = M.cap(),
-    owned = state.owned or {}, owns = owns, at_cap = state.at_cap or {}, at_level = state.at_level or {},
+  for _, e in ipairs(state.elsewhere or {}) do kept[e.id] = kept[e.id] or e.bag end
+  return { job = state.job, job_id = p.main_job, race = me.race, level = state.level, su = state.su, cap = M.cap(),
+    owned = state.owned or {}, owns = owns, kept = kept, at_cap = state.at_cap or {}, at_level = state.at_level or {},
     names = state.names,
     mage = sets.MAGE_JOBS[state.job], melee_sets = sets.MELEE_SETS, bis = nil }
 end
@@ -214,24 +233,26 @@ end
 
 -- Puts a set first in the queue (the one the window shows, or an action wants).
 function M.want_first(name)
-  if state.fresh and state.fresh[name] then return end
+  if not name or (state.fresh and state.fresh[name]) then return end
   for i, s in ipairs(state.queue) do
     if s == name then table.remove(state.queue, i) break end
   end
   table.insert(state.queue, 1, name)
 end
 
--- The job, the level and the bags: a change rebuilds every set (a timer and item_change call it).
+-- The job, the level, the superior level and the bags: a change rebuilds every set (a timer and item_change call it).
 function M.refresh()
   if not M.H.on() then return end
   local p = M.H.player()
   if not p or not p.main_job or p.main_job == 0 then return end
   local job = M.H.job(p.main_job)
   local owned, elsewhere, sig = scan()
+  local su = M.H.su() or 0
   state.elsewhere = elsewhere
-  if job ~= state.job or p.main_level ~= state.level then state.need_cands = true end
-  if job ~= state.job or p.main_level ~= state.level or sig ~= state.owned_sig then
-    state.job, state.level, state.owned, state.owned_sig = job, p.main_level, owned, sig
+  local changed = job ~= state.job or p.main_level ~= state.level or su ~= state.su
+  if changed then state.need_cands = true end
+  if changed or sig ~= state.owned_sig then
+    state.job, state.level, state.su, state.owned, state.owned_sig = job, p.main_level, su, owned, sig
     M.rebuild()
   end
 end
@@ -250,12 +271,20 @@ function M.step()
     local p = M.H.player() or {}
     local me = M.H.me() or {}
     state.at_cap = pick.candidates(state.index, p.main_job, me.race, M.cap())
-    state.at_level = pick.candidates(state.index, p.main_job, me.race, state.level)
+    state.at_level = pick.candidates(state.index, p.main_job, me.race, state.level, state.su)
     if state.built_job ~= state.job then state.built, state.built_job = {}, state.job end
     return true
   end
   if #state.queue > 0 then
-    M.build(table.remove(state.queue, 1))
+    -- One set that fails to build must not end the worker (no set would be built again this session).
+    local name = table.remove(state.queue, 1)
+    local ok, err = pcall(M.build, name)
+    if not ok then
+      -- Tried until the next rebuild: queued again, it would fail the same way, and say so every tick.
+      state.fresh = state.fresh or {}
+      state.fresh[name] = true
+      chat.add("Gearshift: the " .. tostring(name) .. " set could not be built: " .. tostring(err))
+    end
     return true
   end
   return false
@@ -415,11 +444,12 @@ function M.default_set()
   end
   if modes.pdt and job_sets.PDT then return "PDT" end
   if modes.mdt and job_sets.MDT then return "MDT" end
+  -- A job with no TP set (BLM, SMN...) stays in its Idle set while engaged.
   if p.status == 1 then
-    if modes.hybrid then return first("TP_Hybrid", "TP_MNK", "TP") end
-    if modes.acc then return first("TP_Acc", "TP_MNK", "TP") end
-    if M.H.pet() then return first("TP_Pet", "Automaton", "TP_MNK", "TP") end
-    return first("TP_MNK", "TP")
+    if modes.hybrid then return first("TP_Hybrid", "TP_MNK", "TP", "Idle") end
+    if modes.acc then return first("TP_Acc", "TP_MNK", "TP", "Idle") end
+    if M.H.pet() then return first("TP_Pet", "Automaton", "TP_MNK", "TP", "Idle") end
+    return first("TP_MNK", "TP", "Idle")
   end
   if p.status == 33 then return first("Resting", "Idle") end
   if M.H.pet() then return first("Idle_Avatar", "Idle_Luopan", "Idle_Pet", "Idle") end
@@ -472,10 +502,17 @@ end
 function M.action(act)
   if not M.loaded() or act.kind == "item" then return end
   local r = M.route(act)
+  local off
+  for k = 1, 2 do
+    if r and r[k] and M.set_off(state.job, r[k]) then off, r[k] = r[k], nil end
+  end
   if not r or (not r[1] and not r[2]) then
     if act.category == 7 and M.H.ws_line() then
       local a = M.H.ability(act.param)
-      chat.add("Gearshift: no set for " .. (a and a.name or ("weapon skill " .. act.param)) .. ".")
+      local ws = a and a.name or ("weapon skill " .. act.param)
+      local def = off and M.set_def(off)
+      chat.add(off and ("Gearshift: %s, the %s set is turned off."):format(ws, def and def.label or off)
+        or ("Gearshift: no set for " .. ws .. "."))
     end
     return
   end
@@ -534,6 +571,7 @@ function M.on_action(a)
 end
 
 -- Between actions: the status's set, and the Movement set's moving pieces while we run.
+local last_sig
 local last_default, last_pos
 local function moving()
   local p = M.H.player()
@@ -546,10 +584,13 @@ end
 
 -- The status set is worn when it changes (the status, a toggle, the level's picks, running) or after an action, not
 -- every tick: a piece changed by hand stays on until then.
-local last_sig
 function M.tick()
   if not M.loaded() or clock() < busy_until then return end
   local name = M.default_set()
+  if M.set_off(state.job, name) then
+    last_sig = nil
+    return
+  end
   -- Not while it is being built: half a set would be worn, then the whole one.
   if not state.built[name] then
     M.want_first(name)
@@ -557,7 +598,7 @@ function M.tick()
   end
   local pieces = M.pieces(name)
   if moving() then
-    local mv = state.built.Movement
+    local mv = not M.set_off(state.job, "Movement") and state.built.Movement
     if mv then
       for slot, o in pairs(mv.slots) do
         if o.pick and (o.pick.s.stats.move or 0) > 0 then pieces[slot] = { name = pick.item(o.pick.id).name } end

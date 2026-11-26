@@ -20,6 +20,27 @@ const FALL_MAX: f32 = 1.0;
 /// The player's physics step: one retail frame (2 ticks at its 30 fps, FUN_100889d0). The drawn position is
 /// interpolated between steps.
 pub const STEP_TICKS: f32 = 2.0;
+
+/// Ticks in one retail frame of our own actor's update as played (frame_ticks): STEP_TICKS, or 1 when Movement Rate
+/// is 60 (retail run at 60 frames a second, as players do with an fps add-on: FUN_10014cf0 then runs the actor
+/// update once per tick).
+static FRAME_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(STEP_TICKS as u32);
+
+/// Ticks in one retail frame of our own movement (2, or 1 at Movement Rate 60).
+pub fn frame_ticks() -> f32 {
+    FRAME_TICKS.load(std::sync::atomic::Ordering::Relaxed) as f32
+}
+
+/// Movement Rate (config move_rate): the game's 30 retail frames a second (two ticks a frame).
+pub const MOVE_RATE_GAME: u32 = 30;
+/// Movement Rate 60: one tick a frame, as retail with a frame rate add-on.
+pub const MOVE_RATE_TICK: u32 = 60;
+
+/// Movement Rate (config move_rate): MOVE_RATE_TICK runs one tick a frame, anything else the game's two.
+pub fn set_move_rate(rate: u32) {
+    let ticks = if rate == MOVE_RATE_TICK { 1 } else { STEP_TICKS as u32 };
+    FRAME_TICKS.store(ticks, std::sync::atomic::Ordering::Relaxed);
+}
 /// walk() simulates steps at run speed 5.0.
 const RUN_TICK: f32 = 5.0 / 60.0;
 const RUN_STEP: f32 = RUN_TICK * STEP_TICKS;
@@ -1251,6 +1272,34 @@ mod tests {
         let g = Ground::build(&crate::dat::zone::load_scene(&keys, &index.read(202).unwrap()).unwrap());
         assert!(g.covered(Vec3::new(-175.5, 31.0, -509.0)));
         assert!(!g.covered(Vec3::new(0.0, -4.0, 0.0)));
+    }
+
+    /// Running head-on into a wall: the marched sphere is pushed out by the half chord sqrt(r^2 - d^2) of its contact
+    /// (FUN_101708f0), not to the surface, so every other frame lands 0.17 back off the wall, as retail's does. The
+    /// drawn body (the actor update's turn) still faces the wall: the step back points against the move, which is
+    /// then the aim.
+    #[test]
+    fn head_on_wall_bounces_and_faces_it() {
+        let wall = [
+            Vec3::new(-10.0, 0.0, -2.0),
+            Vec3::new(10.0, 0.0, -2.0),
+            Vec3::new(10.0, -5.0, -2.0),
+            Vec3::new(-10.0, -5.0, -2.0),
+        ];
+        let g = ground(&[(quad(-10.0, 10.0, 0.0, 0.0), Vec3::NEG_Y), (wall, Vec3::Z)]);
+        let s = Vec3::NEG_Z * (5.0 * STEP_TICKS / 60.0);
+        let (mut pos, mut draw, mut yaw) = (Vec3::ZERO, None, std::f32::consts::FRAC_PI_2);
+        let mut zs = Vec::new();
+        for _ in 0..40 {
+            let from = pos;
+            pos = g.walk_player(from, from + s, STEP_TICKS, None);
+            yaw = crate::client::strafe_lock_turn(&mut draw, from, pos, s, false, yaw, STEP_TICKS).unwrap_or(yaw);
+            assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "{}", yaw.to_degrees());
+            assert!(pos.x.abs() < 1e-5);
+            zs.push(pos.z);
+        }
+        let (lo, hi) = zs[20..].iter().fold((f32::MAX, f32::MIN), |(a, b), z| (a.min(*z), b.max(*z)));
+        assert!(lo > -1.5 && hi - lo > 0.15 && hi - lo < 0.18, "{lo} {hi}");
     }
 
     #[test]

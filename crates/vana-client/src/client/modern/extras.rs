@@ -347,14 +347,19 @@ pub(super) fn lines_body(ui: &mut Ui, m: &super::Modern, lines: &[model::TextLin
             } else {
                 chevron(ui.painter(), pos2(row.min.x + 6.0, cy), false, c);
             }
+            // The right text first; the spans clipped short of it (a window narrowed past their width).
+            let mut end = row.max.x;
+            if let Some(r) = &l.right {
+                let rc = if r.tone == model::Tone::Muted { c } else { tone(r.tone) };
+                end = ui.painter().text(pos2(row.max.x, cy), Align2::RIGHT_CENTER, &r.text, font(r), rc).min.x - 6.0;
+            }
+            let old = ui.clip_rect();
+            ui.set_clip_rect(old.intersect(Rect::from_min_max(row.min, pos2(end, row.max.y))));
             let mut x = row.min.x + SC_INDENT;
             for s in &l.spans {
                 x = span_at(ui, s, x, cy, tone(s.tone)) + 6.0;
             }
-            if let Some(r) = &l.right {
-                let rc = if r.tone == model::Tone::Muted { c } else { tone(r.tone) };
-                ui.painter().text(pos2(row.max.x, cy), Align2::RIGHT_CENTER, &r.text, font(r), rc);
-            }
+            ui.set_clip_rect(old);
             if resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
@@ -375,13 +380,19 @@ pub(super) fn lines_body(ui: &mut Ui, m: &super::Modern, lines: &[model::TextLin
             let h = if l.spans.iter().any(|s| s.strong) { 20.0 } else { 16.0 };
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
             let cy = row.center().y;
+            let mut end = row.max.x;
+            if let Some(r) = &l.right {
+                end =
+                    ui.painter().text(pos2(row.max.x, cy), Align2::RIGHT_CENTER, &r.text, font(r), tone(r.tone)).min.x
+                        - 6.0;
+            }
+            let old = ui.clip_rect();
+            ui.set_clip_rect(old.intersect(Rect::from_min_max(row.min, pos2(end, row.max.y))));
             let mut x = row.min.x + l.indent;
             for s in &l.spans {
                 x = span_at(ui, s, x, cy, tone(s.tone)) + 6.0;
             }
-            if let Some(r) = &l.right {
-                ui.painter().text(pos2(row.max.x, cy), Align2::RIGHT_CENTER, &r.text, font(r), tone(r.tone));
-            }
+            ui.set_clip_rect(old);
         } else if let Some(s) = l.spans.first() {
             let width = (ui.available_width() - l.indent).max(40.0);
             let g = ui.ctx().fonts_mut(|f| f.layout(s.text.clone(), font(s), tone(s.tone), width));
@@ -1150,21 +1161,17 @@ fn group(ui: &mut Ui, m: &super::Modern, g: &Group, icon: &dyn Fn(&egui::Painter
         icon(ui.painter(), ri, Rect::from_min_size(pos2(rect.min.x, rect.min.y + 3.0), vec2(22.0, 22.0)), tint);
         let text = if waiting { m.theme.color("muted") } else { m.theme.color("text") };
         let x = rect.min.x + 30.0;
-        ui.painter().text(
-            pos2(x, rect.min.y + 2.0),
-            Align2::LEFT_TOP,
-            &r.name,
-            FontId::proportional(m.theme.small),
-            text,
-        );
         let time = if r.total <= 0.0 { "--:--".to_string() } else { clock(r.left) };
-        ui.painter().text(
+        let time_r = ui.painter().text(
             pos2(rect.max.x, rect.min.y + 2.0),
             Align2::RIGHT_TOP,
             time,
             FontId::monospace(m.theme.small),
             text,
         );
+        let (name, font) =
+            super::kit::fit(ui, &r.name, &FontId::proportional(m.theme.small), time_r.min.x - 8.0 - x, 0.85);
+        ui.painter().text(pos2(x, rect.min.y + 2.0), Align2::LEFT_TOP, name, font, text);
         if r.total > 0.0 {
             let f = (r.left / r.total).clamp(0.0, 1.0);
             let f = if r.fills { 1.0 - f } else { f };
@@ -1633,22 +1640,18 @@ fn widescan_panel(p: &mut Panels, w: &mut World) {
                         );
                     }
                     let col = kind_colour(kind_bit(e.kind));
-                    ui.painter().text(
-                        pos2(r.min.x + 4.0, r.center().y),
-                        Align2::LEFT_CENTER,
-                        name,
-                        FontId::proportional(m.theme.small),
-                        col,
-                    );
                     let d = (e.dx as f32).hypot(e.dz as f32);
                     let info = if e.level > 0 { format!("Lv{} {d:.0}", e.level) } else { format!("{d:.0}") };
-                    ui.painter().text(
+                    let info_r = ui.painter().text(
                         pos2(r.max.x - 26.0, r.center().y),
                         Align2::RIGHT_CENTER,
                         info,
                         FontId::monospace(m.theme.small - 1.0),
                         m.theme.color("muted"),
                     );
+                    let room = info_r.min.x - 8.0 - r.min.x - 4.0;
+                    let (shown, font) = super::kit::fit(ui, name, &FontId::proportional(m.theme.small), room, 0.85);
+                    ui.painter().text(pos2(r.min.x + 4.0, r.center().y), Align2::LEFT_CENTER, shown, font, col);
                     arrow(
                         ui.painter(),
                         pos2(r.max.x - 12.0, r.center().y),

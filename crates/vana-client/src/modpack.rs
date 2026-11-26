@@ -20,6 +20,8 @@ pub struct Pack {
     pub files: usize,
     /// A Lua mod's archive: its id is the slug.
     pub lua: Option<LuaMod>,
+    /// A material pack's archive (material.rs: `index.bin`, `maps/<2 hex>/<key>.vmat`), not game files.
+    pub materials: bool,
 }
 
 /// A Lua mod in an archive: the folder in it holding mod.toml ("" at the top, else ending in '/') and its version.
@@ -239,7 +241,7 @@ pub fn pack_named(path: &Path, id: Option<&str>) -> Result<Pack> {
     if plan.is_empty() {
         return Err(anyhow!("no game files and no mod.toml in {}", path.display()));
     }
-    Ok(Pack { path: path.to_path_buf(), slug: slug(path), files: plan.len(), lua: None })
+    Ok(Pack { path: path.to_path_buf(), slug: slug(path), files: plan.len(), lua: None, materials: false })
 }
 
 /// The shallowest mod.toml among the members: (its folder, its member name).
@@ -316,7 +318,13 @@ fn lua_pack(path: &Path, all: &[(String, u64)], id: Option<&str>) -> Result<Opti
     };
     let (id, version) = lua_manifest(&text, &folder)?;
     let files = all.iter().filter(|(m, _)| lua_target(m, &prefix).is_some()).count();
-    Ok(Some(Pack { path: path.to_path_buf(), slug: id, files, lua: Some(LuaMod { prefix, version }) }))
+    Ok(Some(Pack {
+        path: path.to_path_buf(),
+        slug: id,
+        files,
+        lua: Some(LuaMod { prefix, version }),
+        materials: false,
+    }))
 }
 
 /// One member's bytes.
@@ -398,7 +406,7 @@ fn plan(members: &[(String, u64)]) -> HashMap<String, (String, usize, u64)> {
 /// Where packs are looked for: the mods folder, the Downloads folder and the folders right inside it.
 pub fn pack_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![crate::config::mods_dir()];
-    if let Some(d) = dirs::download_dir()
+    if let Some(d) = crate::config::downloads_dir()
         && let Ok(rd) = std::fs::read_dir(&d)
     {
         let mut subs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
@@ -479,7 +487,7 @@ pub fn scan(dirs: &[PathBuf], root: &Path) -> Vec<Pack> {
             if installed.iter().any(|f| sample.iter().all(|k| size_at(&root.join(f), k) == Some(plan[*k].2))) {
                 continue;
             }
-            out.push(Pack { path: p, slug, files: plan.len(), lua: None });
+            out.push(Pack { path: p, slug, files: plan.len(), lua: None, materials: false });
         }
     }
     out
@@ -499,6 +507,12 @@ fn put(dest: &Path, to: &str, r: &mut dyn Read) -> Result<()> {
 
 /// Member name -> where it goes, and the bytes in all: the planned game files, or a Lua mod's files.
 fn targets(pack: &Pack, all: &[(String, u64)]) -> (HashMap<String, String>, u64) {
+    if pack.materials {
+        let t: HashMap<String, String> =
+            all.iter().filter_map(|(m, _)| material_target(m).map(|to| (m.clone(), to))).collect();
+        let total = all.iter().filter(|(m, _)| t.contains_key(m)).map(|(_, s)| s).sum();
+        return (t, total);
+    }
     match &pack.lua {
         Some(l) => {
             let t: HashMap<String, String> =
@@ -585,6 +599,34 @@ pub fn unpack(pack: &Pack, work: &Path, step: &mut dyn FnMut(u64, u64)) -> Resul
         }
     }
     Ok(wanted.len())
+}
+
+/// A material pack's member to its place in the pack's folder: `index.bin` or `maps/<2 hex>/<16 hex>.vmat`, at the top or
+/// under one folder.
+fn material_target(member: &str) -> Option<String> {
+    let parts: Vec<&str> = member.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
+    let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit());
+    if parts.iter().any(|p| matches!(*p, "." | "..")) {
+        return None;
+    }
+    let tail = match parts.as_slice() {
+        [.., "index.bin"] if parts.len() <= 2 => return Some("index.bin".into()),
+        [.., "maps", d, f] if parts.len() <= 4 => (*d, *f),
+        _ => return None,
+    };
+    let key = tail.1.strip_suffix(".vmat")?;
+    (hex(tail.0, 2) && hex(key, 16) && key[..2].eq_ignore_ascii_case(tail.0))
+        .then(|| format!("maps/{}/{}", tail.0, tail.1))
+}
+
+/// An archive of a material pack (material.rs), or why it is not one.
+pub fn materials_pack(path: &Path) -> Result<Pack> {
+    let all = members(path)?;
+    let files = all.iter().filter(|(m, _)| material_target(m).is_some()).count();
+    if !all.iter().any(|(m, _)| material_target(m).as_deref() == Some("index.bin")) && files == 0 {
+        return Err(anyhow!("no material maps in {}", path.display()));
+    }
+    Ok(Pack { path: path.to_path_buf(), slug: slug(path), files, lua: None, materials: true })
 }
 
 /// A fresh `<slug>.partial` under `root` to unpack into.
@@ -681,6 +723,53 @@ pub fn install_dir(src: &Path, root: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The published material pack's parts (VANA_MATERIAL_PARTS: their folder) unpack into a pack material.rs opens.
+    #[test]
+    fn material_parts_unpack() {
+        let Some(dir) = std::env::var_os("VANA_MATERIAL_PARTS").map(PathBuf::from) else { return };
+        let out = dir.join("unpacked");
+        let _ = std::fs::remove_dir_all(&out);
+        let mut parts: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+        parts.retain(|p| p.extension().is_some_and(|x| x == "7z"));
+        parts.sort();
+        let mut files = 0;
+        for p in &parts {
+            let pack = materials_pack(p).unwrap();
+            files += unpack(&pack, &out, &mut |_, _| {}).unwrap();
+        }
+        let maps = walkdir_count(&out.join("maps"));
+        assert_eq!(files, maps + 1, "the index and every map");
+        unsafe { std::env::set_var("VANA_MATERIALS", &out) };
+        crate::material::set_enabled(true);
+        assert!(crate::material::available(), "the unpacked pack opens");
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    fn walkdir_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir).unwrap().flatten().map(|d| std::fs::read_dir(d.path()).unwrap().count()).sum()
+    }
+
+    /// A material pack's members: the index and the maps by their keys, at the top or under one folder; nothing else.
+    #[test]
+    fn material_members() {
+        assert_eq!(material_target("index.bin").as_deref(), Some("index.bin"));
+        assert_eq!(material_target("materials/index.bin").as_deref(), Some("index.bin"));
+        assert_eq!(material_target("maps/0a/0a1b2c3d4e5f6071.vmat").as_deref(), Some("maps/0a/0a1b2c3d4e5f6071.vmat"));
+        assert_eq!(
+            material_target("materials/maps/0a/0a1b2c3d4e5f6071.vmat").as_deref(),
+            Some("maps/0a/0a1b2c3d4e5f6071.vmat")
+        );
+        for bad in [
+            "maps/0b/0a1b2c3d4e5f6071.vmat",
+            "maps/0a/x.vmat",
+            "ROM/1/2.DAT",
+            "a/b/index.bin",
+            "../maps/0a/0a1b2c3d4e5f6071.vmat",
+        ] {
+            assert_eq!(material_target(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn member_paths() {

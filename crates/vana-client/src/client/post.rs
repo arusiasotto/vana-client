@@ -274,14 +274,7 @@ pub(super) fn log_group9(w: &mut World, id: usize, mode: u8) {
 /// A file 7031 line with work {slot + 1 or slot, ...} and the string parameter (FUN_100a1ab0).
 pub(super) fn system_line(w: &mut World, id: u16, work: [i32; 5], text: String) {
     let Some(bt) = w.battle.clone() else { return };
-    let names = super::combat::tables(w);
-    let ctx = crate::dat::battle::Ctx {
-        me: w.name.clone(),
-        work,
-        strings: [text, String::new()],
-        names,
-        ..Default::default()
-    };
+    let ctx = crate::dat::battle::Ctx { work, strings: [text, String::new()], ..super::combat::ctx(w) };
     if let Some(line) = bt.system(id, &ctx) {
         let colour = bt.colour_in(line.mode.unwrap_or(0), &w.game);
         for l in line.lines.into_iter().filter(|l| !l.is_empty()) {

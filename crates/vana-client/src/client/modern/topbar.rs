@@ -24,6 +24,10 @@ pub struct Marquee {
 }
 
 pub fn draw(m: &Modern, ctx: &Context, v: &TopView) {
+    if !v.visible {
+        m.top_bar.set(None);
+        return;
+    }
     let p = ctx.layer_painter(LayerId::new(Order::Background, Id::unique("modern top bar")));
     let screen = ctx.content_rect();
     // What the bar covers, for the windows on the top edge.

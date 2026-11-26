@@ -142,27 +142,55 @@ function M.save() return write(FILE, db) end
 
 local function save_sticky() return write(STICKY_FILE, sticky) end
 
--- Runs f with sticky.json locked and read afresh, then saves it: every client on this install shares the file, so a
--- change starts from the others' ids and entries. Without fs.lock (older clients) f just runs.
+local function deep_copy(v)
+  if not is_table(v) then return v end
+  local out = {}
+  for k, x in pairs(v) do out[k] = deep_copy(x) end
+  return out
+end
+
+local function last_picks() return storage and storage.character and storage.character.hb_last end
+
+-- Runs f with sticky.json locked and read afresh (every client on this install shares the file, so a change starts
+-- from the others' ids and entries); f changes memory only, then sticky.json and the world's file are saved. When
+-- either cannot be written, all f changed (both tables and the groups' last picks) is put back, a file already written
+-- is written back, and it returns nil and why. Without fs.lock (older clients) f runs unlocked.
 local held = false
 local function with_sticky(f)
   if held then return f() end
   local lock = deps.lock or function(_, g) return g() end
   return lock(STICKY_FILE .. ".lock", function()
     held = true
-    local ok, r = pcall(function()
+    local ok, r, why = pcall(function()
       local st = read_json(STICKY_FILE, deps.read(STICKY_FILE))
       if st then
         sticky = st
         if not is_table(sticky.library) then sticky.library = {} end
       end
+      local was = { db = deep_copy(db), sticky = deep_copy(sticky), last = deep_copy(last_picks()) }
       local out = f()
-      save_sticky()
-      return out
+      local saved, err = save_sticky()
+      if saved then
+        saved, err = M.save()
+        if not saved then
+          sticky = was.sticky
+          save_sticky()
+        end
+      end
+      if saved then
+        if last_picks() then pcall(storage.save) end
+        return out
+      end
+      db, sticky = was.db, was.sticky
+      if storage and storage.character then
+        storage.character.hb_last = was.last
+        pcall(storage.save)
+      end
+      return nil, tostring(err)
     end)
     held = false
     if not ok then error(r, 0) end
-    return r
+    return r, why
   end)
 end
 
@@ -415,8 +443,9 @@ end
 
 local move_last
 
--- Makes an entry sticky (every job and world) or the job's again. Returns its new id. Unstuck, each job of this
--- world with a slot naming it gets a copy (`main` always); other worlds' slots naming it go empty.
+-- Makes an entry sticky (every job and world) or the job's again. Returns its new id, or nil and why when a file
+-- cannot be written (nothing moves). Unstuck, each job of this world with a slot naming it gets a copy (`main` always);
+-- other worlds' slots naming it go empty.
 function M.set_sticky(main, id, on)
   return with_sticky(function()
     id = tostring(id)
@@ -443,26 +472,33 @@ function M.set_sticky(main, id, on)
       nid = take(main)
       sticky.library[id] = nil
     end
-    M.save()
     return nid
   end)
 end
 
-local function save_entry(main, id, entry, want)
-  if id == nil then id = want and new_sticky_id() or new_job_id(main) end
-  id = tostring(id)
-  lib_of(main, id, true)[id] = clean_entry(entry)
-  if want ~= nil and want ~= M.is_sticky(id) then return M.set_sticky(main, id, want) end
-  if not M.is_sticky(id) then M.save() end
-  return id
-end
-
--- Saves an entry under `id` (nil: a new id), sticky when `want` (nil: as it is). Returns its id.
+-- Saves an entry under `id` (nil: a new id), then makes it sticky or the job's when `want` says so (nil: as it is).
+-- Returns its id; when a file cannot be written, also why (an edit is kept where the entry was; a new sticky entry
+-- is not made, and its id is nil).
 function M.save_entry(main, id, entry, want)
-  if want or M.is_sticky(id) then
-    return with_sticky(function() return save_entry(main, id, entry, want) end)
+  local shared = id == nil and want or id ~= nil and M.is_sticky(tostring(id))
+  local function put()
+    local nid = id ~= nil and tostring(id) or shared and new_sticky_id() or new_job_id(main)
+    lib_of(main, nid, true)[nid] = clean_entry(entry)
+    return nid
   end
-  return save_entry(main, id, entry, want)
+  local nid, why
+  if shared then
+    nid, why = with_sticky(put)
+    nid = nid or (id ~= nil and tostring(id) or nil)
+  else
+    nid = put()
+    local ok, err = M.save()
+    if not ok then why = tostring(err) end
+  end
+  if why or want == nil or want == M.is_sticky(nid) then return nid, why end
+  local moved, mwhy = M.set_sticky(main, nid, want)
+  if moved then return moved end
+  return nid, mwhy
 end
 
 -- A group's last-picked member, per character.
@@ -477,14 +513,13 @@ function M.last_member(macro)
   return math.max(1, math.min(k, #(macro.group or {})))
 end
 
--- A group's last pick follows its entry to a new id.
+-- A group's last pick follows its entry to a new id (saved with the files, by with_sticky).
 function move_last(main, old, new)
   local t = storage and storage.character and storage.character.hb_last
   if type(t) ~= "table" then return end
   local ok = tostring(main) .. ":" .. old
   if t[ok] == nil then return end
   t[tostring(main) .. ":" .. new], t[ok] = t[ok], nil
-  pcall(storage.save)
 end
 
 function M.set_last_member(macro, k)
@@ -524,20 +559,23 @@ local function clear_refs(main, id)
   end)
 end
 
--- Removes an entry and every slot naming it (a sticky one: in every job of this world).
+-- Removes an entry and every slot naming it (a sticky one: in every job of this world). Returns true, or false and
+-- why when a file cannot be written (a sticky entry then stays, slots and all).
 function M.delete_entry(main, id)
   id = tostring(id)
   if M.is_sticky(id) then
-    with_sticky(function()
+    local done, why = with_sticky(function()
       sticky.library[id] = nil
       each_job(function(job) clear_refs(job, id) end)
+      return true
     end)
-  else
-    local lib = lib_of(main, id, false)
-    if lib then lib[id] = nil end
-    clear_refs(main, id)
+    return done == true, why
   end
-  M.save()
+  local lib = lib_of(main, id, false)
+  if lib then lib[id] = nil end
+  clear_refs(main, id)
+  local ok, err = M.save()
+  return ok, not ok and tostring(err) or nil
 end
 
 -- ---------------------------------------------------------------------------

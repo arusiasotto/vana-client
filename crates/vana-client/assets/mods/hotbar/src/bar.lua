@@ -13,6 +13,7 @@ local chooser = require("src.chooser")
 local menu = require("src.menu")
 local mode = require("src.mode")
 local slotview = require("src.slotview")
+local overlay = require("src.overlay")
 
 local M = {}
 
@@ -60,7 +61,7 @@ local function signature()
   local mj, sj = jobs.current()
   local o = opts()
   return table.concat({ tostring(mj), tostring(sj), o.bars, o.slots, o.size, o.gap, tostring(o.show_keys),
-    mode.get() }, ":")
+    mode.get(), tostring(settings.get("display")) }, ":")
 end
 
 local slot_xy
@@ -78,10 +79,27 @@ local function is_suggested(macro, act)
 end
 
 local function list_place(b, i)
+  if overlay.on() then
+    return overlay.list_at("ovb_" .. b .. "_" .. i)
+  end
   local at = ui.bounds and ui.bounds(WIN, "c")
   if not at or not geo then return nil end
   local x, y = slot_xy(b, i)
   return slotview.list_place(at, x, y, geo.size, top_dock)
+end
+
+local function open_group_list(bar, slot, macro, tries)
+  local function go(place) chooser.open(macro, place, function(m) return is_suggested(m, actions.of(m)) end, bar) end
+  if overlay.on() then
+    local place = overlay.list_at("ovb_" .. bar .. "_" .. slot)
+    if not place and (tries or 0) < 8 then
+      timer.after(0.03, function() open_group_list(bar, slot, macro, (tries or 0) + 1) end)
+      return
+    end
+    go(place)
+    return
+  end
+  go(list_place(bar, slot))
 end
 
 -- Runs a slot; a group opens its list. While a list is open its bar's keys pick members by number.
@@ -98,7 +116,7 @@ function M.fire(bar, slot)
   local macro = data.resolve(mj, sj, bar, slot)
   if not macro then return end
   if macro.group then
-    chooser.open(macro, list_place(bar, slot), function(m) return is_suggested(m, actions.of(m)) end, bar)
+    open_group_list(bar, slot, macro, 0)
   else
     runner.run_checked(macro)
   end
@@ -141,9 +159,10 @@ local function hit(x, y)
   local h = height(reveal or 1)
   local r = geo.btn / 2
   local cx, plus_y, minus_y = knobs(h)
+  local n, most = wanted(), geo.bars
   local function on(cy) return (x - cx) ^ 2 + (y - cy) ^ 2 <= (r + 1) ^ 2 end
-  if on(minus_y) then return "minus" end
-  if on(plus_y) then return "plus" end
+  if on(minus_y) and n > 1 then return "minus" end
+  if on(plus_y) and n < most then return "plus" end
   for b = 1, geo.bars do
     for i = 1, geo.slots do
       local sx, sy = slot_xy(b, i)
@@ -160,8 +179,48 @@ local function key_of(c) return type(c) == "table" and (c.b .. ":" .. c.i) or c 
 -- Drawing
 -- ---------------------------------------------------------------------------
 
-local function draw()
+local draw
+local open_menu
+
+local function draw_overlay()
   if not geo or not eff then return end
+  local rev = eased(reveal or wanted())
+  overlay.bars({
+    -- The overlay always stands at the bottom: the closed window's dock does not turn it over.
+    size = geo.size, gap = geo.gap, slots = geo.slots, bars = geo.bars, reveal = rev, btn = geo.btn, pad = PAD,
+    top_dock = false,
+    eff = eff, shades = shades, show_keys = geo.show_keys,
+    shown = wanted(), most = geo.bars,
+    glow = 0.5 + 0.5 * math.sin(os.clock() * 3.2),
+    suggested = is_suggested,
+    edge = EDGE, hint = keys.hint, st = st, redraw = draw,
+    fire = function(c) M.fire(c.b, c.i) end,
+    menu = function(c) open_menu(c.b, c.i) end,
+    swap = function(from, to)
+      if not main then return end
+      local _, a = data.resolve(main, sub, from.b, from.i)
+      local _, b = data.resolve(main, sub, to.b, to.i)
+      data.swap(main, (a == "sub" or b == "sub") and sub or nil, from.b, from.i, to.b, to.i)
+      M.rebuild()
+      if M.hooks.changed then M.hooks.changed() end
+    end,
+    drop = function(c, id)
+      if not main or not data.get_entry(main, id) then return end
+      local _, from = data.resolve(main, sub, c.b, c.i)
+      data.assign(main, from == "sub" and sub or nil, c.b, c.i, id)
+      slotview.flash(st, c.b .. ":" .. c.i, draw)
+      M.rebuild()
+      if M.hooks.changed then M.hooks.changed() end
+    end,
+    other = function(c)
+      if c == "plus" then M.grow(1) elseif c == "minus" then M.grow(-1) end
+    end,
+  })
+end
+
+draw = function()
+  if mode.is_pad() or not geo or not eff then return end
+  if overlay.on() then draw_overlay(); return end
   local d = {}
   local function add(c) d[#d + 1] = c end
   local s, round = geo.size, 7
@@ -209,12 +268,16 @@ local function draw()
   local n, most = wanted(), geo.bars
   local r = geo.btn / 2
   local cx, plus_y, minus_y = knobs(h)
+  local function knob_live(name)
+    return name == "plus" and n < most or name == "minus" and n > 1
+  end
   local buttons = {
-    { "plus", plus_y, n < most, "Show another bar" },
-    { "minus", minus_y, n > 1, "Show one bar fewer" },
+    { "plus", plus_y, "Show another bar" },
+    { "minus", minus_y, "Show one bar fewer" },
   }
   for _, btn in ipairs(buttons) do
-    local name, cy, live, tip = btn[1], btn[2], btn[3], btn[4]
+    local name, cy, tip = btn[1], btn[2], btn[3]
+    local live = knob_live(name)
     local ink = not live and GOLD_OFF or (st.hover == name and INK or GOLD)
     add({ type = "circle", x = cx, y = cy, r = r, colour = KEY })
     add({ type = "circle", x = cx, y = cy, r = r - 0.75, line = 1.5, colour = ink })
@@ -240,6 +303,7 @@ local function busy()
 end
 
 local function step()
+  if mode.is_pad() then return end
   local now = os.clock()
   local dt = math.min(0.05, math.max(0, now - (last or now)))
   last = now
@@ -271,6 +335,7 @@ function M.grow(d)
   if to == n then return end
   storage.character.hb_shown = to
   storage.save()
+  reveal = to
   animate()
   draw()
 end
@@ -279,7 +344,7 @@ end
 -- Window
 -- ---------------------------------------------------------------------------
 
-local function open_menu(b, i)
+open_menu = function(b, i)
   if not main then return end
   local macro, from = data.resolve(main, sub, b, i)
   local items = {}
@@ -335,11 +400,15 @@ function M.rebuild()
   built_sig = signature()
   if hidden or not settings.get("on") or not settings.get("visible") or mode.is_pad() then
     ui.close(WIN)
+    overlay.clear("ovb")
+    geo, eff, last_sig = nil, nil, nil
+    if anim then events.off(anim); anim, last = nil, nil end
     return
   end
   main, sub = jobs.current()
   if not main then
     built_sig = nil
+    overlay.clear("ovb")
     return
   end
   local o = opts()
@@ -348,6 +417,13 @@ function M.rebuild()
     width = PAD + o.slots * o.size + (o.slots - 1) * o.gap + PAD + btn + PAD }
   eff = data.effective(main, sub)
   reveal = math.min(reveal or wanted(), o.bars)
+  if overlay.on() then
+    ui.close(WIN)
+    M.recasts()
+    animate()
+    return
+  end
+  overlay.clear("ovb")
   ui.window(WIN, {
     title = "Hotbars",
     heading = main .. "/" .. (sub or "-"),
@@ -364,7 +440,7 @@ end
 
 -- Every quarter second.
 function M.recasts()
-  if not geo or not eff then return end
+  if mode.is_pad() or not geo or not eff then return end
   local r = game.recasts()
   local me = game.player()
   shades = {}
@@ -378,6 +454,7 @@ function M.recasts()
 end
 
 events.on("suggestions", function(rows)
+  if mode.is_pad() then return end
   suggested = {}
   for _, r in ipairs(rows or {}) do
     if r.kind and r.id then suggested[r.kind .. ":" .. r.id] = true end
@@ -411,10 +488,19 @@ end
 function M.is_hidden() return hidden end
 
 function M.tile_drag_ended()
-  if st.tile_at then
-    st.tile_at = nil
-    draw()
-  end
+  if mode.is_pad() or st.tile_at == nil then return end
+  st.tile_at = nil
+  draw()
+end
+
+function M.clear_drag()
+  slotview.reset(st)
+end
+
+function M.hover_overlay(key)
+  if not overlay.on() or key == st.hover then return end
+  st.hover = key
+  draw()
 end
 
 return M

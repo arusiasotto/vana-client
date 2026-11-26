@@ -1,5 +1,5 @@
 name = "Gearshift"
-version = "0.2.7"
+version = "0.2.20"
 description = "Swaps gear around your actions from GearSwap job files and LuAshitacast and Ashitacast XML profiles, unchanged (the gear-swap add-ons), or builds every set of your job from the gear you hold (//gearshift)."
 permissions = ["packets.read", "packets.write", "automation"]
 
@@ -13,7 +13,7 @@ help = "Runs your GearSwap job file, LuAshitacast profile or Ashitacast XML prof
 type = "bool"
 default = true
 label = "Set Builder"
-help = "Builds every set of your job from the gear you hold (//gearshift shows them). With Wear These Sets on in that window, it wears them around your actions when no GearSwap, LuAshitacast, Ashitacast or Spellcast file is loaded for the job."
+help = "Builds every set of your job from the gear you hold (//gearshift shows them). With Enable Gearshift on in that window, it wears them around your actions when no GearSwap, LuAshitacast, Ashitacast or Spellcast file is loaded for the job."
 
 [settings.cap]
 type = "enum"

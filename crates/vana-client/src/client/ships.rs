@@ -1,7 +1,7 @@
 //! Ships (0x00E SubKind 4 -> actor kind 5, the XiModelActor; MODLOG "Ship actors"): the boats
 //! and airships seen from the docks, the overhead airships, the pirate ship. One MMB from the ship's DAT, placed
 //! where the server first put it and then moved only by that file's sequences: states 0x12..0x19 play `seq0`..`seq7`
-//! (DAT_1032d42c) from the server's stamp, caught up when more than 10 s late (FUN_10097a80 / FUN_100c4730).
+//! (DAT_1032d42c) from the server's stamp, caught up when 10 s or more late (FUN_10097a80 / FUN_100c4730).
 
 use super::World;
 use crate::dat::DatIndex;
@@ -29,6 +29,10 @@ pub struct ModelActor {
     pub shown: bool,
     /// A server pose came while a path drive held the model: applied when the drive lets go.
     held: bool,
+    /// +0x779: the model has had an update since it was set (FUN_100c4290 clears it); the first one snaps the heading.
+    updated: bool,
+    /// The file has an 'init' scheduler the model has not been through yet (+0x77a clear).
+    init: bool,
 }
 
 #[derive(Default)]
@@ -77,6 +81,19 @@ fn sequence(state: u8) -> Option<u32> {
     (0x12..=0x19).contains(&state).then(|| u32::from_le_bytes([b's', b'e', b'q', b'0' + state - 0x12]))
 }
 
+/// FUN_10097a80 / FUN_100c4730's ticks to catch up: both clocks x 60 in 32 bits (they wrap), a start whose product
+/// is 0 taken as now, the difference signed (`jl` at 0x100c47ba). Below 600, a start still to come included, the
+/// sequence plays from its first op (0).
+fn skip_ticks(now: u32, start: u32) -> i32 {
+    let now = now.wrapping_mul(60);
+    let s = match start.wrapping_mul(60) {
+        0 => now,
+        s => s,
+    };
+    let elapsed = now.wrapping_sub(s) as i32;
+    if elapsed < 600 { 0 } else { elapsed }
+}
+
 /// FUN_10097a80: `elapsed = now - start` in ticks (start 0: now); under 600 from the first op, else caught up.
 fn start_seq(w: &mut World, id: u32, start: u32) {
     let Some(a) = w.ships.actors.get(&id) else { return };
@@ -84,10 +101,8 @@ fn start_seq(w: &mut World, id: u32, start: u32) {
         w.effects.kill_sequence(id);
         return;
     };
-    let now = super::vana_now(w) as i64 * 60;
-    let s = if start == 0 { now } else { start as i64 * 60 };
-    let elapsed = now - s;
-    let skip = if elapsed < 600 { 0.0 } else { elapsed as f32 };
+    let elapsed = skip_ticks(super::vana_now(w) as u32, start);
+    let skip = elapsed as f32;
     log::debug!(
         "ship {id:#x}: state {:#x} {}, elapsed {elapsed} ticks, skip {skip}",
         a.state,
@@ -180,10 +195,8 @@ pub fn create(w: &mut World, l: &Loaded) -> Option<Mat4> {
     // Op 0xb6 0x11's new model: the actor stays as it is.
     if let Some(a) = w.ships.actors.get_mut(&l.entity) {
         log::info!("ship {:#x}: model now file {}, mesh {}", l.entity, l.file, l.mesh);
-        (a.file, a.smooth, a.shown) = (l.file, smooth, false);
-        if !smooth && l.init {
-            w.effects.on_scheduler_quiet(l.entity, u32::from_le_bytes(*b"init"));
-        }
+        // FUN_100c4290 clears +0x778 / +0x779 / +0x77a: the new file's 'init' waits for the second update again.
+        (a.file, a.smooth, a.shown, a.updated, a.init) = (l.file, smooth, false, false, l.init);
         return Some(a.matrix);
     }
     let (ship, start) = w.entities.get(&l.entity)?.ship?;
@@ -214,14 +227,12 @@ pub fn create(w: &mut World, l: &Loaded) -> Option<Mat4> {
             matrix,
             shown: false,
             held: false,
+            updated: false,
+            init: l.init,
         },
     );
     let bound = super::event::active(w) && w.doors.event.contains_key(&l.entity);
     start_seq(w, l.entity, if bound { 0 } else { start });
-    // A prop (the generic MMB branch) plays its file's 'init' once *(ours at creation; retail the second update)*.
-    if !smooth && l.init {
-        w.effects.on_scheduler_quiet(l.entity, u32::from_le_bytes(*b"init"));
-    }
     Some(matrix)
 }
 
@@ -253,10 +264,16 @@ fn wrap_pi(a: f32) -> f32 {
 /// After the effects tick (FUN_100c47f0): the drives' poses, the heading eased toward its target (1/8 a tick on
 /// `fune` / `_fun`, y the short way *(ours: continuous, the same at 60 fps)*), and whether it draws. Returns the
 /// actors whose matrix or visibility changed: (entity, matrix, shown).
+///
+/// A model's first update (+0x779 clear) only snaps the heading. From the second, a prop (the generic MMB branch)
+/// goes through its file's 'init' once: played when the model is not hidden then (+0xb2 == 0), passed over for good
+/// when it is (+0x77a is set either way).
 pub fn apply(w: &mut World, ticks: f32, hidden: &std::collections::HashSet<u32>) -> Vec<(u32, Mat4, bool)> {
     let poses = &w.effects.actor_poses;
     let mut out = Vec::new();
+    let mut inits = Vec::new();
     for (id, a) in w.ships.actors.iter_mut() {
+        let visible = w.entities.get(id).is_some_and(|e| e.flags & 2 == 0) && !hidden.contains(id);
         if let Some(p) = poses.get(id) {
             if let Some(at) = p.pos {
                 a.pos = at;
@@ -268,17 +285,20 @@ pub fn apply(w: &mut World, ticks: f32, hidden: &std::collections::HashSet<u32>)
                 a.target = r;
             }
         }
-        if a.smooth {
+        if a.smooth && a.updated {
             let mut d = a.target - a.rot;
             d.y = wrap_pi(d.y);
             a.rot += d * (1.0 - (7.0f32 / 8.0).powf(ticks));
             a.rot = Vec3::new(wrap_pi(a.rot.x), wrap_pi(a.rot.y), wrap_pi(a.rot.z));
         } else {
+            if !a.smooth && a.updated && std::mem::take(&mut a.init) && visible {
+                inits.push(*id);
+            }
             a.rot = a.target;
         }
+        a.updated = true;
         let m = model_matrix(a.pos, a.rot);
         // The server's hide (flags1 bit 1) and the event hides; the first 4 draws count drawn frames only.
-        let visible = w.entities.get(id).is_some_and(|e| e.flags & 2 == 0) && !hidden.contains(id);
         let show = visible && a.skip_draws == 0;
         if visible {
             a.skip_draws = a.skip_draws.saturating_sub(1);
@@ -287,6 +307,9 @@ pub fn apply(w: &mut World, ticks: f32, hidden: &std::collections::HashSet<u32>)
             (a.matrix, a.shown) = (m, show);
             out.push((*id, m, show));
         }
+    }
+    for id in inits {
+        w.effects.on_scheduler_quiet(id, u32::from_le_bytes(*b"init"));
     }
     out
 }
@@ -357,6 +380,43 @@ mod tests {
             let want = if (7..=12).contains(&id) { "_fun" } else { "fune" };
             assert_eq!(l.mesh, want, "ship {id}");
         }
+    }
+
+    /// How far the ships' paths reach (the Vtx points of files 31004..31025): `cargo test path_reach_census --
+    /// --ignored --nocapture`. Retail's projection ends at 65535 and the model actor has no distance test.
+    #[test]
+    #[ignore]
+    fn path_reach_census() {
+        let cfg = crate::config::Config::load();
+        let Ok(index) = DatIndex::open(&cfg.ffxi_dir()) else { return };
+        for id in 0..22u32 {
+            let Ok(bytes) = index.read(31004 + id) else { continue };
+            let Ok(chunks) = crate::dat::chunks(&bytes) else { continue };
+            let (mut lo, mut hi, mut n) = (Vec3::MAX, Vec3::MIN, 0);
+            for c in chunks.iter().filter(|c| c.kind == 0x3e) {
+                for p in crate::fx::spline::points(c.data) {
+                    (lo, hi, n) = (lo.min(p), hi.max(p), n + 1);
+                }
+            }
+            println!("ship {id} file {}: {n} points, {lo} .. {hi}, span {}", 31004 + id, (hi - lo).length());
+        }
+    }
+
+    /// FUN_100c4730's arithmetic: 32-bit products that wrap, the difference signed, 600 ticks the line.
+    #[test]
+    fn skips() {
+        let now = 780_000_000u32;
+        assert_eq!(skip_ticks(now, now), 0);
+        assert_eq!(skip_ticks(now, now - 9), 0);
+        assert_eq!(skip_ticks(now, now - 10), 600);
+        assert_eq!(skip_ticks(now, now - 121), 7260);
+        // A start still to come, and no start at all: from the first op.
+        assert_eq!(skip_ticks(now, now + 30), 0);
+        assert_eq!(skip_ticks(now, 0), 0);
+        // start x 60 == 0 mod 2^32 is "no start" too.
+        assert_eq!(skip_ticks(now, 1 << 30), 0);
+        // More than 2^31 ticks late (414 days) wraps negative: from the first op.
+        assert_eq!(skip_ticks(now, now - 36_000_000), 0);
     }
 
     #[test]

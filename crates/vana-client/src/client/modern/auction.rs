@@ -148,14 +148,10 @@ fn history_rows(
                 font.clone(),
                 m.theme.color("muted"),
             );
-            ui.painter().text(
-                pos2(rect.min.x + 150.0, y),
-                Align2::LEFT_CENTER,
-                format!("{}  →  {}", r[1], r[2]),
-                font.clone(),
-                text,
-            );
-            ui.painter().text(pos2(rect.max.x - 10.0, y), Align2::RIGHT_CENTER, &r[3], font, text);
+            let price = ui.painter().text(pos2(rect.max.x - 10.0, y), Align2::RIGHT_CENTER, &r[3], font.clone(), text);
+            let who = format!("{}  →  {}", r[1], r[2]);
+            let (who, font) = super::kit::fit(ui, &who, &font, price.min.x - 10.0 - rect.min.x - 150.0, 0.85);
+            ui.painter().text(pos2(rect.min.x + 150.0, y), Align2::LEFT_CENTER, who, font, text);
             if focused && resp.clicked() {
                 click = Some(k);
             }

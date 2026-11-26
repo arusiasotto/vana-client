@@ -1,5 +1,5 @@
 name = "Hotbars"
-version = "1.13.1"
+version = "1.13.14"
 description = "Hotbars of multi-line macros with their actions' icons and recasts, loaded by main job and sub job; a macro library with a builder and a palette to drag from. Play with the keyboard's hotbars or the gamepad's crossbars (LT, RT or both with the d-pad, face buttons, L1 / R1 and L3 / R3), and switch between them with //hb mode. Gamepad mode needs input.capture (to take the triggers and buttons) and automation (a slot fires from a timer, since a pad filter cannot wait for a macro's waits)."
 authors = ["Arusia"]
 permissions = ["actions", "automation", "input.capture", "ui.native"]
@@ -35,6 +35,13 @@ type = "bool"
 default = true
 label = "Show Hotbars"
 help = "Draw the hotbars on screen. //hb show and //hb hide switch them for this session."
+
+[settings.display]
+type = "enum"
+options = ["Window", "Overlay"]
+default = "Window"
+label = "Display"
+help = "Window: the bars live in the dockable edge window. Overlay: the same slots as transparent HUD tiles on the screen (no canvas frame). Slot count and gamepad layout are unchanged."
 
 [settings.bars]
 type = "int"
@@ -89,7 +96,7 @@ help = "Width and height of one crossbar slot in gamepad mode."
 type = "bool"
 default = true
 label = "Crossbar Only While Triggered"
-help = "In gamepad mode, fold the crossbars back to the edge (leaving a button that opens the manager) until LT, RT or both are held, then show only that set. Without a controller, or while the manager or palette is open, all three sets stay shown to set up."
+help = "In gamepad mode, hide the crossbars until LT, RT or both are held, then show only that set (hold a trigger and press Start to open the manager). Without a controller, or while the manager or palette is open, all three sets stay shown to set up."
 
 [commands.hb]
 help = "Opens the hotbar manager."

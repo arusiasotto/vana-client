@@ -373,8 +373,13 @@ pub struct GameUi {
     anim_acc: f32,
     pub open_ticks: f32,
     walk: Walk,
-    /// The window drawn with the hand and its cursor child's rect, this frame and the last (what Enter presses).
-    focus: (Option<(String, u16, [f32; 4])>, Option<(String, u16, [f32; 4])>),
+    /// The focused window's cursor child and its rect, as drawn last frame (what Enter presses); this frame's hand is
+    /// the batch's `hand`.
+    focus: Option<Hand>,
+    /// The window manager's focus (+0x54) and the warp it owes (`Focus`), and the pointer put on the cursor child of a
+    /// window that took it (FUN_1015fe20 -> FUN_10126000), for the app to apply.
+    focus_state: Focus,
+    focus_warp: Option<(f32, f32)>,
     /// Window +0x5e, the generic press (FUN_10118260 on Enter: 9 ticks down): the child pressed and the count.
     presses: std::cell::RefCell<std::collections::HashMap<String, (u16, f32)>>,
 }
@@ -390,6 +395,10 @@ struct Walk {
     /// Group overrides (GameUi::set_group) and window flags set while open (GameUi::force_flags).
     groups: std::collections::HashMap<String, u16>,
     flags: std::collections::HashMap<String, u32>,
+    /// A window opened again in place under the same name (GameUi::renew): a new window to the focus.
+    gens: std::collections::HashMap<String, u32>,
+    /// What each window renewed by key showed last (GameUi::renew_on).
+    shown: std::collections::HashMap<String, u64>,
 }
 
 /// One window's open / close state (window +0x26 open count, +0x64 close count, +0x68 opened animated).
@@ -492,7 +501,9 @@ impl GameUi {
             log_bottom: None,
             target_up: false,
             walk: Walk::default(),
-            focus: (None, None),
+            focus: None,
+            focus_state: Focus::default(),
+            focus_warp: None,
             presses: Default::default(),
         }
     }
@@ -613,17 +624,61 @@ impl GameUi {
         self.anims.retain(|_, a| a.seen == frame || a.close > 0.0);
         self.anim_frame += 1;
         self.run_walk();
-        self.focus = (None, self.focus.0.take());
+        let hand = self.batch.hand.take();
+        let top = self.walk_focus();
+        let (focus, warp) = self.focus_state.step(top, !self.walk.last.is_empty(), hand);
+        self.focus = focus;
+        if warp.is_some() {
+            self.focus_warp = warp;
+        }
         self.presses.borrow_mut().retain(|_, p| {
             p.1 -= ticks;
             p.1 > 0.0
         });
     }
 
+    /// FUN_1015fdb0 on the walk's windows, top first: the first one the walk did not suspend whose registry flags lack
+    /// bit 0 (the log, the gauges, the party list, the help line ... never take the focus). Its key and generation.
+    /// Not modelled: +0x98 (such a window asked to take it anyway) and state 0xe.
+    fn walk_focus(&self) -> Option<(String, u32)> {
+        let mut order: Vec<(&String, &i64)> = self.walk.last.iter().collect();
+        order.sort_by_key(|o| std::cmp::Reverse(*o.1));
+        order
+            .into_iter()
+            .map(|(n, _)| n)
+            .find(|n| !self.walk.suspended.contains(*n) && self.reg_flags(n) & 1 == 0)
+            .map(|n| (n.clone(), self.walk.gens.get(n).copied().unwrap_or(0)))
+    }
+
+    /// `name` was opened again in place (a new window object under the same name, with no frame between): the focus
+    /// moves to it as to any new window.
+    pub fn renew(&mut self, name: &str) {
+        *self.walk.gens.entry(crate::dat::ui::norm_name(name.as_bytes())).or_default() += 1;
+    }
+
+    /// `renew` when what `name` shows (`key`) changed since the last call: a window the game opens again in place for
+    /// each new content (the event choice's "menu    query").
+    pub fn renew_on(&mut self, name: &str, key: u64) {
+        if self.walk.shown.insert(name.to_string(), key).is_some_and(|k| k != key) {
+            self.renew(name);
+        }
+    }
+
+    /// A window that draws its own hand: `child` of `name`, at `rect`, is the focused window's cursor child this
+    /// frame (what the generic draw records for the windows it draws with the hand).
+    pub fn focus_child(&mut self, name: &str, child: u16, rect: [f32; 4]) {
+        self.batch.set_hand(name, child, rect);
+    }
+
+    /// The pointer warp a focus change asked for at the last frame's end (UI pixels), once.
+    pub fn take_focus_warp(&mut self) -> Option<(f32, f32)> {
+        self.focus_warp.take()
+    }
+
     /// The generic handler's Enter (FUN_10118260, message 5): the focused window's cursor child sinks to (+1, +1) and
     /// its two rings play for 9 ticks (FUN_101177d0 -> FUN_10119f80 with N = 20).
     pub fn press(&self) {
-        if let Some((name, child, _)) = &self.focus.1 {
+        if let Some((name, child, _)) = &self.focus {
             self.presses.borrow_mut().insert(name.clone(), (*child, 9.0));
         }
     }
@@ -637,7 +692,6 @@ impl GameUi {
     pub fn press_at(&self, p: (f32, f32)) {
         if self
             .focus
-            .1
             .as_ref()
             .is_some_and(|(_, _, r)| p.0 >= r[0] && p.0 < r[0] + r[2] && p.1 >= r[1] && p.1 < r[1] + r[3])
         {
@@ -1013,6 +1067,7 @@ impl GameUi {
             // The cursor rests on a disabled child too (FUN_10118870 does not skip them): the hand goes there.
             if on {
                 self.cursor(x + e.x as f32, y + e.y as f32);
+                self.focus_child(name, e.id, [x + e.x as f32, y + e.y as f32, e.w as f32, e.h as f32]);
             }
         }
     }
@@ -1203,7 +1258,7 @@ impl GameUi {
         for c in m.elements.iter().skip(1).filter(|c| !hide.contains(&c.id)) {
             let (cx, cy) = (x + c.x as f32, y + c.y as f32);
             if hand && sel == Some(c.id) {
-                self.focus.0 = Some((name.to_string(), c.id, [cx, cy, c.w as f32, c.h as f32]));
+                self.batch.set_hand(name, c.id, [cx, cy, c.w as f32, c.h as f32]);
             }
             if let Some(r) = c.refs.iter().find(|r| r.kind == 0)
                 && let Some(own) = ui.lib(&r.lib)
@@ -1722,6 +1777,23 @@ impl GameUi {
     pub fn child_place(&self, menu: &str, child: u16) -> Option<(f32, f32)> {
         let e = self.data.lobby.menu(menu)?.elements.iter().skip(1).find(|e| e.id == child)?;
         Some((e.x as f32, e.y as f32))
+    }
+
+    /// A window's caption, when it is one retail puts in state 0x10 as the window opens: with registry flag 0x200000
+    /// the open (FUN_1015f920, `test eax, 0x200000` at 0x1015fa80) calls FUN_1011a580, which gives the last child
+    /// that state. The hit test skips such a child and no arrow enters it, so the caption never takes the cursor.
+    /// (No window with the flag has a last child with cursor links; windows without it that have a caption set the
+    /// state themselves: menuwind / socialme child 15, bazaar 3, mp_cstm 13, post1 9, passinpu 1.)
+    pub fn caption(&self, name: &str) -> Option<u16> {
+        let last = self.data.lobby.menu(name)?.elements.len().checked_sub(1).filter(|&n| n > 0)?;
+        (self.reg_flags(name) & 0x20_0000 != 0).then_some(last as u16)
+    }
+
+    /// The child of window `name` under the mouse: `Menu::hit` at the window's place, the flagged caption passed
+    /// over. None while the window is opening.
+    pub fn hit(&self, name: &str, sw: f32, sh: f32, p: (f32, f32)) -> Option<u16> {
+        let off: Vec<u16> = self.caption(name).into_iter().collect();
+        self.data.lobby.menu(name)?.hit(self.window_xy(name, sw, sh)?, p, &off)
     }
 
     pub fn menu_def(&self, name: &str) -> Option<&crate::dat::ui::Menu> {
@@ -2493,6 +2565,26 @@ impl GameUi {
         self.cursor_at(x, y, self.cursor_frame());
     }
 
+    /// The hand at (x, y) on a window that draws its own, with its cursor part: `child` of window `name` and that
+    /// part's rect (UI pixels). The rect is what the pointer warp aims at (FUN_1011c080, its centre) when the window
+    /// takes the focus; the child is what Enter's press marks (0 for a row that is not a child of the layout).
+    pub fn cursor_on(&mut self, name: &str, child: u16, x: f32, y: f32, rect: [f32; 4]) {
+        self.cursor(x, y);
+        self.batch.set_hand(name, child, rect);
+    }
+
+    /// `cursor_on` for child `child` of window `name` laid out at (wx, wy): its rect from the layout (the hand's spot
+    /// as a point when the layout lacks it).
+    pub fn cursor_child(&mut self, name: &str, child: u16, x: f32, y: f32, wx: f32, wy: f32) {
+        let rect = self
+            .data
+            .lobby
+            .menu(name)
+            .and_then(|m| m.elements.iter().skip(1).find(|e| e.id == child))
+            .map_or([x, y, 0.0, 0.0], |e| [wx + e.x as f32, wy + e.y as f32, e.w as f32, e.h as f32]);
+        self.cursor_on(name, child, x, y, rect);
+    }
+
     /// The Help Desk pages' hand (the entry marker draw FUN_10217de0, faqsub and faqmain): its own counter at entry
     /// +0x2c steps once a drawn frame and wraps at 24, and the frame is (counter >> 2) % 6, so each of the six
     /// frames holds for four retail frames (8 ticks) against the generic hand's 3 ticks.
@@ -2835,6 +2927,14 @@ impl GameUi {
         }
     }
 
+    /// The chmkname name field in UI pixels (`name_entry`'s text area).
+    #[cfg(target_os = "android")]
+    pub fn chmkname_field_rect(&self, w: f32, h: f32) -> [f32; 4] {
+        let Some(m) = self.data.lobby.menu("menu    chmkname") else { return [0.0, 0.0, 2.0, 16.0] };
+        let (fx, fy, fw, fh) = screens::frame_rect(m, w, h, 1.0, 1.0);
+        [fx + 16.0, fy + 4.0, (fw - 32.0).max(2.0), (fh - 8.0).max(16.0)]
+    }
+
     /// The chmkname window's contents (FUN_1022d9b0): the name at window + (0x10, 4), first letter upper case and
     /// the rest lower (FUN_1022dc60); while `active`, the caret on for frames 16..29 of every 30 and sprite 140 at
     /// child 2 (FUN_1015ed80: only with the focus).
@@ -2974,6 +3074,58 @@ mod latin_tests {
     }
 }
 
+/// A hand drawn on a window: the window, its cursor child and that child's rect (UI pixels).
+type Hand = (String, u16, [f32; 4]);
+
+/// The window manager's focus (+0x54): the window that has it (walk key, generation), and the one that took it and
+/// still owes its pointer warp because its cursor child was not drawn yet (opening, or a window drawing no hand).
+#[derive(Default)]
+struct Focus {
+    was: Option<(String, u32)>,
+    owed: Option<(String, u32)>,
+}
+
+impl Focus {
+    /// One frame's end (FUN_10160fd0 -> FUN_1015fdb0 -> FUN_1015fe20): `top` the walk's focus window, `any_up` whether
+    /// any window is up, `hand` the hand drawn this frame. The focus changes to `top`; a window that takes it gets the
+    /// pointer on its cursor child (FUN_10126000) as soon as that is drawn. With no window that can take the focus up,
+    /// the screens outside the walk (the title, the lobby lists) have it where their hand is; with no window up at all
+    /// (Scroll Lock, the download screen) nothing changes. Returns the focused window's hand and the warp.
+    fn step(
+        &mut self,
+        top: Option<(String, u32)>,
+        any_up: bool,
+        hand: Option<Hand>,
+    ) -> (Option<Hand>, Option<(f32, f32)>) {
+        let key = |h: &Hand| crate::dat::ui::norm_name(h.0.as_bytes());
+        let now = match (&top, &hand) {
+            (Some(_), _) => top,
+            (None, Some(h)) => Some((key(h), 0)),
+            (None, None) if !any_up => self.was.clone(),
+            (None, None) => None,
+        };
+        if now != self.was {
+            self.owed = now.clone();
+            self.was = now;
+        }
+        let focus = hand.filter(|h| self.was.as_ref().is_some_and(|w| w.0 == key(h)));
+        let warp = match (&focus, &self.owed) {
+            (Some(h), Some(_)) => {
+                self.owed = None;
+                Some(centre(h.2))
+            }
+            _ => None,
+        };
+        (focus, warp)
+    }
+}
+
+/// FUN_1011c080: the cursor part's centre, x + w / 2 and y + h / 2 on its shorts (C division).
+fn centre(r: [f32; 4]) -> (f32, f32) {
+    let [x, y, w, h] = r.map(|v| v as i32);
+    ((x + w / 2) as f32, (y + h / 2) as f32)
+}
+
 /// FUN_10217de0's hand frame after `frames` drawn retail frames: (counter >> 2) % 6 with the counter wrapping at 24.
 fn faq_hand_frame(frames: f32) -> usize {
     ((frames as usize % 24) >> 2) % 6
@@ -2981,7 +3133,95 @@ fn faq_hand_frame(frames: f32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::faq_hand_frame;
+    use super::{Focus, faq_hand_frame};
+
+    /// Registry flag 0x200000 (FUN_1015f920 at 0x1015fa80 -> FUN_1011a580) puts a window's last child in state 0x10.
+    /// In every layout that child is the caption: it has no cursor link, and no window with the flag ends in a row.
+    /// The linkshell submenus have the flag, so their caption (case 4 of link2 / link3) never takes the cursor; the
+    /// chat mode window does not, and its last child (8, the arrow beside the tell name) is live. Needs the installed
+    /// game; skipped without it.
+    #[test]
+    fn flagged_windows_end_in_a_caption() {
+        use crate::dat::ui::{LOBBY_US, UiFile, companions};
+        let dir = crate::config::Config::load().ffxi_dir();
+        let Ok(index) = crate::dat::DatIndex::open(&dir) else { return };
+        let Ok(dll) = std::fs::read(crate::dat::ffximain(&dir)) else { return };
+        let (flags, _) = super::menu_registry(&dll);
+        let Ok(file) = index.read(LOBBY_US) else { return };
+        let mut ui = UiFile::parse(&file).unwrap();
+        for &c in companions(LOBBY_US) {
+            ui.absorb(UiFile::parse(&index.read(c).unwrap()).unwrap(), true);
+        }
+        let flag =
+            |n: &str| flags.get(n).copied().unwrap_or_else(|| panic!("{n} not in the registry")) & 0x20_0000 != 0;
+        let mut seen = 0;
+        for m in &ui.menus {
+            if !flags.get(&m.name).is_some_and(|f| f & 0x20_0000 != 0) || m.elements.len() < 2 {
+                continue;
+            }
+            let last = m.elements.last().unwrap();
+            assert_eq!(last.id as usize, m.elements.len() - 1, "{}", m.name);
+            assert!(last.links[2..].iter().all(|&l| l == 0xff), "{}: child {} {:?}", m.name, last.id, last.links);
+            seen += 1;
+        }
+        assert!(seen > 60, "{seen}");
+        for n in ["link1", "link2", "link3", "link4", "link13", "link7", "link10", "scoption", "prty1", "mcrselec"] {
+            assert!(flag(&format!("menu    {n}")), "{n}");
+        }
+        for n in ["chatctrl", "menuwind", "bazaar", "itemctrl", "quest01", "playermo"] {
+            assert!(!flag(&format!("menu    {n}")), "{n}");
+        }
+    }
+
+    fn hand(name: &str) -> super::Hand {
+        (name.to_string(), 3, [100.0, 40.0, 63.0, 15.0])
+    }
+
+    fn win(name: &str, g: u32) -> Option<(String, u32)> {
+        Some((crate::dat::ui::norm_name(name.as_bytes()), g))
+    }
+
+    /// The focus follows the walk's top window: a change warps once, onto the centre of its cursor child.
+    #[test]
+    fn focus_change_puts_the_pointer_on_the_cursor_child_centre() {
+        let mut f = Focus::default();
+        let (focus, warp) = f.step(win("menu    menuwind", 0), true, Some(hand("menu    menuwind")));
+        assert_eq!((focus.map(|h| h.1), warp), (Some(3), Some((131.0, 47.0))));
+        // Its cursor moving: the same focus, no warp.
+        assert_eq!(f.step(win("menu    menuwind", 0), true, Some(hand("menu    menuwind"))).1, None);
+        // A background window's hand drawn after the top one's is not the focus.
+        assert_eq!(f.step(win("menu    menuwind", 0), true, Some(hand("menu    item"))), (None, None));
+    }
+
+    /// A window with no hand drawn yet (opening, or drawing its own) owes the warp until its hand shows; the UI hidden
+    /// keeps the focus; an empty list's frame keeps it too.
+    #[test]
+    fn focus_warp_waits_for_the_hand() {
+        let mut f = Focus::default();
+        f.step(win("menu    menuwind", 0), true, Some(hand("menu    menuwind")));
+        assert_eq!(f.step(win("menu    item", 0), true, None).1, None);
+        assert_eq!(f.step(win("menu    item", 0), true, Some(hand("menu    item"))).1, Some((131.0, 47.0)));
+        // Scroll Lock: no window up, no hand. Back again: no warp.
+        assert_eq!(f.step(None, false, None), (None, None));
+        assert_eq!(f.step(win("menu    item", 0), true, Some(hand("menu    item"))).1, None);
+        // A list with no rows draws no hand: still the focus.
+        f.step(win("menu    item", 0), true, None);
+        assert_eq!(f.step(win("menu    item", 0), true, Some(hand("menu    item"))).1, None);
+    }
+
+    /// A window opened again in place under its name (renew) is a new focus; with no focusable window up the screens
+    /// outside the walk have it by their hand.
+    #[test]
+    fn renewed_window_and_screens_outside_the_walk() {
+        let mut f = Focus::default();
+        f.step(win("menu    query", 0), true, Some(hand("menu    query")));
+        assert_eq!(f.step(win("menu    query", 1), true, Some(hand("menu    query"))).1, Some((131.0, 47.0)));
+        let mut f = Focus::default();
+        assert_eq!(f.step(None, true, Some(hand("menu    titlehan"))).1, Some((131.0, 47.0)));
+        assert_eq!(f.step(None, true, Some(hand("menu    titlehan"))).1, None);
+        // Only windows that never take the focus up: none has it.
+        assert_eq!(f.step(None, true, None), (None, None));
+    }
 
     /// The Help Desk hand: six frames, four drawn frames each, a 24-frame cycle.
     #[test]

@@ -701,6 +701,9 @@ impl LogWin {
     fn wrap_line(&self, gu: &GameUi, chat: &super::combat::ChatLog, k: usize, tw: f32) -> Vec<Row> {
         let Some(((line, colour), (time, is_chat, indent))) = chat.timed(k) else { return Vec::new() };
         let st = self.stamps.text(time, is_chat);
+        // FUN_10129090: a chat line (its mode word's second byte has no low bits) takes German's quotation marks after
+        // the expansion (its 0x800-byte buffer). Retail keeps them in the log; ours draws them.
+        let line = if is_chat { crate::dat::font::german_quotes_str(line, 0x800) } else { line.as_str().into() };
         let rows = gu.wrap_indent(&format!("{st}{line}"), tw, indent);
         rows.into_iter()
             .enumerate()

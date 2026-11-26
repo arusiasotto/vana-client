@@ -56,16 +56,22 @@ fn row(
         p.add(paint::image(&s, at, 22.0, tint));
     }
     let colour = super::rows::label_colour(m, look == Look::Cursor, off);
-    p.text(pos2(r.min.x + 40.0, r.center().y), Align2::LEFT_CENTER, name, FontId::proportional(m.theme.ui), colour);
-    if !right.is_empty() {
+    // The right text whole; the name in the room left of it.
+    let end = if right.is_empty() {
+        r.max.x - 12.0
+    } else {
         p.text(
             pos2(r.max.x - 12.0, r.center().y),
             Align2::RIGHT_CENTER,
             right,
             FontId::proportional(m.theme.small),
             m.theme.color("muted"),
-        );
-    }
+        )
+        .min
+        .x - 10.0
+    };
+    let (shown, font) = super::kit::fit(ui, name, &FontId::proportional(m.theme.ui), end - r.min.x - 40.0, 0.85);
+    p.text(pos2(r.min.x + 40.0, r.center().y), Align2::LEFT_CENTER, shown, font, colour);
     ui.add_space(2.0);
     (resp, starred == Some(true))
 }

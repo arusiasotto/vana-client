@@ -28,8 +28,10 @@ struct Params {
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var<storage, read_write> el: array<u32>;
 @group(0) @binding(2) var<storage, read> ops: array<u32>;
-@group(0) @binding(3) var<storage, read> keys: array<vec2<f32>>;
-@group(0) @binding(4) var<storage, read> key_desc: array<vec2<u32>>;
+// The keyframe tables in one buffer (render/effects.rs key_words): entry 0's x the number of curves n, entries 1..=n
+// each curve's (start, count), its keys (time, value as f32 bits) from entry n + 1 on, a curve's start counted from
+// entry 0.
+@group(0) @binding(3) var<storage, read> keytab: array<vec2<u32>>;
 @group(0) @binding(5) var<storage, read> slots: array<u32>;
 @group(0) @binding(6) var<storage, read_write> outs: array<f32>;
 @group(0) @binding(7) var<storage, read_write> back: array<u32>;
@@ -37,7 +39,7 @@ struct Params {
 // The zone's point-light table (render/mod.rs LIGHTS x two vec4s).
 @group(0) @binding(9) var<storage, read_write> lights: array<vec4<f32>>;
 // This frame's scene depth (drawn before the update pass), for op 0x53.
-@group(0) @binding(10) var scene_depth: texture_depth_2d;
+@group(0) @binding(10) var scene_depth: texture_2d<f32>;
 
 // FUN_10044f10: the element's view-space position (+0x188) as the transform places it: camera-relative (flags bit 2)
 // elements are view_rot x pos (bit 3 too: pos itself), flag 0x20000 the parent's translation in view space plus pos
@@ -84,7 +86,7 @@ fn occlusion_hits(c: vec3<f32>, half: f32) -> u32 {
     for (var y = 0u; y < 16u; y = y + 1u) {
         for (var x = 0u; x < 16u; x = x + 1u) {
             let s = p0 + (vec2<f32>(f32(x), f32(y)) + 0.5) / 16.0 * (p1 - p0);
-            if (z <= textureLoad(scene_depth, vec2<i32>(min(s, dims - 1.0)), 0)) { hits = hits + 1u; }
+            if (z <= textureLoad(scene_depth, vec2<i32>(min(s, dims - 1.0)), 0).x) { hits = hits + 1u; }
         }
     }
     return hits;
@@ -160,22 +162,26 @@ fn key_sample(id: u32, x_in: f32, eased: bool) -> f32 {
     return key_ov(id, x_in, eased, false, 0.0);
 }
 
+fn key_at(i: u32) -> vec2<f32> {
+    return bitcast<vec2<f32>>(keytab[i]);
+}
+
 // FUN_10053520 / FUN_10053740: the same with the first key's value replaced by v0 when `ov`.
 fn key_ov(id: u32, x_in: f32, eased: bool, ov: bool, v0: f32) -> f32 {
-    if (id == NONE || id >= arrayLength(&key_desc)) { return 0.0; }
-    let d = key_desc[id];
+    if (id == NONE || id >= keytab[0].x) { return 0.0; }
+    let d = keytab[1u + id];
     if (d.y == 0u) { return 0.0; }
-    if (d.y == 1u) { return select(keys[d.x].y, v0, ov); }
+    if (d.y == 1u) { return select(key_at(d.x).y, v0, ov); }
     var x = x_in;
     if (!eased) { x = clamp(x, 0.0, 1.0); }
     var i = 0u;
     loop {
-        if (i + 2u >= d.y || x <= keys[d.x + i + 1u].x) { break; }
+        if (i + 2u >= d.y || x <= key_at(d.x + i + 1u).x) { break; }
         i = i + 1u;
     }
-    var a = keys[d.x + i];
+    var a = key_at(d.x + i);
     if (ov && i == 0u) { a.y = v0; }
-    let c = keys[d.x + i + 1u];
+    let c = key_at(d.x + i + 1u);
     if (c.x == a.x) { return c.y; }
     let f = (x - a.x) / (c.x - a.x);
     if (!eased) { return a.y + (c.y - a.y) * f; }
@@ -1017,6 +1023,8 @@ struct Draw {
     // (FUN_10188e00: trunc(min(a, 1) x 128) / 255)
     light_col: vec4<f32>,
     ambient: vec4<f32>,
+    // x: the textures' LOD bias while upscaling (render lod_bias), else 0.
+    lod: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> d: Draw;
@@ -1026,7 +1034,7 @@ struct Draw {
 @group(0) @binding(4) var<storage, read> sverts: array<u32>;
 @group(0) @binding(5) var<storage, read> sframes: array<vec2<u32>>;
 @group(0) @binding(6) var<storage, read> mdata: array<u32>;
-@group(0) @binding(7) var scene_depth: texture_depth_2d;
+@group(0) @binding(7) var scene_depth: texture_2d<f32>;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 @group(2) @binding(0) var spec2d: texture_2d<f32>;
@@ -1423,7 +1431,7 @@ fn fs_spec(i: VOut) -> @location(0) vec4<f32> {
     let variant = i.mode.z;
     let dd = i.color;
     let f = i.tf;
-    let t0 = textureSample(tex, samp, i.uv);
+    let t0 = textureSampleBias(tex, samp, i.uv, d.lod.x);
     let s2 = textureSample(spec2d, spec_samp, i.sd.xy);
     let sc = textureSample(speccube, spec_samp, i.sd);
     let sp = sat3(select(s2.rgb, sc.rgb, i.sk.w > 0.5) * i.sk.rgb);
@@ -1813,7 +1821,7 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
     let vonly = (flags & 0x10000000u) != 0u;
     if ((variant <= 1u || variant == 11u) && mode == 0x44u && f.a > 126.0 / 255.0) { f.a = 1.0; }
     if (variant == 0u) {
-        let t = textureSample(tex, samp, i.uv);
+        let t = textureSampleBias(tex, samp, i.uv, d.lod.x);
         rgb = sat3(sat3(2.0 * dd.rgb * t.rgb) * 2.0 * f.rgb);
         a = sat(sat(dd.a * t.a) * 4.0 * f.a);
         if (vonly) { a = sat(dd.a * 4.0 * f.a); }
@@ -1822,7 +1830,7 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
         rgb = sat3(2.0 * dd.rgb * f.rgb);
         a = sat(select(4.0, 2.0, mode == 0x44u) * dd.a * f.a);
     } else if (variant == 2u) {
-        let t = textureSample(tex, samp, i.uv);
+        let t = textureSampleBias(tex, samp, i.uv, d.lod.x);
         if (mode == 0x64u || vonly) {
             rgb = sat3(sat3(t.rgb * dd.rgb) * f.rgb * 4.0);
             a = sat(4.0 * dd.a * f.a);
@@ -1835,7 +1843,7 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
         a = sat(4.0 * dd.a * f.a);
     } else if (variant == 5u) {
         // Flare stages: colour diffuse x texture x 2 (TFACTOR rgb not applied), alpha x TFACTOR x 2.
-        let t = textureSample(tex, samp, i.uv);
+        let t = textureSampleBias(tex, samp, i.uv, d.lod.x);
         rgb = sat3(2.0 * dd.rgb * t.rgb);
         a = sat(sat(dd.a * t.a) * f.a * 2.0);
     } else if (variant == 6u) {
@@ -1843,14 +1851,14 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
         a = 1.0;
     } else if (variant == 9u) {
         // TSS 0x10347f68: colour = texture x diffuse x 2, alpha = diffuse x TFACTOR (0x80, left by pass 1) x 4.
-        var t = textureSample(tex, samp, i.uv).rgb;
+        var t = textureSampleBias(tex, samp, i.uv, d.lod.x).rgb;
         if (d.fog.z > 0.5) { t = pow(t, vec3<f32>(1.0 / 2.2)); }
         rgb = sat3(2.0 * dd.rgb * t);
         a = sat(dd.a * (128.0 / 255.0) * 4.0);
     } else if (variant == 11u) {
         // DistModel (TSS 0x10352740, 0x10352848 for 0x44): the copy's colour; alpha k x copy alpha (0x80) x stage 0's
         // 2 x diffuse x TFACTOR, k 2 for 0x44 else 4. The mesh texture is never bound.
-        var t = textureSample(tex, samp, i.uv).rgb;
+        var t = textureSampleBias(tex, samp, i.uv, d.lod.x).rgb;
         if (d.fog.z > 0.5) { t = pow(t, vec3<f32>(1.0 / 2.2)); }
         t = copy_fog(t, flags, mode);
         rgb = t;
@@ -1858,7 +1866,7 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
     } else if (variant == 14u || variant == 15u) {
         // DistMorph (TSS 0x10352258): copy x raw diffuse x 2, then x TFACTOR x 2; alpha the copy's 0x80 x diffuse x 2,
         // then x TFACTOR x 4; alpha test GREATER 0x60 with res byte 2 bit 7.
-        var t = textureSample(tex, samp, i.uv).rgb;
+        var t = textureSampleBias(tex, samp, i.uv, d.lod.x).rgb;
         if (d.fog.z > 0.5) { t = pow(t, vec3<f32>(1.0 / 2.2)); }
         t = copy_fog(t, flags, mode);
         let s0 = sat3(2.0 * t * dd.rgb);
@@ -1868,25 +1876,25 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
         if (variant == 15u && a <= 96.0 / 255.0) { discard; }
     } else if (variant == 13u) {
         // The ground decal: the image draw's stages (0x103524a8) over the image, which is not alpha-doubled.
-        let t = textureSample(tex, samp, i.uv);
+        let t = textureSampleBias(tex, samp, i.uv, d.lod.x);
         rgb = sat3(2.0 * sat3(2.0 * dd.rgb * t.rgb) * f.rgb);
         a = sat(4.0 * sat(2.0 * dd.a * t.a) * f.a);
     } else if (variant == 12u) {
         // DistRing: colour 2 x diffuse x copy, alpha 4 x diffuse a x copy alpha (0x80).
-        var t = textureSample(tex, samp, i.uv).rgb;
+        var t = textureSampleBias(tex, samp, i.uv, d.lod.x).rgb;
         if (d.fog.z > 0.5) { t = pow(t, vec3<f32>(1.0 / 2.2)); }
         t = copy_fog(t, flags, mode);
         rgb = sat3(2.0 * dd.rgb * t);
         a = sat(4.0 * dd.a * (128.0 / 255.0));
     } else if (variant == 7u || variant == 8u) {
         // D3b stages (TSS 0x103470b8): texture x diffuse x 2, then x TFACTOR x 2 (alpha x 4).
-        let t = textureSample(tex, samp, i.uv);
+        let t = textureSampleBias(tex, samp, i.uv, d.lod.x);
         let s0 = sat3(2.0 * dd.rgb * t.rgb);
         rgb = sat3(2.0 * s0 * f.rgb);
         a = sat(4.0 * sat(dd.a * t.a) * f.a);
         if (variant == 8u && a <= 96.0 / 255.0) { discard; }
     } else {
-        let t = textureSample(tex, samp, i.uv);
+        let t = textureSampleBias(tex, samp, i.uv, d.lod.x);
         let s0 = sat3(2.0 * dd.rgb * t.rgb);
         var s0a = sat(dd.a * t.a);
         if (vonly) { s0a = dd.a; }
@@ -1905,7 +1913,7 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
     // Ours: a glow or light volume (flag 27) fades out within a yalm of the scenery behind it, so it no longer cuts
     // straight into walls and pillars. The scene depth is NDC z of the plain projection (near d.clip.x, far d.clip.y).
     if (d.fog.w > 0.5 && (flags & 0x8000000u) != 0u) {
-        let z = textureLoad(scene_depth, vec2<i32>(i.clip.xy), 0);
+        let z = textureLoad(scene_depth, vec2<i32>(i.clip.xy), 0).x;
         let k = d.clip.y / (d.clip.x - d.clip.y);
         let scene = d.clip.x * k / (z + k);
         a = a * sat(scene - i.depth);
@@ -1933,7 +1941,7 @@ struct DistJob { e: u32, pad0: u32, pad1: u32, pad2: u32 };
 @group(1) @binding(8) var dsrc: texture_2d<f32>;
 // Per element: the geometry the repeats share (dist_region; DIST_GEO vec4s).
 @group(1) @binding(10) var<storage, read_write> dgeo: array<vec4<f32>>;
-@group(1) @binding(9) var dsrc_depth: texture_depth_2d;
+@group(1) @binding(9) var dsrc_depth: texture_2d<f32>;
 
 fn srgb_dec(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }
@@ -2140,7 +2148,7 @@ fn dist_load(@builtin(global_invocation_id) g: vec3<u32>) {
     if (p.x >= r.z || p.y >= r.w) { return; }
     let i = u32(p.y * i32(d.clip.z) + p.x);
     dscene[i] = pack4x8unorm(textureLoad(dsrc, p, 0));
-    ddepth[i] = textureLoad(dsrc_depth, p, 0);
+    ddepth[i] = textureLoad(dsrc_depth, p, 0).x;
 }
 
 // vs_dist_copy / fs_dist_copy: the tips at (P - min) k + 0.5 in the copy, the scene at (P - 0.5) / (W, H) under each
@@ -2200,7 +2208,7 @@ fn dist_fan(@builtin(global_invocation_id) g: vec3<u32>) {
         if (d.fog.z > 0.5) { rgb = pow(rgb, vec3<f32>(2.2)); }
         let flags = dels[e * E_WORDS + E_FLAGS];
         if (d.fog.w > 0.5 && (flags & 0x8000000u) != 0u) {
-            let sz = textureLoad(scene_depth, px, 0);
+            let sz = textureLoad(scene_depth, px, 0).x;
             let k = d.clip.y / (d.clip.x - d.clip.y);
             a = a * sat(d.clip.x * k / (sz + k) - uvd.z);
         }

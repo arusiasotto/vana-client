@@ -121,6 +121,63 @@ pub fn is_lead(b: u8) -> bool {
     (0x81..0xA0).contains(&b) || (0xE0..0xF0).contains(&b) || (0xFA..0xFD).contains(&b)
 }
 
+/// FUN_10191050(b, 0): the bytes of the character `b` starts, as the text walkers that pass no second byte count them:
+/// FD 6 (a phrase block), 1E / 1F / EF / 7F 2, NUL 0, another control byte 1 (LF and CR as text), a lead byte 2.
+pub fn char_len(b: u8) -> usize {
+    match b {
+        0xfd => 6,
+        0x7f | 0x1e | 0x1f | 0xef => 2,
+        0 => 0,
+        _ if b < 0x20 && b != b'\n' && b != b'\r' => 1,
+        _ => 1 + is_lead(b) as usize,
+    }
+}
+
+/// FUN_10191710 in a German client (language 2, not the European-as-English flag): each lone '"' becomes 85 44, the
+/// next 85 53, by turns (inf: German's „ and “; the font's glyphs are not checked), kept as PAIR_BASE chars; every other
+/// char stays as it is. `room` is the caller's buffer, and a line of half of it or more (in Shift-JIS bytes) stays as
+/// it is. Borrowed when nothing changes.
+pub fn german_quotes_str(text: &str, room: usize) -> std::borrow::Cow<'_, str> {
+    quotes_if(super::lang::files() == super::items::Lang::De, text, room)
+}
+
+fn quotes_if(german: bool, text: &str, room: usize) -> std::borrow::Cow<'_, str> {
+    match german && text.contains('"') && encode_sjis(text).len() < room / 2 {
+        true => std::borrow::Cow::Owned(quotes_str(text, &mut false)),
+        false => std::borrow::Cow::Borrowed(text),
+    }
+}
+
+/// The quotes of `text` as German's marks by turns, `open` carried from the text before it; a NUL ends the text.
+fn quotes_str(text: &str, open: &mut bool) -> String {
+    let mark = |close: bool| char::from_u32(PAIR_BASE + if close { 0x8553 } else { 0x8544 }).unwrap();
+    let mut out = String::with_capacity(text.len() + 8);
+    for c in text.chars().take_while(|&c| c != '\0') {
+        if c == '"' {
+            out.push(mark(*open));
+            *open = !*open;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `german_quotes` on a line drawn in parts (the quotes alternate across them), in place; nothing to do (no German, no
+/// quote) costs one check per part.
+pub fn german_quotes_parts(parts: &mut [&mut String], room: usize) {
+    if super::lang::files() != super::items::Lang::De || !parts.iter().any(|p| p.contains('"')) {
+        return;
+    }
+    if parts.iter().map(|p| encode_sjis(p).len()).sum::<usize>() >= room / 2 {
+        return;
+    }
+    let mut open = false;
+    for p in parts.iter_mut() {
+        **p = quotes_str(p, &mut open);
+    }
+}
+
 /// FUN_1018fc40: a chat line cut before the first byte FUN_1018fa20 rates 2 or 3 (0x1E, 0x1F, 0xEF, 0x7F not followed
 /// by 0xFB / 0xFC, any other byte below 0x20 but LF and CR), stepping by whole characters (FUN_1018fa80): an 0xFD
 /// auto-translate block, a lead byte and its pair. Returns how many bytes stay.
@@ -493,13 +550,16 @@ const PAIR_BASE: u32 = 0xF0000;
 const BYTE_BASE: u32 = PAIR_BASE + 0x1000;
 
 /// The game's glyphs as Unicode for faces that lack them (the modern interface's): its apostrophe (0x8552) and
-/// curly quotes (0x87B2 / 0x87B3); the other private-use characters (gaiji, pairs Shift-JIS lacks, the in-line colour
+/// curly quotes (0x87B2 / 0x87B3), German's marks (0x8544 / 0x8553); the other private-use characters (gaiji, pairs Shift-JIS lacks, the in-line colour
 /// codes and phrase bytes kept in plane 16) are left out.
 pub fn plain_char(c: char) -> Option<char> {
     match c as u32 {
         0xF8552 => Some('\u{2019}'),
         0xF87B2 => Some('\u{201C}'),
         0xF87B3 => Some('\u{201D}'),
+        // German's quotation marks (german_quotes, 85 44 / 85 53; inf: „ and “, the glyphs not checked).
+        0xF8544 => Some('\u{201E}'),
+        0xF8553 => Some('\u{201C}'),
         // Full-width forms (Shift-JIS 81 xx: Kupipi's "pre～sent") as their ASCII, the ideographic space as a space.
         0xFF01..=0xFF5E => char::from_u32(c as u32 - 0xFEE0),
         0x3000 => Some(' '),
@@ -658,6 +718,29 @@ pub fn encode_sjis(text: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    /// FUN_10191710: the quotes by turns, a phrase block stepped over whole, a line of half the buffer left alone.
+    #[test]
+    fn german_quote_marks() {
+        let (d, s) = (decode_sjis(&[0x85, b'D']), decode_sjis(&[0x85, b'S']));
+        assert_eq!(quotes_if(true, "a \"b\" \"c", 0x200), format!("a {d}b{s} {d}c"));
+        assert_eq!(quotes_if(false, "\"b\"", 0x200), "\"b\"");
+        // A phrase block's chars are never a quote.
+        let block = decode_sjis(b"\xfd\x02\x02\"\x01\xfd");
+        assert_eq!(quotes_if(true, &format!("{block}\""), 0x200), format!("{block}{d}"));
+        // Half the room or more (Shift-JIS bytes) stays as it is.
+        assert_eq!(quotes_if(true, "\"0123", 10), "\"0123");
+        assert_eq!(quotes_if(true, "\"0123", 12), format!("{d}0123"));
+        // The decoded line: only the quotes change, a char Shift-JIS lacks stays (no round trip through it).
+        let (d, s) = (decode_sjis(&[0x85, b'D']), decode_sjis(&[0x85, b'S']));
+        assert_eq!(quotes_str("\"hi\" \u{2192} ok \u{20ac}", &mut false), format!("{d}hi{s} \u{2192} ok \u{20ac}"));
+        let mut open = false;
+        let (a, b) = (quotes_str("a \"b", &mut open), quotes_str(" c\" d", &mut open));
+        assert_eq!((a, b), (format!("a {d}b"), format!(" c{s} d")));
+        assert_eq!(char_len(0x82), 2);
+        assert_eq!(char_len(b'\n'), 1);
+    }
+
     use super::*;
 
     /// A pair kept as its bytes still reaches the modern faces as its character; the game's glyphs stay theirs.

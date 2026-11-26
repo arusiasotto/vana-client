@@ -1959,7 +1959,7 @@ fn draw_list(gu: &mut GameUi, w: &World, a: &Auction, focused: bool, sw: f32, sh
             }
         }
         if focused && k == l.cursor {
-            gu.cursor(ox, y);
+            gu.cursor_on(LIST, k as u16 + 1, ox, y, [ox, y, r[2] - 12.0, PITCH]);
         }
     }
     let empty = if !l.ready {
@@ -2004,7 +2004,7 @@ fn draw_history(gu: &mut GameUi, w: &World, a: &Auction, focused: bool, sw: f32,
         gu.shape_text(&short(&s.buyer), ox + 165.0, y + 4.0, WHITE, false);
         gu.shape_text(&crate::inventory::gil_text(s.price as i64), ox + 348.0, y + 4.0, WHITE, true);
         if focused && k == h.cursor {
-            gu.cursor(ox, y);
+            gu.cursor_on(HISTORY, k as u16 + 1, ox, y, [ox, y, r[2] - 12.0, PITCH]);
         }
     }
     let empty = if !h.ready {

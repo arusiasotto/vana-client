@@ -126,7 +126,7 @@ pub fn zone_camera(cam: Mat4, fov_y: f32) -> Camera {
     let f = Vec3::new(1.0, -1.0, -1.0);
     let eye = cam.w_axis.truncate() * f * ZONE_SCALE;
     let fwd = -cam.z_axis.truncate() * f;
-    Camera { eye, target: eye + fwd, up: cam.y_axis.truncate() * f, fov_y }
+    Camera { jitter: glam::Vec2::ZERO, eye, target: eye + fwd, up: cam.y_axis.truncate() * f, fov_y }
 }
 
 /// The GPU dancer for a race, face and hair; the 30 Hz frame its "_sort" orders and idle bounds were taken at.
@@ -250,12 +250,33 @@ impl Creator {
         alive: Option<Vec<u32>>,
     ) {
         let view = target.0;
-        let zone = self.zone.get_or_insert_with(|| ZoneRenderer::new(gpu, &self.backdrop.scene, format));
+        // The whole backdrop in one upload stalls the phone long enough for Android to offer to close the app.
+        #[cfg(target_os = "android")]
+        {
+            if self.zone.is_none() {
+                let geo = std::sync::Arc::new(crate::render::ZoneGeometry::build(&self.backdrop.scene));
+                let textures = std::mem::take(&mut self.backdrop.scene.textures);
+                self.zone = Some(ZoneRenderer::streamed(gpu, geo, textures, format));
+            }
+            let zone = self.zone.as_mut().unwrap();
+            gpu.begin_uploads(crate::render::upload::LOADING_MS * 15.0);
+            zone.upload_step(gpu, encoder);
+            gpu.run_mips(encoder, crate::render::MIP_BUDGET);
+            if !zone.ready(gpu) {
+                return;
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            self.zone.get_or_insert_with(|| ZoneRenderer::new(gpu, &self.backdrop.scene, format));
+        }
+        let zone = self.zone.as_mut().unwrap();
         zone.lighting = self.backdrop.lighting;
         let r = self.renderer.get_or_insert_with(|| DancerRenderer::new(gpu, format));
         let Some(d) = &mut self.dancer else {
             // Before the first dancer loads: the opening camera of FUN_1022ef00, eye (0, -5, 40) on the origin.
             let camera = Camera {
+                jitter: glam::Vec2::ZERO,
                 eye: Vec3::new(0.0, -5.0, 40.0),
                 target: Vec3::ZERO,
                 up: Vec3::NEG_Y,

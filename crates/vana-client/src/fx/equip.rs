@@ -233,10 +233,11 @@ mod tests {
         Some(fx)
     }
 
+    /// One retail frame (2 ticks, 30 fps): the task walk runs once a retail frame.
     fn frame() -> Frame {
         Frame {
-            dt: 1.0,
-            seconds: 1.0 / 60.0,
+            dt: 2.0,
+            seconds: 2.0 / 60.0,
             dayfrac: 0.5,
             view: Mat4::IDENTITY,
             view_rot: Mat4::IDENTITY,
@@ -405,7 +406,8 @@ mod tests {
             fx.tick(&frame(), &idle);
             seen.extend(fx.weapons.drain(..).map(|w| (t, w.hide)));
         }
-        assert_eq!(seen, [(1, true), (10, false)]);
+        // The wait's 10 ticks end in frame 5 (2 ticks a frame, the first frame's included).
+        assert_eq!(seen, [(1, true), (5, false)]);
         weapon_task(&mut fx, 1, 0);
         seen.clear();
         for t in 1..=120 {

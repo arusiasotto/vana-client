@@ -11,8 +11,10 @@ use winit::window::{CustomCursor, Window};
 pub const NORMAL: u8 = 0;
 pub const OVER_ITEM: u8 = 1;
 pub const OVER_ACTOR: u8 = 2;
+pub const SCROLL_DRAG: u8 = 3;
 pub const MOVE_DRAG: u8 = 4;
 pub const CAMERA_DRAG: u8 = 5;
+pub const AUTOSCROLL: u8 = 6;
 
 /// The sprite table at 0x1036e4c8: library, tint (0x80 = 1.0) and scale per kind.
 const SPRITES: [(&str, u32, f32); 7] = [

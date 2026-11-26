@@ -838,7 +838,7 @@ pub fn line(w: &mut World, n: u16) {
     let Some(bt) = w.battle.clone() else { return };
     // Nothing without a moogle actor (all.c 120034).
     let Some(name) = moogle_actor(w).and_then(|id| w.entities.get(&id)).map(|e| e.name.clone()) else { return };
-    let ctx = crate::dat::battle::Ctx { me: w.name.clone(), names: super::combat::tables(w), ..Default::default() };
+    let ctx = super::combat::ctx(w);
     if let Some(l) = bt.system(n, &ctx)
         && let Some(text) = l.lines.into_iter().find(|l| !l.is_empty())
     {

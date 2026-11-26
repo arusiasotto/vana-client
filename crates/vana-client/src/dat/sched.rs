@@ -37,6 +37,27 @@ pub fn ops(data: &[u8]) -> Vec<Op<'_>> {
     out
 }
 
+/// The end op's wait (op 0, i16 @4): FUN_10057e10 adds it before the end op runs like any op's, so the task waits
+/// that long with no op left before FUN_10057c20. 0 when the stream has no end op.
+pub fn end_wait(data: &[u8]) -> i16 {
+    let Some(mut at) =
+        data.get(0x14..0x18).map(|b| (u32::from_le_bytes(b.try_into().unwrap()) as usize).saturating_sub(0x10))
+    else {
+        return 0;
+    };
+    while at + 8 <= data.len() {
+        let (code, len) = (data[at], (data[at + 1] & 0x1f) as usize * 4);
+        if code == 0 {
+            return i16::from_le_bytes([data[at + 4], data[at + 5]]);
+        }
+        if len == 0 || at + len > data.len() {
+            break;
+        }
+        at += len;
+    }
+    0
+}
+
 /// FUN_10056e10: the end stream (header u32 @0x18, chunk-relative) until op 0; an op 0x01 there means the task starts
 /// over at its end (FUN_10057c20).
 pub fn loops(data: &[u8]) -> bool {
@@ -200,6 +221,19 @@ pub fn matching<'a>(names: impl Iterator<Item = &'a str>, pattern: &str) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The end op's wait is read past the ops (ROM2/14/97 `s009` has 29).
+    #[test]
+    fn end_op_wait() {
+        let mut d = vec![0u8; 0x30];
+        d[0x14..0x18].copy_from_slice(&0x30u32.to_le_bytes());
+        d[0x20..0x28].copy_from_slice(&[0x05, 0x02, 0, 0, 3, 0, 0, 0]);
+        d[0x28..0x30].copy_from_slice(&[0x00, 0x02, 0, 0, 29, 0, 0, 0]);
+        assert_eq!(ops(&d).len(), 1);
+        assert_eq!(end_wait(&d), 29);
+        d[0x2c] = 0;
+        assert_eq!(end_wait(&d), 0);
+    }
 
     /// Model 0 (file 1300) "ati0": motion at0? for 80 ticks, blend-in 10 and out 20 (u16 @0x18 / @0x1c: 0a 00, 14 00);
     /// "dada" (the hit) runs after 24 + 12 ticks.

@@ -1,9 +1,10 @@
 //! Ours: the Controller window's settings (the window is modern/padwin.rs). Retail's Config > Gamepad starts
 //! FFXiPadConfig.exe (FUN_101bccb0), which saves padsin000 / padexsin000 / padmode000 in the registry (padreg.rs); this
 //! is that tool's XInput page (dialog 147) inside the client: each function's button in padsin's 32 positions, the
-//! "Button Combination Settings" (padexsin, used while Button Combination is held), and the tool's options. Its
-//! labels and help are the tool's (US string table 102..139, dialog 147). The window writes config.json
-//! (gamepad_padsin / gamepad_padexsin); the game reads them through client/gamepad.rs.
+//! "Button Combination Settings" (padexsin, used while Button Combination is held), and the tool's options, with its
+//! controller list (FUN_00404660: DirectInput's attached game controllers; the pick is padguid000). Its labels and
+//! help are the tool's (US string table 102..139, dialog 147). The window writes config.json (gamepad_padsin /
+//! gamepad_padexsin / gamepad_padguid); the game reads them through client/gamepad.rs.
 
 use super::gamepad::{self, Capture, Source};
 
@@ -133,11 +134,27 @@ pub const BUTTONS: [&str; 16] = [
     "Back",
 ];
 
-/// A padsin value as shown: unassigned, a button, or a stick axis (32 + code; negative inverted).
-pub fn name(v: i32) -> String {
+/// A padsin value as shown: unassigned, a button, or a stick axis (32 + code; negative inverted), for an XInput pad or
+/// (`di`) a DirectInput device, whose buttons are numbered and whose axes are its own.
+pub fn name_of(v: i32, di: bool) -> String {
     match v {
         -1 => "Unassigned".into(),
-        0..=15 => BUTTONS[v as usize].into(),
+        0..=15 if !di => BUTTONS[v as usize].into(),
+        _ if v.abs() >= 32 && di => {
+            let axis = match v.abs() - 31 {
+                1 => "X axis",
+                2 => "Y axis",
+                3 => "Z axis",
+                4 => "X rotation",
+                5 => "Y rotation",
+                6 => "Z rotation",
+                7 => "Slider 1",
+                8 => "Slider 2",
+                9 => "Hat switch X",
+                _ => "Hat switch Y",
+            };
+            if v < 0 { format!("{axis} (inverted)") } else { axis.into() }
+        }
         _ if v.abs() >= 32 => {
             let axis = match v.abs() - 31 {
                 1 => "Left stick X",
@@ -193,13 +210,13 @@ pub fn assign(map: &mut [i32], r: &Row, cap: &Capture, sticks: bool) -> bool {
     if !sticks {
         return false;
     }
-    let Some((k, a)) = cap.axes.iter().copied().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())) else {
+    let Some((code, a)) = cap.axes.iter().copied().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())) else {
         return false;
     };
     if a.abs() < PUSH {
         return false;
     }
-    let code = [1, 2, 4, 5][k];
+    let code = code as i32;
     // read(): the destination gets axis * sign(value); pushed this way (a's sign) it must come out as `sign`.
     let v = (31 + code) * if (a > 0.0) == (sign > 0) { 1 } else { -1 };
     for x in map.iter_mut() {
@@ -245,6 +262,15 @@ pub struct PadCfg {
     pub retail: Option<String>,
     /// The connected pads, the one that plays first.
     pub pads: Vec<String>,
+    /// The pad that plays is a DirectInput device (its buttons are numbered).
+    pub di: bool,
+    /// The controllers to pick from: (padguid000 text, name); listed again when `list_devices` is set.
+    pub devices: Vec<(String, String)>,
+    pub list_devices: bool,
+    /// To store: padguid000, and padmode000's XInput, sliders and hat options each on its own (one left unset keeps
+    /// following retail's padmode000).
+    pub save_device: Option<String>,
+    pub save_flags: [Option<bool>; 3],
     /// 0 Button Settings (padsin), 1 Button Combination Settings (padexsin).
     pub tab: usize,
     /// The row the cursor is on (rows()), or one of the option rows after them (OPTS).
@@ -306,6 +332,22 @@ impl PadCfg {
         self.store(self.maps());
     }
 
+    /// Stores the controller picked (padguid000).
+    pub fn set_device(&mut self, guid: String) {
+        if let Some(s) = self.set.as_mut() {
+            s.padguid = guid.clone();
+        }
+        self.save_device = Some(guid);
+    }
+
+    /// Stores one option that reads the controller: 0 XInput, 1 sliders, 2 hat (padmode000's [5], [2], [3]).
+    pub fn set_flag(&mut self, k: usize, on: bool) {
+        if let Some(s) = self.set.as_mut() {
+            *[&mut s.xinput, &mut s.sliders, &mut s.hat][k] = on;
+        }
+        self.save_flags[k] = Some(on);
+    }
+
     /// The pad's input while listening: assigns the cursor's row, or keeps waiting.
     pub fn feed(&mut self, cap: &Capture, dt: f32) -> bool {
         let Some(left) = self.listening else { return false };
@@ -316,7 +358,7 @@ impl PadCfg {
         let mut maps = self.maps();
         let tab = self.tab.min(1);
         if assign(&mut maps[tab], r, cap, tab == 0) {
-            self.note = format!("{}: {}.", r.label, name(maps[tab][r.pos]));
+            self.note = format!("{}: {}.", r.label, name_of(maps[tab][r.pos], cap.di));
             self.listening = None;
             self.store(maps);
             return true;
@@ -371,7 +413,7 @@ mod tests {
         }
         assert!(seen.iter().all(|&n| n == 1), "{seen:?}");
         let m = parse(gamepad::DEFAULT_PADSIN);
-        let of = |label: &str| name(m[rows().find(|r| r.1.label == label).unwrap().1.pos]);
+        let of = |label: &str| name_of(m[rows().find(|r| r.1.label == label).unwrap().1.pos], false);
         assert_eq!(of("Select / Confirm"), "A");
         assert_eq!(of("Cancel"), "B");
         assert_eq!(of("Main Menu"), "X");
@@ -390,7 +432,11 @@ mod tests {
     fn assigning() {
         let mut m = parse(gamepad::DEFAULT_PADSIN);
         let r = |label: &str, group: &str| rows().find(|r| r.0 == group && r.1.label == label).unwrap().1;
-        let cap = |pressed: Vec<u8>, axes: [f32; 4]| Capture { pressed, axes };
+        let cap = |pressed: Vec<u8>, axes: [f32; 4]| Capture {
+            pressed,
+            axes: [1, 2, 4, 5].into_iter().zip(axes).collect(),
+            di: false,
+        };
         // A (3) on Cancel: Select / Confirm loses it.
         assert!(assign(&mut m, r("Cancel", "Buttons"), &cap(vec![3], [0.0; 4]), true));
         assert_eq!((m[5], m[7]), (3, -1));
@@ -418,8 +464,23 @@ mod tests {
         });
         let map = gamepad::PadMap::parse(&s);
         let up = |c: u8| if c == 2 { -127.0 } else { 0.0 };
-        let v = gamepad::read(&map, &map, &gamepad::Device { buttons: &[], axis: &up }, 0, (false, false), 0.33).1;
+        let dev = gamepad::Device { buttons: &[], axis: &up, di: false };
+        let v = gamepad::read(&map, &map, &dev, 0, (false, false), 0.33).1;
         assert_eq!(v[3], -127.0, "stick pulled down, given as Up: it moves forward");
+    }
+
+    /// A DirectInput device: the axis that moved most takes the direction by its own code (the hat switch's Y
+    /// here), signed so that pushing this way goes this way; its buttons show by number.
+    #[test]
+    fn assigning_directinput() {
+        let r = rows().find(|r| r.0 == "Menus" && r.1.label == "Up").unwrap().1;
+        let mut m = vec![-1; 32];
+        let cap = Capture { pressed: vec![], axes: vec![(3, 100.0), (10, -127.0)], di: true };
+        assert!(assign(&mut m, r, &cap, true));
+        // Up (sign -1) pushed with Y at -127: code 10 as is (read() gives -127, up).
+        assert_eq!((m[21], m[22]), (41, 41));
+        assert_eq!(name_of(41, true), "Hat switch Y");
+        assert_eq!((name_of(3, true), name_of(3, false)), ("Button 3".to_string(), "A".to_string()));
     }
 
     #[test]
@@ -444,6 +505,23 @@ mod tests {
         assert_eq!((s.padexsin.as_str(), s.source), ("3", Source::Default));
     }
 
+    /// Picking the controller stores padguid000 only, and each option only itself: the others keep following
+    /// retail's padmode000.
+    #[test]
+    fn device_and_flags_stored_apart() {
+        let mut p =
+            PadCfg { set: Some(gamepad::settings(&crate::config::Config::default(), None)), ..Default::default() };
+        p.set_device("{00000001-0000-0000-0000-000000000000}".into());
+        assert_eq!(
+            (p.save_device.as_deref(), p.save_flags),
+            (Some("{00000001-0000-0000-0000-000000000000}"), [None; 3])
+        );
+        p.set_flag(1, false);
+        assert_eq!(p.save_flags, [None, Some(false), None]);
+        let s = p.set.as_ref().unwrap();
+        assert_eq!((s.xinput, s.sliders, s.hat), (true, false, true));
+    }
+
     #[test]
     fn window_state() {
         let mut p = PadCfg { dead: 33, ..Default::default() };
@@ -452,7 +530,7 @@ mod tests {
         p.listening = Some(LISTEN);
         assert!(!p.feed(&Capture::default(), 1.0));
         assert_eq!(p.listening, Some(LISTEN - 1.0));
-        assert!(p.feed(&Capture { pressed: vec![2], axes: [0.0; 4] }, 0.1));
+        assert!(p.feed(&Capture { pressed: vec![2], ..Default::default() }, 0.1));
         let (padsin, _, on, bg, dead) = p.save.clone().unwrap();
         assert_eq!((parse(&padsin)[6], parse(&padsin)[8], on, bg, dead), (2, -1, true, false, 33));
         assert_eq!(p.set.as_ref().unwrap().source, Source::Config);

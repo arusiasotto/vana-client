@@ -181,13 +181,18 @@ pub struct SelfPlate {
     pub hitbox: f32,
     /// GroundFlag (flags0 bit 2) or HackMove (flags1 bit 12): no event ground snap, no ground tilt (batch 6 item 14).
     pub no_snap: bool,
+    /// HideFlag (flags0 bit 0; +0x120 bit 14) and SleepFlag (flags0 bit 1; +0x120 bit 18): event::self_hidden /
+    /// self_asleep. CliPosInitFlag (flags0 bit 3; +0x120 bit 22) is stored by retail and read by nothing.
+    pub hide: bool,
+    pub asleep: bool,
 }
 
 /// Our own flags at zone-in. s2c 0x00A carries them in 0x00D's layout (Flags0 u32 @0x18, Flags1 @0x20, Flags2 @0x24,
 /// Flags3 @0x28); its handler FUN_100faf90 packs them into the character data (+0x40e5c..+0x40e62, +0x40e90..+0x40e94)
 /// and the zone-in FUN_10094190 puts them on our new entity before any 0x037 arrives: GM level (@0x23 & 7), seeking
 /// (Flags1 bit 11), anonymous (12), the call for help (13), away (14), PlayOnline (16), linkshell (17), link dead (18),
-/// HackMove (27), invisible (29), bazaar (31), GroundFlag (Flags0 bit 15), the linkshell colour (@0x24..0x26),
+/// HackMove (27), invisible (29), bazaar (31), GroundFlag (Flags0 bit 15), HideFlag (Flags1 bit 1), SleepFlag (2),
+/// the linkshell colour (@0x24..0x26),
 /// GmIconFlag (Flags2 bit 28), auto-party (31) and the party-seek master (Flags3 bit 1). The entity is new, so every
 /// flag the zone-in does not write (frozen, charmed, sneak, New Adventurer, mentor, allegiance) starts clear.
 fn zone_in_plate(p: &SubPacket) -> SelfPlate {
@@ -212,6 +217,8 @@ fn zone_in_plate(p: &SubPacket) -> SelfPlate {
         },
         invisible: bit(f1, 29),
         no_snap: bit(f0, 15) || bit(f1, 27),
+        hide: bit(f1, 1),
+        asleep: bit(f1, 2),
         ..SelfPlate::default()
     }
 }
@@ -256,6 +263,8 @@ fn self_plate(p: &SubPacket) -> SelfPlate {
         zone_pool: bit(f0, 9),
         hitbox: p.u8(0x59) as f32 * 0.1,
         no_snap: bit(f0, 2) || bit(f1, 12),
+        hide: bit(f0, 0),
+        asleep: bit(f0, 1),
     }
 }
 
@@ -412,7 +421,7 @@ pub struct ZoneText {
     /// Type: the log mode by table 0x1035b944 below 8.
     pub kind: u8,
     pub num: [i32; 8],
-    /// 0x02A String: the speaker name when the server sends it.
+    /// 0x02A String with Flag set: the speaker's name.
     pub name: String,
     /// String slots from 0 (0x027 String1, 0x043 sName); 0x027's String2 and Flags.
     pub strings: Vec<String>,
@@ -1613,6 +1622,24 @@ fn chat_text(p: &SubPacket) -> (String, String) {
     (decode(&name[..nk]), text)
 }
 
+/// s2c 0x02A (LAB_100a12a0): String @0x1e is the line's string 0 (0x10488d08, code 0x1c) while Flag @0x1d is 0, else
+/// the speaker's name.
+fn talk_num_work(p: &SubPacket) -> ZoneText {
+    let (flag, s) = (p.u8(0x1d), text(p, 0x1e, 32));
+    ZoneText {
+        packet: 0x02A,
+        actor: p.u32(4),
+        num: std::array::from_fn(|i| if i < 4 { p.u32(8 + 4 * i) as i32 } else { 0 }),
+        index: p.u16(0x18),
+        mes: p.u16(0x1a),
+        kind: p.u8(0x1c),
+        flags: flag,
+        strings: if flag == 0 { vec![s.clone()] } else { Vec::new() },
+        name: if flag == 0 { String::new() } else { s },
+        ..Default::default()
+    }
+}
+
 fn text(p: &SubPacket, at: usize, len: usize) -> String {
     p.str(at, len)
 }
@@ -2651,16 +2678,7 @@ impl Session<'_> {
                 kind: p.u8(0xc),
                 ..Default::default()
             }))?,
-            0x02A => self.tx.send(NetEvent::ZoneText(ZoneText {
-                packet: 0x02A,
-                actor: p.u32(4),
-                num: std::array::from_fn(|i| if i < 4 { p.u32(8 + 4 * i) as i32 } else { 0 }),
-                index: p.u16(0x18),
-                mes: p.u16(0x1a),
-                kind: p.u8(0x1c),
-                name: text(&p, 0x1e, 32),
-                ..Default::default()
-            }))?,
+            0x02A => self.tx.send(NetEvent::ZoneText(talk_num_work(&p)))?,
             // 0x027 (handler 0x100a1dc0): Num1[4] @0x10 -> num 0..3, Num2[4..7] @0x60 -> num 4..7 (Num2[0..3] unread),
             // String1 @0x20 -> string 0, String2 @0x40, Flags @0xe.
             0x027 => {
@@ -3061,6 +3079,23 @@ mod tests {
 
     /// A control byte in the sender's name drops the text with it (retail cuts the formatted line), but not for the
     /// kinds whose line never holds the name: 6 / 7, the NS kinds, and 0x19 with no name at all.
+    /// 0x02A's String: the line's string 0 while Flag is 0 (Dynamis's "<name>'s attack staggers the fiend!"), the
+    /// speaker's name with Flag set.
+    #[test]
+    fn talk_num_work_string() {
+        let packet = |flag: u8| {
+            let mut data = vec![0u8; 0x40];
+            data[0x1a..0x1c].copy_from_slice(&7355u16.to_le_bytes());
+            data[0x1d] = flag;
+            data[0x1e..0x1e + 4].copy_from_slice(b"Nine");
+            SubPacket { id: 0x02A, sync: 0, data }
+        };
+        let t = talk_num_work(&packet(0));
+        assert_eq!((t.strings, t.name.as_str(), t.mes), (vec!["Nine".to_string()], "", 7355));
+        let t = talk_num_work(&packet(1));
+        assert_eq!((t.strings.is_empty(), t.name.as_str()), (true, "Nine"));
+    }
+
     #[test]
     fn chat_cut_in_the_name() {
         let packet = |kind: u8, name: &[u8]| {
@@ -3319,12 +3354,26 @@ mod tests {
         assert!(z.marks.anon && z.marks.ls && z.invisible && !z.no_snap);
         assert_eq!((z.marks.gm, z.marks.ls_colour), (3, [1, 2, 3]));
         assert!(!z.marks.new_char && !z.marks.lfg && !z.marks.bazaar && !z.frozen && !z.charmed);
+        // HideFlag and SleepFlag (0x100faf90: Flags1 bits 1 / 2 -> +0x40e5c bits 11 / 12 -> +0x120 bits 14 / 18).
+        let hide = zone_in_plate(&sub(0x00A, 0x104, &[(0x20, &2u32.to_le_bytes())]));
+        let asleep = zone_in_plate(&sub(0x00A, 0x104, &[(0x20, &4u32.to_le_bytes())]));
+        assert!(hide.hide && !hide.asleep && asleep.asleep && !asleep.hide && !z.hide && !z.asleep);
         let ground = sub(0x00A, 0x104, &[(0x18, &(1u32 << 15).to_le_bytes())]);
         let hack = sub(0x00A, 0x104, &[(0x20, &(1u32 << 27).to_le_bytes())]);
         assert!(zone_in_plate(&ground).no_snap && zone_in_plate(&hack).no_snap);
         // LSB's 0x00A (size and gender in Flags1 bits 8..15, 0x100 in Flags3) sets none of them.
         let lsb = sub(0x00A, 0x104, &[(0x20, &0x8100u32.to_le_bytes()), (0x28, &0x100u32.to_le_bytes())]);
         assert_eq!(zone_in_plate(&lsb), SelfPlate::default());
+    }
+
+    /// FUN_1009d0f0 (0x1009d17c..0x1009d1ee): 0x037 Flags0 bits 0 / 1 are our +0x120 bits 14 / 18; bit 3 (+0x120 bit 22)
+    /// has no reader and is not kept.
+    #[test]
+    fn self_hide_and_sleep_flags() {
+        let plate = |f0: u32| self_plate(&sub(0x037, 0x60, &[(0x28, &f0.to_le_bytes())]));
+        assert!(plate(1).hide && !plate(1).asleep);
+        assert!(plate(2).asleep && !plate(2).hide);
+        assert_eq!(plate(8), plate(0));
     }
 
     /// 0x00E's name rules (asm 0x1009b666..0x1009b7b5) and FUN_100dde40's length.

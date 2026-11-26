@@ -320,6 +320,9 @@ pub struct Host {
     ui_events: Vec<(String, String, window::Event)>,
     /// Events for one mod (its settings changed), delivered in the mod phase: (mod, name, arguments).
     mod_events: Vec<(String, &'static str, Vec<serde_json::Value>)>,
+    /// Mods turned on outside the mod phase (the Mods window, a character or job switch): their folders, loaded in the
+    /// next mod phase, where their entry file and `load` can read the game UI's data as at the start.
+    pending_loads: Vec<PathBuf>,
     /// Where the mods' canvases were last drawn (the modern UI), for a HUD drag let go over one.
     canvases: Vec<CanvasAt>,
     /// The canvas a HUD drag is over now: (mod, window, canvas, the dragged element).
@@ -1012,6 +1015,7 @@ impl Host {
         self.started = false;
         self.prev = None;
         self.events.clear();
+        self.pending_loads.clear();
     }
 
     /// `/lua ...`: list, load, unload, reload, run, set.
@@ -1308,6 +1312,8 @@ pub(super) fn frame(w: &mut World, gu: Option<&super::game_ui::GameUi>) {
     let bind_lines;
     {
         let w: &World = w;
+        // The mods turned on since the last mod phase.
+        host.load_pending(Some(w), &mut out);
         host.watch_upkeep(Some(w), &mut out);
         bind_lines = input::run_binds(&mut host, w, &mut out);
         // Lines typed for mods.
@@ -1503,6 +1509,7 @@ pub(super) fn frame(w: &mut World, gu: Option<&super::game_ui::GameUi>) {
             save(vm, Some(w));
         }
     }
+    host.return_focus();
     // A window opened this phase takes the focus from every other (not from an open modal one, unless modal itself).
     let wanted: Option<(usize, String)> =
         host.vms.iter().enumerate().find_map(|(k, v)| v.st.borrow_mut().focus_request.take().map(|id| (k, id)));
@@ -2639,6 +2646,42 @@ mod tests {
         assert_eq!(st.windows[1].title, "Shared");
     }
 
+    /// hud.tri: its corners and colour from the spec (zero and white by default), one corner moved by hud.set, its
+    /// hit box round the corners.
+    #[test]
+    fn hud_triangles() {
+        // The hit box: the corners' bounds from the element's place, negative corners included.
+        assert_eq!(hud::tri_bounds(100.0, 40.0, &[[-4.0, 0.0], [4.0, 0.0], [0.0, 5.0]]), [96.0, 40.0, 8.0, 5.0]);
+        assert_eq!(hud::tri_bounds(10.0, 10.0, &[[0.0, 0.0]; 3]), [10.0, 10.0, 0.0, 0.0]);
+        let vm = Vm::new(
+            manifest::Manifest { id: "t".into(), ..Default::default() },
+            PathBuf::from("."),
+            vm::Source::Dir(PathBuf::from(".")),
+        )
+        .unwrap();
+        api::install(&vm.lua, &vm, (serde_json::Value::Null, serde_json::Value::Null)).unwrap();
+        vm.lua
+            .load(
+                r#"
+                hud.tri("m", {x = 100, y = 40, x1 = -4, y1 = 0, x2 = 4, y2 = 0, x3 = 0, y3 = 5, colour = {215, 190, 120}})
+                hud.tri("z", {})
+            "#,
+            )
+            .exec()
+            .unwrap();
+        let tri = |vm: &Vm, id: &str| {
+            vm.st.borrow().hud.iter().find_map(|e| match e.kind {
+                hud::Kind::Tri { pts, colour } if e.id == id => Some((pts, colour)),
+                _ => None,
+            })
+        };
+        assert_eq!(tri(&vm, "z"), Some(([[0.0; 2]; 3], [255; 4])));
+        assert_eq!(tri(&vm, "m"), Some(([[-4.0, 0.0], [4.0, 0.0], [0.0, 5.0]], [215, 190, 120, 255])));
+        // hud.set moves one corner; the others and the colour stay.
+        vm.lua.load(r#"hud.set("m", {x2 = 10, y3 = 8})"#).exec().unwrap();
+        assert_eq!(tri(&vm, "m"), Some(([[-4.0, 0.0], [10.0, 0.0], [0.0, 8.0]], [215, 190, 120, 255])));
+    }
+
     /// hud.bubble: the tail leaves the side facing its point and stops at its length; none for a point inside; the
     /// outline and feathering go round it.
     #[test]
@@ -2839,6 +2882,54 @@ mod tests {
         assert!(!input::hud_press(&mut host, Left));
     }
 
+    /// A menu opened from a window gives that window the focus back when it closes (picked or Escaped), so Escape
+    /// closes the window next; a list row's `colours` colour single cells by column.
+    #[test]
+    fn menu_gives_the_focus_back() {
+        let mut host = Host::default();
+        let vm = Vm::new(
+            manifest::Manifest { id: "t".into(), ..Default::default() },
+            PathBuf::from("."),
+            vm::Source::Dir(PathBuf::from(".")),
+        )
+        .unwrap();
+        api::install(&vm.lua, &vm, (serde_json::Value::Null, serde_json::Value::Null)).unwrap();
+        vm.lua
+            .load(
+                r#"
+                ui.window("w", {title = "W", elements = {{type = "list", id = "l",
+                  rows = {{"a", "100%", colours = {[2] = {120, 220, 120}}}, "b"}}}})
+                ui.open("w")
+            "#,
+            )
+            .exec()
+            .unwrap();
+        host.vms.push(vm);
+        let win = |host: &Host, id: &str| {
+            let st = host.vms[0].st.borrow();
+            st.windows.iter().find(|w| w.id == id).map(|w| (w.open, w.focus))
+        };
+        let Some(window::Elem::List { rows, .. }) = host.vms[0].st.borrow().windows[0].elems.first().cloned() else {
+            panic!("no list")
+        };
+        assert_eq!(rows[0].cell_colours, vec![None, Some([120, 220, 120, 255])]);
+        assert!(rows[1].cell_colours.is_empty());
+        host.vms[0].st.borrow_mut().windows[0].focus = true;
+        host.vms[0].lua.load(r#"ui.menu({"x", "y"}, function() end)"#).exec().unwrap();
+        for w in host.vms[0].st.borrow_mut().windows.iter_mut() {
+            w.focus = w.id == "__menu";
+        }
+        // Escape closes the menu: the window has the keys again.
+        let st = host.vms[0].st.clone();
+        st.borrow_mut().windows.iter_mut().find(|w| w.id == "__menu").unwrap().key(egui::Key::Escape);
+        host.return_focus();
+        assert_eq!((win(&host, "w"), win(&host, "__menu")), (Some((true, true)), Some((false, false))));
+        // Once only: a later frame with the window unfocused leaves it so.
+        host.vms[0].st.borrow_mut().windows[0].focus = false;
+        host.return_focus();
+        assert_eq!(win(&host, "w"), Some((true, false)));
+    }
+
     /// A HUD element dragged and let go over one of its mod's canvases (as the modern UI last drew it): the canvas's
     /// window gets a drop at the point in the canvas, in its points; none once the window is closed.
     #[test]
@@ -2956,7 +3047,13 @@ mod tests {
             dy: 0.0,
             screen: None,
             over: None,
+            covered: None,
         };
+        // A drag says whether a window or panel is under the pointer; a client that cannot tell leaves it out.
+        let mut marked = vec![drag(2, 5.0)];
+        assert!(marked[0].json().get("covered").is_none());
+        window::Event::set_covered(&mut marked, true);
+        assert_eq!(marked[0].json()["covered"].as_bool(), Some(true));
         // Within its canvas: nothing crosses.
         let mut ev = vec![drag(1, 50.0)];
         assert!(host.canvas_drags("t", "a", &mut ev).is_empty() && host.ui_events.is_empty());
@@ -3278,6 +3375,26 @@ mod tests {
         assert_eq!(host.named("the-id"), Some(0));
         assert_eq!(host.named("other"), None);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A mod turned on outside the mod phase waits for it: queued once, loaded there (a failure reported), skipped if it
+    /// is running by then.
+    #[test]
+    fn mods_turned_on_load_in_the_mod_phase() {
+        let mut host = Host::default();
+        let (running, missing) = (PathBuf::from("running-mod"), PathBuf::from("no-such-mod-folder"));
+        let m = manifest::Manifest { id: "running".into(), ..Default::default() };
+        host.vms.push(Vm::new(m, running.clone(), vm::Source::Dir(running.clone())).unwrap());
+        host.load_later(running.clone());
+        host.load_later(missing.clone());
+        host.load_later(missing.clone());
+        assert_eq!(host.pending_loads, vec![running, missing]);
+        let mut out = Vec::new();
+        host.load_pending(None, &mut out);
+        assert!(host.pending_loads.is_empty());
+        assert_eq!(host.vms.len(), 1);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].0.starts_with("Mod no-such-mod-folder: "), "{out:?}");
     }
 
     /// A /lua line as the host reads one, whatever its spaces, slashes or case.
@@ -3985,15 +4102,36 @@ impl Host {
             match (want, self.named(&r.name)) {
                 (true, None) => {
                     log::info!("lua mod {}: on for {character} {}", r.name, job.unwrap_or("?"));
-                    if let Err(e) = self.load(Some(w), dir) {
-                        log::warn!("lua mod {}: {e}", r.name);
-                    }
+                    self.load_later(dir);
                 }
                 (false, Some(k)) => {
                     log::info!("lua mod {}: off for {character} {}", r.name, job.unwrap_or("?"));
                     self.unload(Some(w), k);
                 }
+                (false, None) => self.pending_loads.retain(|d| *d != dir),
                 _ => {}
+            }
+        }
+    }
+
+    /// Queues the mod in `dir` for the next mod phase (`pending_loads`).
+    fn load_later(&mut self, dir: PathBuf) {
+        if !self.pending_loads.contains(&dir) {
+            self.pending_loads.push(dir);
+        }
+    }
+
+    /// Loads the mods queued by `load_later` (in the mod phase, with the game UI's data lent); a failure goes to the chat
+    /// log, as at the start.
+    fn load_pending(&mut self, w: Option<&World>, out: &mut Vec<(String, [u8; 4])>) {
+        for dir in std::mem::take(&mut self.pending_loads) {
+            if self.vms.iter().any(|v| v.dir == dir) {
+                continue;
+            }
+            if let Err(e) = self.load(w, dir.clone()) {
+                let name = dir.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                log::warn!("lua mod {name}: {e}");
+                out.push((format!("Mod {name}: {e}"), ERROR));
             }
         }
     }
@@ -4010,12 +4148,12 @@ impl Host {
         if key == ENABLED {
             let k = self.named(id);
             match (value.as_bool() == Some(true), k) {
-                (true, None) => {
-                    if let Err(e) = self.load(Some(w), folder_of(&mods_dir(), id)) {
-                        log::warn!("lua mod {id}: {e}");
-                    }
-                }
+                (true, None) => self.load_later(folder_of(&mods_dir(), id)),
                 (false, Some(k)) => self.unload(Some(w), k),
+                (false, None) => {
+                    let dir = folder_of(&mods_dir(), id);
+                    self.pending_loads.retain(|d| *d != dir);
+                }
                 _ => {}
             }
             return;
@@ -4104,6 +4242,23 @@ impl Host {
     /// The loaded mods' ids.
     pub(super) fn mod_ids(&self) -> std::collections::HashSet<String> {
         self.vms.iter().map(|v| v.manifest.id.clone()).collect()
+    }
+
+    /// A popup that closed gives the focus back to the window of its mod it was opened from, while that is still open
+    /// and nothing else took the focus (a pick in a slot's menu leaves the window it came from on the keys).
+    fn return_focus(&mut self) {
+        let focused = self.vms.iter().any(|v| v.st.borrow().windows.iter().any(|w| w.focus && w.open));
+        for vm in &self.vms {
+            let mut st = vm.st.borrow_mut();
+            let backs: Vec<String> =
+                st.windows.iter_mut().filter(|w| !w.open && w.back.is_some()).filter_map(|w| w.back.take()).collect();
+            if focused {
+                continue;
+            }
+            if let Some(win) = backs.iter().find_map(|b| st.windows.iter().position(|w| w.id == *b && w.open)) {
+                st.windows[win].focus = true;
+            }
+        }
     }
 
     /// The open modal window (vm, id), the last opened when there are several.
@@ -4487,6 +4642,13 @@ fn classic_places(w: &World) -> Vec<(usize, String, f32, f32)> {
     for (v, vm) in w.lua.vms.iter().enumerate().filter(|(_, v)| v.suspended.is_none()) {
         // A panel's edge window is the Timers' dock's (regime.rs).
         for win in vm.st.borrow().windows.iter().filter(|w| w.open && w.panel.is_none()) {
+            // The room below its top: a list shows fewer rows rather than run past the screen's bottom.
+            let top = match (win.anchor, win.place) {
+                (None, Some((_, y))) => y,
+                (None, None) if !win.modal => 48.0 + 24.0 * k,
+                _ => 0.0,
+            };
+            win.room.set((sh - top - 8.0).max(0.0));
             let (ww, wh) = win.classic_size();
             match (win.anchor, win.place) {
                 (Some((ax, ay)), _) => modal.push((
@@ -4509,6 +4671,26 @@ fn classic_places(w: &World) -> Vec<(usize, String, f32, f32)> {
     }
     out.extend(modal);
     out
+}
+
+/// The item of the classic mod list cell under the pointer, for the item window: (id, extdata).
+pub(super) fn info_source(w: &World) -> Option<(u16, Option<[u8; 24]>)> {
+    if w.modern {
+        return None;
+    }
+    w.lua.vms.iter().find_map(|vm| {
+        let st = vm.st.borrow();
+        st.windows.iter().filter(|x| x.open).find_map(|x| x.pointed).map(|p| (p.id, p.ext(w)))
+    })
+}
+
+/// Forgets the classic list cell under the pointer: found again while the pointer is over the window.
+pub(super) fn clear_pointed(w: &World) {
+    for vm in &w.lua.vms {
+        for win in vm.st.borrow_mut().windows.iter_mut() {
+            win.pointed = None;
+        }
+    }
 }
 
 /// The pointer on the classic mod windows (the topmost under it); whether it is over a control.
@@ -4554,8 +4736,18 @@ pub(super) fn pointer_classic(
             return true;
         }
     }
+    // A mod window or a recorded game window under the pointer, over the HUD there (canvas drags report it).
+    let covered = places.iter().any(|(v, id, x, y)| {
+        w.lua.vms[*v].st.borrow().windows.iter().find(|win| win.id == *id).is_some_and(|win| {
+            let (ww, wh) = win.classic_reach();
+            p.0 >= *x && p.1 >= *y && p.0 < x + ww && p.1 < y + wh
+        })
+    }) || w.win_hits.borrow().iter().any(|h| {
+        let r = h.1;
+        p.0 >= r[0] && p.1 >= r[1] && p.0 <= r[0] + r[2] && p.1 <= r[1] + r[3]
+    });
     for (v, id, x, y) in places.into_iter().rev() {
-        let (hover, ev, se, mod_id) = {
+        let (hover, mut ev, se, mod_id) = {
             let vm = &w.lua.vms[v];
             let mut st = vm.st.borrow_mut();
             let Some(win) = st.windows.iter_mut().find(|x| x.id == id) else { continue };
@@ -4587,6 +4779,7 @@ pub(super) fn pointer_classic(
             }
             w.lua.ui_events.extend(ended);
         }
+        window::Event::set_covered(&mut ev, covered);
         w.lua.ui_events.extend(ev.into_iter().map(|e| (mod_id.clone(), id.clone(), e)));
         w.sounds.extend(se.into_iter().map(|s| s as u32));
         return hover;

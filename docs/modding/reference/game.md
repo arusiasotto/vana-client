@@ -1166,7 +1166,7 @@ window puts its markers there over NO MAP); nil where no map exists or the recor
 
 **Returns** `integer?, integer?`: two values, the pixel's x and y on the image (0, 0 its top left). A point off the map gives values outside 0 to 511. Both nil when there is no map (see `game.map`).
 
-**Errors** "game state is not available here" in the lobby or a chat filter; "the game's UI data is not available here (only in the mod phase)" in a key or mouse filter, a packet hook, the entry file or a `load` handler; an error when `x` or `z` is not a number.
+**Errors** "game state is not available here" in the lobby or a chat filter; "the game's UI data is not available here (only in the mod phase)" in a key or mouse filter or a packet hook; an error when `x` or `z` is not a number.
 
 **Example**
 

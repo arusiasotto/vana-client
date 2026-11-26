@@ -1,5 +1,5 @@
 -- Gamepad crossbars: three sets (LT, RT, both held) of twelve slots (d-pad, face buttons, L1 / R1, L3 / R3) in an edge
--- window. With Auto-hide it shows only the set held and folds to an "Open Manager" button otherwise.
+-- window or HUD overlay. With Auto-hide it shows only the set held; otherwise nothing (Start opens the manager).
 --
 -- Controller: trigger + slot button fires; trigger + Back toggles assigning (a slot press opens the library to pick
 -- its macro); trigger + Start opens the manager. While the game's macro gate is shut (target
@@ -14,6 +14,7 @@ local menu = require("src.menu")
 local mode = require("src.mode")
 local bar = require("src.bar")
 local slotview = require("src.slotview")
+local overlay = require("src.overlay")
 
 local M = {}
 
@@ -24,7 +25,10 @@ local WIN = "pads"
 
 local SIDES, BUTTONS = data.PAD_SIDES, data.PAD_BUTTONS
 local LABELS = { up = "Up", right = "Right", down = "Down", left = "Left", y = "Y", b = "B", a = "A", x = "X",
-  lb = "L1", rb = "R1", l3 = "L3", r3 = "R3" }
+  lb = "L1", rb = "R1", l3 = "L3", r3 = "R3", menu = "Menu", mgr = "Mgr" }
+local FAKE = { menu = true, mgr = true }
+local FAKE_EDGE = { 118, 128, 148, 150 }
+local POCKET_SHORT = { menu = "Sel", mgr = "Start" }
 local SIDE_NAMES = { lt = "LT", rt = "RT", lr = "LT + RT" }
 local SLOT = {}
 for _, b in ipairs(BUTTONS) do SLOT[b] = true end
@@ -37,8 +41,8 @@ local KEY, KEY_HOVER, TEXT, GOLD = slotview.KEY, slotview.KEY_HOVER, slotview.TE
 local DIMMED = { 140, 140, 150, 255 }
 
 local PAD = 8
-local HEAD = 16                -- set names over the diamonds
-local IDLE_W, IDLE_H = 120, 24 -- the folded window's button
+local HEAD = 16 -- set names over the diamonds
+local IDLE_W, IDLE_H = 120, 24 -- folded auto-hide: Open Manager (window canvas)
 
 local st = slotview.state()
 local geo = nil          -- current layout: size, slots ({x, y, side, button}), sides, width, height
@@ -139,6 +143,15 @@ end
 
 -- Calls open(place) with where a list opens over a slot. A rebuilt window's canvas bounds lag a frame: wait for them.
 local function open_at(side, button, tries, open)
+  if overlay.on() then
+    local place = overlay.list_at("ovp_" .. side .. "_" .. button)
+    if not place and tries < 8 then
+      timer.after(0.03, function() open_at(side, button, tries + 1, open) end)
+      return
+    end
+    open(place)
+    return
+  end
   local at = ui.bounds and ui.bounds(WIN, "c")
   local s = slot_of(side, button)
   local fresh = at and s and math.abs(at.w - geo.width * at.scale) < 2 and math.abs(at.h - geo.height * at.scale) < 2
@@ -273,17 +286,82 @@ end)
 -- Drawing
 -- ---------------------------------------------------------------------------
 
+local draw
+
 local function hit(x, y)
   if not geo then return nil end
   for _, sl in ipairs(geo.slots) do
-    if x >= sl.x and x < sl.x + geo.size and y >= sl.y and y < sl.y + geo.size then return sl end
+    local sz = sl.pocket or geo.size
+    if x >= sl.x and x < sl.x + sz and y >= sl.y and y < sl.y + sz then return sl end
   end
+end
+
+local function slot_edge(sl, macro, lit, active_match)
+  if FAKE[sl.button] then return FAKE_EDGE end
+  if active_match then return EDGE_HELD end
+  if not lit then return OFF_EDGE end
+  return macro and EDGE or slotview.EMPTY_EDGE
+end
+
+local function draw_pocket(add, sl, lit, active_row, key)
+  local ps = sl.pocket
+  local hover = st.hover == key
+  local fill = hover and KEY_HOVER or KEY
+  local edge = slot_edge(sl, nil, lit, active_row)
+  local short = POCKET_SHORT[sl.button]
+  local tip = sl.button == "mgr" and "Manager (Start)" or "Macro palette (Select)"
+  add({ type = "rect", x = sl.x, y = sl.y, w = ps, h = ps, round = ps / 2, colour = fill })
+  add({ type = "rect", x = sl.x, y = sl.y, w = ps, h = ps, round = ps / 2, line = 1.5, colour = edge })
+  add({ type = "text", x = sl.x + ps / 2, y = sl.y + ps / 2 - 5, text = short, size = 0.62, align = "center",
+    colour = TEXT })
+  add({ type = "tip", x = sl.x, y = sl.y, w = ps, h = ps, title = short, text = tip })
 end
 
 local function macro_of(c) return cells[key_of(c)] end
 
-local function draw()
+local function fire_slot(c)
+  if c.button == "mgr" then
+    if M.hooks.open_manager then M.hooks.open_manager() end
+  elseif c.button == "menu" then
+    if M.hooks.palette then M.hooks.palette() end
+  else
+    M.fire(c.side, c.button)
+  end
+end
+
+local function draw_overlay()
   if not geo then return end
+  drawn_held = held()
+  overlay.crossbars({
+    heading = assigning and (main .. " - assigning") or nil,
+    -- The overlay always stands at the bottom: the closed window's dock does not turn it over.
+    width = geo.width, height = geo.height, size = geo.size, top_dock = false,
+    sides = geo.sides, slots = geo.slots, side_x = geo.side_x, side_y = geo.side_y, side_w = geo.side_w,
+    names = SIDE_NAMES, labels = LABELS, fake = FAKE, fake_edge = FAKE_EDGE, pocket_short = POCKET_SHORT,
+    cells = cells, shades = shades, held = held(), st = st, redraw = draw,
+    slot_edge = slot_edge,
+    fire = fire_slot,
+    menu = function(c)
+      if FAKE[c.button] then fire_slot(c) else open_menu(c.side, c.button) end
+    end,
+    swap = function(from, to)
+      if not main or FAKE[from.button] or FAKE[to.button] then return end
+      data.pad_swap(main, from.side, from.button, to.side, to.button)
+      changed()
+    end,
+    drop = function(c, id)
+      if FAKE[c.button] then draw(); return end
+      if not main or not data.get_entry(main, id) then return end
+      data.pad_assign(main, c.side, c.button, id)
+      slotview.flash(st, c.side .. ":" .. c.button, draw)
+      changed()
+    end,
+  })
+end
+
+draw = function()
+  if not geo then return end
+  if overlay.on() then draw_overlay(); return end
   local d = {}
   local function add(c) d[#d + 1] = c end
   local s = geo.size
@@ -298,14 +376,19 @@ local function draw()
     local key = key_of(sl)
     local macro = cells[key]
     local lit = active == nil or active == sl.side
-    slotview.draw_slot(add, {
-      x = sl.x, y = sl.y, s = s, macro = macro, act = macro and actions.of(macro), shade = shades[key],
-      up = top_dock, hover = st.hover == key, dim = not lit,
-      edge = active == sl.side and EDGE_HELD or (not lit and OFF_EDGE) or (macro and EDGE or slotview.EMPTY_EDGE),
-      hint = LABELS[sl.button], fallback = LABELS[sl.button],
-      st = st, key = key, source = st.drag and st.drag.cell == sl,
-      hit_key = function(px, py) return key_of(hit(px, py)) end,
-    })
+    local active_row = active == sl.side
+    if FAKE[sl.button] then
+      draw_pocket(add, sl, lit, active_row, key)
+    else
+      slotview.draw_slot(add, {
+        x = sl.x, y = sl.y, s = s, macro = macro, act = macro and actions.of(macro), shade = shades[key],
+        up = top_dock, hover = st.hover == key, dim = not lit,
+        edge = slot_edge(sl, macro, lit, active_row),
+        hint = LABELS[sl.button], fallback = LABELS[sl.button],
+        st = st, key = key, source = st.drag and st.drag.cell == sl,
+        hit_key = function(px, py) return key_of(hit(px, py)) end,
+      })
+    end
   end
   slotview.draw_ghost(add, st, s, macro_of)
   ui.update(WIN, "c", { h = geo.height, draw = d })
@@ -323,7 +406,9 @@ end
 
 local function refresh_cells()
   cells = {}
-  for _, sl in ipairs(geo.slots) do cells[key_of(sl)] = data.pad_resolve(main, sl.side, sl.button) end
+  for _, sl in ipairs(geo.slots) do
+    if not FAKE[sl.button] then cells[key_of(sl)] = data.pad_resolve(main, sl.side, sl.button) end
+  end
 end
 
 -- Every quarter second.
@@ -348,6 +433,16 @@ function M.tile_drag_ended()
     st.tile_at = nil
     draw()
   end
+end
+
+function M.clear_drag()
+  slotview.reset(st)
+end
+
+function M.hover_overlay(key)
+  if not overlay.on() or key == st.hover then return end
+  st.hover = key
+  draw()
 end
 
 -- ---------------------------------------------------------------------------
@@ -377,6 +472,7 @@ local function on_event(_, e)
     st = st, hit = hit, key_of = key_of, draw = draw, macro_of = macro_of,
     same = function(a, b) return a.side == b.side and a.button == b.button end,
     drop = function(c, id)
+      if FAKE[c.button] then draw(); return end
       if not main or not data.get_entry(main, id) then
         draw()
         return
@@ -385,10 +481,12 @@ local function on_event(_, e)
       slotview.flash(st, key_of(c), draw)
       changed()
     end,
-    fire = function(c) M.fire(c.side, c.button) end,
-    menu = function(c) open_menu(c.side, c.button) end,
+    fire = fire_slot,
+    menu = function(c)
+      if FAKE[c.button] then fire_slot(c) else open_menu(c.side, c.button) end
+    end,
     swap = function(from, to)
-      if not main then return end
+      if not main or FAKE[from.button] or FAKE[to.button] then return end
       data.pad_swap(main, from.side, from.button, to.side, to.button)
       changed()
     end,
@@ -400,28 +498,34 @@ local function shown_now()
 end
 
 local function signature()
-  return table.concat({ tostring(jobs.current()), settings.get("pad_size"), tostring(shown_now()), view() }, ":")
+  return table.concat({ tostring(jobs.current()), settings.get("pad_size"), tostring(shown_now()), view(),
+    tostring(settings.get("display")) }, ":")
 end
 
--- Two sets to a row (LT + RT centred under them); each set: name, two diamonds, L1 / L3 left, R1 / R3 right.
+-- Two sets to a row (LT + RT centred under them); each set: name, two diamonds;
+-- L3·L1 and R1·R3 on the Up row; round Sel·Start pockets on the Down row between the diamonds.
 local function layout(v, size)
   local key = v .. ":" .. size
   if layouts[key] then return layouts[key] end
   local gap = math.max(2, math.floor(size * 0.15))
   local arm = size + gap
   local dw = 2 * arm + size     -- a diamond's width
-  local wing = size + 2 * gap   -- the shoulder column and its gap
-  local side_w = 2 * wing + 2 * dw + 2 * gap
+  local wing = 2 * size + 3 * gap -- L3 and L1 (or R1 and R3) side by side
+  local diamond_gap = 4 * gap     -- space between the d-pad and face diamonds
+  local side_w = 2 * wing + 2 * dw + diamond_gap + 2 * gap
   local between = 6 * gap
   local spots = { up = { 1, 0 }, right = { 2, 1 }, down = { 1, 2 }, left = { 0, 1 } }
   local top = PAD + HEAD
   local side_h = HEAD + 2 * arm + size
+  local pocket = math.max(12, math.floor(size * 0.52))
   local sides = v == "all" and SIDES or { v }
   local cols, rows = math.min(#sides, 2), math.ceil(#sides / 2)
   local g = { size = size, slots = {}, side_x = {}, side_y = {}, side_w = side_w, sides = sides,
     width = 2 * PAD + cols * side_w + (cols - 1) * between, height = rows * (side_h + PAD) + PAD }
-  local function add_slot(side, b, x, y)
-    g.slots[#g.slots + 1] = { x = x, y = y, side = side, button = b }
+  local function add_slot(side, b, x, y, ps)
+    local row = { x = x, y = y, side = side, button = b }
+    if ps then row.pocket = ps end
+    g.slots[#g.slots + 1] = row
   end
   for si, side in ipairs(sides) do
     local sx = PAD + ((si - 1) % 2) * (side_w + between)
@@ -429,17 +533,21 @@ local function layout(v, size)
     local oy = math.floor((si - 1) / 2) * (side_h + PAD)
     g.side_x[side], g.side_y[side] = sx, PAD + oy
     for di = 1, 2 do
-      local dx = sx + wing + (di - 1) * (dw + 2 * gap)
+      local dx = sx + wing + (di - 1) * (dw + diamond_gap)
       for k = 1, 4 do
         local pos = spots[BUTTONS[k]]
         add_slot(side, BUTTONS[(di - 1) * 4 + k], dx + pos[1] * arm, oy + top + pos[2] * arm)
       end
     end
-    local wy = oy + top + arm / 2
-    add_slot(side, "lb", sx, wy)
-    add_slot(side, "l3", sx, wy + arm)
-    add_slot(side, "rb", sx + side_w - size, wy)
-    add_slot(side, "r3", sx + side_w - size, wy + arm)
+    local sy = oy + top
+    add_slot(side, "l3", sx, sy)
+    add_slot(side, "lb", sx + size + gap, sy)
+    add_slot(side, "rb", sx + side_w - 2 * size - gap, sy)
+    add_slot(side, "r3", sx + side_w - size, sy)
+    local pocket_y = oy + top + 2 * arm + math.floor((size - pocket) / 2)
+    local bridge = sx + wing + dw + math.floor(diamond_gap / 2)
+    add_slot(side, "menu", bridge - pocket - math.floor(gap / 2), pocket_y, pocket)
+    add_slot(side, "mgr", bridge + math.floor(gap / 2), pocket_y, pocket)
   end
   layouts[key] = g
   return g
@@ -473,6 +581,7 @@ function M.rebuild()
   if not shown_now() then
     geo, window_key = nil, nil
     ui.close(WIN)
+    overlay.clear("ovp")
     return
   end
   main = jobs.current()
@@ -483,17 +592,34 @@ function M.rebuild()
   local size = settings.get("pad_size")
   local key = table.concat({ built_view, size, main, assigning and "assign" or "" }, ":")
   if built_view == "none" then
-    geo = nil
+    geo, window_key = nil, nil
     slotview.reset(st)
-    define(key, IDLE_W, IDLE_H, IDLE_W + 2 * PAD + 34)
-    draw_idle()
+    ui.close(WIN)
+    if overlay.on() then
+      overlay.idle_manager({
+        st = st, redraw = draw,
+        click = function()
+          if M.hooks.open_manager then M.hooks.open_manager() end
+        end,
+      })
+    else
+      overlay.clear("ovp")
+      define(key, IDLE_W, IDLE_H, IDLE_W + 2 * PAD + 34)
+      draw_idle()
+    end
     return
   end
   idle_hover = false
   geo = layout(built_view, size)
   refresh_cells()
-  define(key, geo.width, geo.height, geo.width + 34)
-  M.recasts()
+  if overlay.on() then
+    ui.close(WIN)
+    M.recasts()
+  else
+    overlay.clear("ovp")
+    define(key, geo.width, geo.height, geo.width + 34)
+    M.recasts()
+  end
 end
 
 M.invalidate = M.rebuild

@@ -7,6 +7,7 @@
 use super::World;
 use super::game_ui::GameUi;
 use crate::audio::Ui;
+use crate::dat::font::german_quotes_str;
 
 pub(super) const MENU: &str = "menu    mcrmenu";
 pub(super) const SELEC: &str = "menu    mcrselec";
@@ -529,6 +530,12 @@ pub fn key(w: &mut World, gu: &GameUi, key: egui::Key) {
             w.mcr_page ^= 1;
             w.sounds.push(Ui::Cursor as u32);
         }
+        // The page arrows (children 21 / 22, where only the mouse puts the cursor): message 5 goes where Left / Right
+        // go (0x101a7e90, cases 0x15 / 0x16: FUN_101a7fc0 / FUN_101a7fa0).
+        K::Enter if matches!(sel, 21 | 22) => {
+            w.mcr_page ^= 1;
+            w.sounds.push(Ui::Select as u32);
+        }
         K::Enter => {
             let o = w.cursor_recall(SELOP);
             w.macroedit.as_mut().and_then(|m| m.book.as_mut()).unwrap().opt = Some(o);
@@ -859,6 +866,11 @@ pub fn bars(gu: &GameUi, w: &World, bars: &mut super::hudtop::BarText) {
         return;
     }
     // mcrselec's overrides: "Macro Book (#%d)" (group 10 0x6d) and the book's name.
+    // On a page arrow the window's own strings show.
+    if b.sel > 20 {
+        focus(bars, SELEC, b.sel);
+        return;
+    }
     let book = book_of(w, b.sel);
     bars.help[1] = gu.lobby_msg(0x0a, 0x6d, "Macro Book (#%d)").replacen("%d", &(book + 1).to_string(), 1);
     bars.title[1] = m.book_title(book);
@@ -875,7 +887,8 @@ pub(super) fn caret_at(gu: &mut GameUi, w: &World, text: &[u8], at: usize, x: f3
     if c.is_empty() {
         return;
     }
-    let dx = gu.text_width(&shown(w, &text[..at.min(text.len())])).min(max);
+    // FUN_101c76b0 draws the live field with German's quotation marks (0x41a bytes).
+    let dx = gu.text_width(&german_quotes_str(&shown(w, &text[..at.min(text.len())]), 0x41a)).min(max);
     gu.text(c, x + dx - 2.0, y, 0, WHITE.to_le_bytes());
 }
 
@@ -1188,7 +1201,9 @@ fn draw_editor(gu: &mut GameUi, w: &World, d: &Editor, sw: f32, sh: f32, free: b
     gu.text(&label, x0 + 34.0, y0 + 36.0, 0, WHITE.to_le_bytes());
     let text = |f: usize| shown(w, &d.fields[f]);
     if let Some(&(_, r)) = win.children.iter().find(|(id, _)| *id == 3) {
-        gu.text_fit(&text(0), r[0] + 2.0, r[1] + 5.0, 120.0, WHITE);
+        // The title as it is (FUN_10191db0); the live field takes German's quotation marks (FUN_101c76b0).
+        let title = if d.editing == Some(0) { german_quotes_str(&text(0), 0x41a).into_owned() } else { text(0) };
+        gu.text_fit(&title, r[0] + 2.0, r[1] + 5.0, 120.0, WHITE);
         if d.editing == Some(0) {
             caret_at(gu, w, &d.fields[0], d.caret, r[0] + 2.0, r[1] + 5.0, 120.0);
             if let Some(f) = &w.field_fep {
@@ -1199,13 +1214,14 @@ fn draw_editor(gu: &mut GameUi, w: &World, d: &Editor, sw: f32, sh: f32, free: b
     for k in 0..6 {
         let (x, y) = (x0 + 28.0, y0 + 73.0 + 30.0 * k as f32);
         if d.editing == Some(k + 1) {
-            gu.text_fit(&text(k + 1), x, y, 325.0, WHITE);
+            gu.text_fit(&german_quotes_str(&text(k + 1), 0x41a), x, y, 325.0, WHITE);
             caret_at(gu, w, &d.fields[k + 1], d.caret, x, y, 325.0);
             if let Some(f) = &w.field_fep {
                 rects.push(super::fep::draw_list(gu, &f.cands, f.sel, x - 8.0, y - 2.0));
             }
         } else {
-            gu.text_fit(&text(k + 1), x, y, 315.0, WHITE);
+            // A line not edited: FUN_10191710 on its 0x98-byte buffer.
+            gu.text_fit(&german_quotes_str(&text(k + 1), 0x98), x, y, 315.0, WHITE);
         }
     }
     rects.push(win.frame);
@@ -1274,7 +1290,8 @@ pub fn pointer(w: &mut World, gu: &GameUi, _sw: f32, _sh: f32, p: (f32, f32), mo
                     b.opt = Some(id);
                 }
             }),
-            None => generic(w, gu, SELEC, sel, 1..=20, p, moved, clicked, right, |w, id| {
+            // The rows and the page arrows (21 / 22): the arrows are parts like the rows (mcres20's too, esmenu.rs).
+            None => generic(w, gu, SELEC, sel, 1..=22, p, moved, clicked, right, |w, id| {
                 if let Some(b) = w.macroedit.as_mut().and_then(|m| m.book.as_mut()) {
                     b.sel = id;
                 }
@@ -1320,7 +1337,7 @@ pub fn pointer(w: &mut World, gu: &GameUi, _sw: f32, _sh: f32, p: (f32, f32), mo
                 return;
             }
             let other = 3 - focus;
-            if let (Some(id), _) = child_under(w, &format!("palette{other}"), p, 1..=10)
+            if let (Some(id), _) = child_under(w, &format!("palette{other}"), p, 1..=10, |_| Some((0.0, 0.0)))
                 && (moved || clicked)
             {
                 gu.hover.set(true);

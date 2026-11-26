@@ -410,7 +410,7 @@ pub fn pointer(w: &mut World, gu: &GameUi, sw: f32, sh: f32, p: (f32, f32), move
     let (on_list, grid, mode, picked, scroll, cursor) = (e.on_list, e.grid, e.mode, e.picked, e.scroll, e.cursor);
     let n = EXTRA + items(w, e).len();
     let row = super::post::picker_row(gu, sw, sh, p);
-    let (_, in_grid) = child_under(w, GRID, p, 1..=16);
+    let (_, in_grid) = child_under(w, GRID, p, 1..=16, super::winhits::parts(gu, GRID));
     if (moved || clicked)
         && ((!on_list && row.is_some() && mode == 2) || (on_list && in_grid && mode == 1 && picked.is_none()))
     {

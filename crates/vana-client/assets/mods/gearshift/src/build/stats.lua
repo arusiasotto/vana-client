@@ -251,10 +251,27 @@ local function scan(text, r)
   end
 end
 
+-- 'Enhances "Dual Wield" effect' names a stat without its amount: counted as ENHANCES *(inferred: the amount is not
+-- shown)*, so the piece ranks above one that gives nothing. Not after a "Word:" context on its line (Set:, Latent...).
+M.ENHANCES = 1
+local function enhances(text, r)
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    for q in line:gmatch('[Ee]nhances%s+"([^"]+)"%s+effect') do
+      local at = line:find('"' .. q .. '"', 1, true)
+      if not line:sub(1, at):find(":", 1, true) then
+        local name = M.norm(q)
+        local key = M.ALIAS[name] or ("ja:" .. name)
+        if key ~= "_" and not r.stats[key] then r.stats[key] = M.ENHANCES end
+      end
+    end
+  end
+end
+
 -- An item's stats from its description and augment lines (a list of strings, or nil).
 function M.parse(description, augments)
   local r = { stats = {}, pet = {}, cond = {}, unknown = {} }
   scan(description or "", r)
+  enhances(description or "", r)
   for _, line in ipairs(augments or {}) do scan(line, r) end
   return r
 end

@@ -146,8 +146,17 @@ pub struct Task {
     pub ends_loop: bool,
     /// The end op was reached on a loop: FUN_10057c20 resets it at the next step (no op runs then).
     pub restart: bool,
-    /// Took its first step when an op created it: the frame's step passes it by once.
-    pub stepped: bool,
+    /// The serial of the walk it last took a retail frame's ticks in: that walk passes it by.
+    pub walked: u32,
+    /// The end op was run (+0x88 clear) and it does not loop: the update after sets +0x145 (FUN_10057c20 found no
+    /// loop), the one after that deletes it (FUN_10057e10's first test). Its children, its action and a parent that
+    /// waits on it stay as they are until then.
+    pub ended: bool,
+    /// +0x145.
+    pub dying: bool,
+    /// The end op's wait (dat::sched::end_wait), in ticks before speed: the ended task waits it out before
+    /// FUN_10057c20.
+    pub end_wait: f32,
     /// +0x140 (op 0x52): the countdown runs on the Vana'diel clock (1/60 Vana'diel seconds).
     pub vana: bool,
     /// +0x22: paused while an actor of it is hidden (FUN_10074a30); no op progress, no time.
@@ -192,6 +201,7 @@ impl Task {
             parent: None,
             early: 0.0,
             waiting: false,
+            end_wait: 0.0,
             stop_at: None,
             stack: Vec::new(),
             loop_at: None,
@@ -203,7 +213,9 @@ impl Task {
             ends_loop: false,
             init_sub: None,
             restart: false,
-            stepped: false,
+            walked: 0,
+            ended: false,
+            dying: false,
             vana: false,
             paused: 0,
             seq: false,

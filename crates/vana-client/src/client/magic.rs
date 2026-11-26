@@ -357,7 +357,7 @@ pub(super) fn magic_rows(w: &World, ty: u16, list_mode: bool, exclude: u32) -> V
             let Some(r) = acts.spell(s) else { return false };
             let shown = exclude & (1 << (r.kind & 0x1f)) == 0 && (ty == 0 || r.kind == ty);
             let castable = w.recasts_seen
-                && acts.can_cast(s, st.main, st.sub, 0)
+                && acts.can_cast(s, st.main, st.sub, super::jobpoints::main_spent(w))
                 && (!(0x200..0x2e0).contains(&s) || super::bluset::is_set(w, s))
                 && (r.flags & 8 == 0 || st.main.0 == 20)
                 && (r.flags & 0x20 == 0 || st.main.0 == 21);
@@ -650,7 +650,7 @@ pub(super) fn magic_check(w: &World, s: u16) -> Option<usize> {
     }
     let (Some(acts), Some(st)) = (w.actions.as_ref(), w.stats.as_ref()) else { return Some(0x57) };
     // FUN_101021a0: the job rule with our effects (Tabula Rasa, the addenda, Enlightenment, Elemental Seal).
-    if !w.recasts_seen || !acts.can_cast_now(s, st.main, st.sub, 0, &w.buffs) {
+    if !w.recasts_seen || !acts.can_cast_now(s, st.main, st.sub, super::jobpoints::main_spent(w), &w.buffs) {
         return Some(0x57);
     }
     let mp = w.vitals.map_or(0, |v| v.1);

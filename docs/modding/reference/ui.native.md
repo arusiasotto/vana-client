@@ -103,7 +103,8 @@ end)
 | `"log"` | The log windows. They still come back while an event, a prompt or the chat line needs them. |
 | `"timers"` | The Timers window. |
 | `"regime"` | The training regime window. |
-| `"network"` | The connection panel. |
+| `"network"` | The network status widget only; it leaves the title and helper visible. |
+| `"topbar"` | The game's complete title, helper text and network widget group. Hiding `network` alone hides only the netstat widget. |
 | `"palette"` | The macro palette's drawing (its keys still run macros). |
 | `"clock"` | The line beside the game's clock ([`ui.native.slot`](#uinativeslot)'s `clock`). |
 | `"experience"` | The experience bar on the modern party window's top edge. |

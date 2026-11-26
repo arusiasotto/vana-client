@@ -641,7 +641,7 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
         if focused && !list.is_empty() {
             let cy = y + 6.0 + PITCH * (u.cursor - u.top) as f32;
             gu.sprite("menu    keytops3", 428, x, cy, WHITE);
-            gu.cursor(x + 3.0, cy);
+            gu.cursor_on(INVEN, (u.cursor - u.top) as u16 + 1, x + 3.0, cy, [x + 3.0, cy - 2.0, fw - 6.0, PITCH]);
         }
         if list.len() > ROWS {
             gu.scroll_bar(x + fw - 8.0, y, fh, list.len(), ROWS, u.top);
@@ -673,7 +673,8 @@ pub fn draw(gu: &mut GameUi, w: &World, sw: f32, sh: f32) -> Vec<[f32; 4]> {
         gu.sprite("menu    keytops3", 428, x, y + 21.0 + PITCH * u.slot as f32, WHITE);
     }
     if free && u.focus == Focus::Equip {
-        gu.cursor(x + 3.0, y + 24.0 + PITCH * u.slot as f32);
+        let cy = y + 24.0 + PITCH * u.slot as f32;
+        gu.cursor_on(EQUIP, u.slot as u16 + 1, x + 3.0, cy, [x + 3.0, cy, fw - 6.0, PITCH]);
     }
     // FUN_101176e0: the set's caption, frames 211 + set, at (5, 2).
     gu.sprite("menu    framesus", 211 + u.set, x + 5.0, y + 2.0, WHITE);

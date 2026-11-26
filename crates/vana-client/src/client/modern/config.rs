@@ -54,7 +54,7 @@ use Item::{Head, Open, Ours, Retail};
 
 /// The topic pages: (group, name, lines). Every retail setting of the old list and every row of ours has one place
 /// (the test `every_setting_has_a_page`).
-const PAGES: [(&str, &str, &[Item]); 13] = [
+const PAGES: [(&str, &str, &[Item]); 14] = [
     (
         "Game",
         "Gameplay",
@@ -107,12 +107,19 @@ const PAGES: [(&str, &str, &[Item]); 13] = [
         "Display",
         &[
             Head("Window"),
+            // Android's surface is the activity, so these three do not change the picture.
+            #[cfg(not(target_os = "android"))]
             Ours("Window Mode"),
+            #[cfg(not(target_os = "android"))]
             Ours("Resolution"),
+            #[cfg(not(target_os = "android"))]
             Ours("Monitor"),
             Ours("GPU"),
             Ours("Frame Limit"),
+            #[cfg(not(target_os = "android"))]
             Head("Scaling"),
+            #[cfg(target_os = "android")]
+            Head("Background Resolution"),
             Ours("Background"),
             Ours("Menu Size"),
             Ours("3D Aspect"),
@@ -133,10 +140,14 @@ const PAGES: [(&str, &str, &[Item]); 13] = [
             Ours("Textures"),
             Ours("2-D Mapping"),
             Ours("Fonts"),
+            Ours("Material Maps"),
             Ours("MIP Mapping"),
             Ours("Anisotropic Filtering"),
             Head("Edges & Stability"),
             Ours("Anti-aliasing"),
+            Ours("Upscaling"),
+            Ours("Upscaling Sharpness"),
+            Ours("Neural Rendering"),
             Ours("Graphics Stabilization"),
         ],
     ),
@@ -200,13 +211,19 @@ const PAGES: [(&str, &str, &[Item]); 13] = [
     ),
     (
         "Input",
-        "Mouse, Camera & Keys",
+        "Mouse & Cursor",
         &[
             Head("Mouse"),
             Ours("Hardware Mouse"),
             Ours("Cursor Size"),
             Ours("Keys Hide the Cursor"),
             Ours("Mouse Camera Speed"),
+        ],
+    ),
+    (
+        "Input",
+        "Camera & Keys",
+        &[
             Head("Camera"),
             Retail("conf7", 5),
             Retail("conf7", 7),
@@ -221,6 +238,8 @@ const PAGES: [(&str, &str, &[Item]); 13] = [
             Retail("conf6win", 9),
             Retail("conf6win", 10),
             Retail("conf13wi", 1),
+            Head("Movement"),
+            Ours("Movement Rate"),
         ],
     ),
     ("Input", "Controller", &[Head("Controller"), Ours("Gamepad"), Ours("Stick Dead Zone")]),
@@ -457,6 +476,7 @@ fn topic_stops(c: &ConfigUi, v: &Values, all: &[Line], sw: f32) -> Vec<Stop> {
                     Stop::Value { n: bs.len(), at: bs.iter().position(|b| b.1).unwrap_or(0), slider: false, off: 0 }
                 }
                 settings::VCtl::Slider { n, at, .. } => Stop::Value { n: *n, at: *at, slider: true, off: 0 },
+                settings::VCtl::Actions(bs) => Stop::Buttons { n: bs.len(), off: 0, pair: None },
             },
             _ => Stop::Buttons { n: 1, off: 0, pair: None },
         })
@@ -468,7 +488,8 @@ fn topic_stops(c: &ConfigUi, v: &Values, all: &[Line], sw: f32) -> Vec<Stop> {
 #[derive(Clone, Copy, Debug)]
 enum Pick {
     Set(usize, usize, bool),
-    Press(usize),
+    /// Stop `k`'s button `x` pressed.
+    Press(usize, usize),
 }
 
 /// A topic page's pick carried out.
@@ -476,7 +497,7 @@ fn topic_do(w: &mut World, pick: Pick, sw: f32) {
     let Some(c) = w.config.as_ref() else { return };
     let all = view(c, w.settings.as_ref());
     let k = match pick {
-        Pick::Set(k, ..) | Pick::Press(k) => k,
+        Pick::Set(k, ..) | Pick::Press(k, _) => k,
     };
     let Some(l) = stop_lines(&all).get(k).map(|l| (l.item, l.shape.as_ref().map(|s| (s.menu, s.ctls.clone())))) else {
         return;
@@ -497,13 +518,20 @@ fn topic_do(w: &mut World, pick: Pick, sw: f32) {
                     }
                     out
                 }
-                Pick::Press(_) => native_press(c, &mut w.game, &sh, sw),
+                Pick::Press(..) => native_press(c, &mut w.game, &sh, sw),
             };
             super::super::config_out(w, out);
         }
         (Ours(label), Pick::Set(_, x, click)) => {
             if let Some(s) = w.settings.as_mut() {
                 s.item_set(label, x, click);
+                w.sounds.extend(s.sounds.drain(..).map(|x| x as u32));
+            }
+        }
+        // An action row's button.
+        (Ours(label), Pick::Press(_, x)) => {
+            if let Some(s) = w.settings.as_mut() {
+                s.item_set(label, x, true);
                 w.sounds.extend(s.sounds.drain(..).map(|x| x as u32));
             }
         }
@@ -578,7 +606,7 @@ fn topic_page(
                 match got {
                     Some(Got::Opt(x)) => *pick = Some(Pick::Set(k, x, false)),
                     Some(Got::Slide(x)) => *pick = Some(Pick::Set(k, x, true)),
-                    Some(Got::Press) => *pick = Some(Pick::Press(k)),
+                    Some(Got::Press) => *pick = Some(Pick::Press(k, 0)),
                     None => {}
                 }
                 r
@@ -602,11 +630,20 @@ fn topic_page(
                     }
                     r
                 }
+                settings::VCtl::Actions(bs) => {
+                    kit::setting(ui, m, &row.label, on, true, follow, |ui| {
+                        let labels: Vec<&str> = bs.iter().map(String::as_str).collect();
+                        if let Some(x) = kit::buttons(ui, m, &labels, on.then_some(c.m_col), 0, 0) {
+                            *pick = Some(Pick::Press(k, x));
+                        }
+                    })
+                    .1
+                }
             },
             (_, _, Open(sub)) => {
                 kit::setting(ui, m, SUBS[sub].0, on, false, follow, |ui| {
                     if kit::buttons(ui, m, &["Open"], on.then_some(0), 0, 0).is_some() {
-                        *pick = Some(Pick::Press(k));
+                        *pick = Some(Pick::Press(k, 0));
                     }
                 })
                 .1
@@ -687,20 +724,46 @@ fn topic_detail(gu: Option<&GameUi>, c: &ConfigUi, v: &Values, all: &[Line], k: 
 
 /// The details column: the setting's name, its help, its facts.
 pub(super) fn details(ui: &mut Ui, m: &super::Modern, d: &Detail) {
+    detail_column(ui, m, d, None);
+}
+
+/// The same column, capped at `max` pixels: a long description scrolls instead of growing the window. `pages`: the
+/// pages asked for by keys (Page Down +1), scrolled and cleared.
+pub(super) fn details_scrolled(ui: &mut Ui, m: &super::Modern, d: &Detail, max: f32, pages: &mut i32) {
+    detail_column(ui, m, d, Some((max, pages)));
+}
+
+fn detail_column(ui: &mut Ui, m: &super::Modern, d: &Detail, scroll: Option<(f32, &mut i32)>) {
     ui.vertical(|ui| {
         ui.set_width(DETAIL_W);
         group_head(ui, m, "Details", true);
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(&d.name).size(m.theme.ui).color(m.theme.color("gold")));
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(&d.text).size(m.theme.small).color(m.theme.color("text")));
-        ui.add_space(8.0);
-        for (k, v) in &d.facts {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(*k).size(m.theme.small - 1.0).color(m.theme.color("muted")));
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new(v).size(m.theme.small - 1.0).color(m.theme.color("text")));
-            });
+        let body = |ui: &mut Ui| {
+            ui.label(egui::RichText::new(&d.name).size(m.theme.ui).color(m.theme.color("gold")));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(&d.text).size(m.theme.small).color(m.theme.color("text")));
+            ui.add_space(8.0);
+            for (k, v) in &d.facts {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(*k).size(m.theme.small - 1.0).color(m.theme.color("muted")));
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(v).size(m.theme.small - 1.0).color(m.theme.color("text")));
+                });
+            }
+        };
+        match scroll {
+            // Each item its own scroll, from the top; the bar's room kept clear.
+            Some((max, pages)) => {
+                kit::scroll(ui, ("details", &d.name), max, |ui| {
+                    ui.set_width(DETAIL_W - 12.0);
+                    if *pages != 0 {
+                        ui.scroll_with_delta(egui::vec2(0.0, -(*pages as f32) * max * 0.8));
+                        *pages = 0;
+                    }
+                    body(ui)
+                });
+            }
+            None => body(ui),
         }
     });
 }
@@ -1050,6 +1113,7 @@ fn ours_stops(v: &settings::View, skip: usize) -> Vec<Stop> {
             Stop::Value { n: bs.len(), at: bs.iter().position(|b| b.1).unwrap_or(0), slider: false, off: 0 }
         }
         settings::VCtl::Slider { n, at, .. } => Stop::Value { n: *n, at: *at, slider: true, off: 0 },
+        settings::VCtl::Actions(bs) => Stop::Buttons { n: bs.len(), off: 0, pair: None },
     });
     tabs.into_iter().chain(rows).collect()
 }
@@ -1071,10 +1135,28 @@ pub(super) enum ModOut {
     Standard,
 }
 
+/// Standard | Server on the Mods window's DATs catalogue (not the login Settings page).
+#[derive(Clone, Copy, Default)]
+pub(super) struct ModsCatalogue {
+    pub server: bool,
+    pub dual: bool,
+}
+
+const CAT_SRC: [&str; 2] = ["Standard", "Server"];
+
 /// The DATs and Mods pages' first stop (Install from File; Download Standard Mods too on Mods), and where their rows
 /// start: DATs has its Installed / Available tabs between.
 fn first_row(lua: bool) -> usize {
     if lua { 1 } else { 2 }
+}
+
+/// Where DAT pack rows or catalogue offers start (after Install, DAT tabs, optional Standard | Server).
+fn dats_data_start(s: &SettingsUi, cat: &ModsCatalogue) -> usize {
+    let mut at = first_row(false);
+    if s.m_dat_tab == 1 && cat.dual {
+        at += 1;
+    }
+    at
 }
 
 /// Whether the Mods page's installed mod `i` has a settings page.
@@ -1085,11 +1167,12 @@ fn has_page(s: &SettingsUi, i: usize) -> bool {
 /// The DATs / Mods page's stops: Install from File (and Download Standard Mods); on DATs the Installed / Available tabs,
 /// then the installed packs (toggle, up / down, Uninstall) or the available ones (Install); on Mods each installed mod
 /// (toggle, Settings, Uninstall), then the archives found (Install). The picker's list while it is open.
-fn mods_stops(s: &SettingsUi) -> Vec<Stop> {
+fn mods_stops(s: &SettingsUi, cat: &ModsCatalogue) -> Vec<Stop> {
     if let Some(b) = s.mods_state().and_then(|m| m.browse.as_ref()) {
         return vec![Stop::List { n: b.entries.len(), page: 10 }];
     }
-    let (packs, offers) = s.mods_rows();
+    let server = cat.dual && cat.server;
+    let (packs, offers) = s.mods_rows(server);
     let busy = s.mods_state().is_some_and(|m| m.installing().is_some());
     let lua = s.lua_page();
     let n = packs.len();
@@ -1107,6 +1190,9 @@ fn mods_stops(s: &SettingsUi) -> Vec<Stop> {
                 pair: Some(1),
             }));
         } else {
+            if cat.dual {
+                out.push(Stop::Tabs { n: 2, at: cat.server as usize });
+            }
             out.extend(offers.iter().map(|_| Stop::Buttons { n: 1, off: busy as u64, pair: None }));
         }
     }
@@ -1114,8 +1200,9 @@ fn mods_stops(s: &SettingsUi) -> Vec<Stop> {
 }
 
 /// A DATs / Mods page act.
-fn mods_act(s: &mut SettingsUi, act: kit::Act, at: At) -> ModOut {
-    let (packs, _) = s.mods_rows();
+fn mods_act(s: &mut SettingsUi, act: kit::Act, at: At, cat: &mut ModsCatalogue) -> ModOut {
+    let server = cat.dual && cat.server;
+    let (packs, _) = s.mods_rows(server);
     let n = packs.len();
     let lua = s.lua_page();
     if let Some(m) = s.mods_mut()
@@ -1145,12 +1232,17 @@ fn mods_act(s: &mut SettingsUi, act: kit::Act, at: At) -> ModOut {
         }
         return ModOut::Stay;
     }
-    let first = first_row(lua);
+    let first = if lua { first_row(lua) } else { dats_data_start(s, cat) };
     match act {
         kit::Act::Back => return ModOut::Back,
         kit::Act::Set(1, t) if !lua => {
             s.m_dat_tab = t.min(1);
             s.m_mods = (1, 0);
+            s.sounds.push(Se::Cursor);
+        }
+        kit::Act::Set(2, t) if !lua && s.m_dat_tab == 1 && cat.dual => {
+            cat.server = t != 0;
+            s.m_mods = (2, 0);
             s.sounds.push(Se::Cursor);
         }
         kit::Act::Moved => {
@@ -1184,7 +1276,7 @@ fn mods_act(s: &mut SettingsUi, act: kit::Act, at: At) -> ModOut {
             }
         }
         // DATs, Available: Install.
-        kit::Act::Press(st, _) if !lua && st >= first => s.archive_install(st - first),
+        kit::Act::Press(st, _) if !lua && st >= first => s.archive_install(st - first, server),
         // Mods: a mod's toggle, Settings, Uninstall; then the archives found.
         kit::Act::Press(st, b) if lua && st >= first && st - first < n => {
             let i = st - first;
@@ -1205,7 +1297,7 @@ fn mods_act(s: &mut SettingsUi, act: kit::Act, at: At) -> ModOut {
                 _ => {}
             }
         }
-        kit::Act::Press(st, _) if lua && st >= first => s.archive_install(st - first - n),
+        kit::Act::Press(st, _) if lua && st >= first => s.archive_install(st - first - n, server),
         a => s.sounds.extend(a.sound()),
     }
     ModOut::Stay
@@ -1229,7 +1321,7 @@ pub(super) fn remove_answer(s: &mut SettingsUi, yes: bool) {
     if yes {
         s.mod_remove(i);
         let first = first_row(s.lua_page());
-        let n = s.mods_rows().0.len();
+        let n = s.mods_rows(false).0.len();
         if s.m_mods.0 >= first + n {
             s.m_mods = (if n == 0 { 0 } else { first + n - 1 }, 0);
         }
@@ -1239,19 +1331,20 @@ pub(super) fn remove_answer(s: &mut SettingsUi, yes: bool) {
 }
 
 /// The DATs / Mods page's keys.
-pub(super) fn mods_key(s: &mut SettingsUi, key: egui::Key, shift: bool) -> ModOut {
+pub(super) fn mods_key(s: &mut SettingsUi, key: egui::Key, shift: bool, cat: &mut ModsCatalogue) -> ModOut {
     s.sounds.clear();
     if s.m_remove.is_some() {
         remove_key(s, key);
         return ModOut::Stay;
     }
-    let stops = mods_stops(s);
+    let stops = mods_stops(s, cat);
     let mut at = match s.mods_state().and_then(|m| m.browse.as_ref()) {
         Some(b) => At::new(0, b.cursor),
         None => At::new(s.m_mods.0, s.m_mods.1),
     };
     let act = kit::key(&stops, &mut at, key, shift);
-    mods_act(s, act, at)
+    s.m_mods = (at.stop, at.sub);
+    mods_act(s, act, at, cat)
 }
 
 /// Our page's act (Settings / Extras, not Mods); true when the page is left. `first`: a stop (the tabs, or a mod's
@@ -1271,8 +1364,15 @@ fn ours_act(s: &mut SettingsUi, v: &settings::View, act: kit::Act, at: At, skip:
             match v.rows.get(row - 1).map(|r| &r.ctl) {
                 Some(settings::VCtl::Buttons(_)) => s.m_click(row, x),
                 Some(settings::VCtl::Slider { .. }) => s.m_slide(row, x, false),
-                None => {}
+                Some(settings::VCtl::Actions(_)) | None => {}
             }
+        }
+        // An action row's button pressed.
+        kit::Act::Press(r, x)
+            if r + 1 >= first
+                && matches!(v.rows.get(r - (first - 1)).map(|r| &r.ctl), Some(settings::VCtl::Actions(_))) =>
+        {
+            s.m_click(r + 1 - first, x)
         }
         a => s.sounds.extend(a.sound()),
     }
@@ -1659,6 +1759,8 @@ fn colour_rows(
 /// while `open` (the page has the keys). What the mouse did comes back.
 enum Do {
     Tab(usize),
+    /// Neural Rendering's DLL picker: its entry clicked.
+    Browse(usize),
     /// A click on a row (not on its options): it takes the cursor.
     Select(usize),
     Click(usize, usize),
@@ -1701,6 +1803,15 @@ fn settings_page(
                 }
                 rect
             }
+            settings::VCtl::Actions(bs) => {
+                kit::setting(ui, m, &r.label, focus, true, follow, |ui| {
+                    let labels: Vec<&str> = bs.iter().map(String::as_str).collect();
+                    if let Some(c) = kit::buttons(ui, m, &labels, focus.then_some(v.col), 0, 0) {
+                        act.push(Do::Click(row, c));
+                    }
+                })
+                .1
+            }
         };
         if kit::row_clicked(ui, rect) {
             act.push(Do::Select(row));
@@ -1718,6 +1829,10 @@ fn settings_do(s: &mut SettingsUi, act: Vec<Do>) {
             Do::Select(_) => {}
             Do::Tab(k) => s.m_tab(k),
             Do::Click(r, c) => s.m_click(r, c),
+            Do::Browse(k) => {
+                s.nr_pick(k);
+                s.sounds.push(Se::Select);
+            }
             Do::Slide(r, i) => s.m_slide(r, i, true),
         }
     }
@@ -1729,6 +1844,7 @@ pub(super) enum ModDo {
     /// A click on a row (not on its buttons): it takes the cursor.
     Select(usize),
     DatTab(usize),
+    DatSource(usize),
     Browse(usize),
     Remove(bool),
 }
@@ -1750,6 +1866,58 @@ fn mods_note(ui: &mut Ui, m: &super::Modern, text: &str, colour: &str) {
     ui.label(egui::RichText::new(text).size(m.theme.small).color(m.theme.color(colour)));
 }
 
+/// A file picker's folder and its entries (folders, then the files it offers); the entry clicked.
+fn browse_list(
+    ui: &mut Ui,
+    m: &super::Modern,
+    b: &super::super::modsui::Browse,
+    id: &str,
+    open: bool,
+    follow: bool,
+) -> Option<usize> {
+    ui.label(egui::RichText::new(b.dir.display().to_string()).size(m.theme.small).color(m.theme.color("gold")));
+    ui.add_space(4.0);
+    let tall = ui.ctx().content_rect().height() * 0.5;
+    let out = kit::list(
+        ui,
+        m,
+        id,
+        b.entries.len(),
+        Some(b.cursor),
+        open,
+        follow,
+        28.0,
+        tall,
+        |_| false,
+        |ui, row| {
+            let (name, pick) = &b.entries[row.index];
+            let dir = *pick == Picked::Folder;
+            let p = ui.painter();
+            // A folder's tabbed outline, or an archive's box with its strap (gold for a Lua mod's folder).
+            let r = Rect::from_center_size(pos2(row.rect.min.x + 22.0, row.rect.center().y), vec2(16.0, 12.0));
+            let st = egui::Stroke::new(
+                1.5,
+                if *pick == Picked::Archive { m.theme.color("muted") } else { m.theme.color("gold") },
+            );
+            p.rect_stroke(r, 2.0, st, egui::StrokeKind::Inside);
+            if dir {
+                p.line_segment([r.left_top() + vec2(1.0, -2.0), r.left_top() + vec2(7.0, -2.0)], st);
+            } else {
+                p.line_segment([pos2(r.center().x, r.min.y), pos2(r.center().x, r.max.y)], st);
+            }
+            let label = if dir && name != ".." { format!("{name}/") } else { name.clone() };
+            p.text(
+                pos2(row.rect.min.x + 40.0, row.rect.center().y),
+                Align2::LEFT_CENTER,
+                label,
+                FontId::proportional(m.theme.small),
+                kit::ink(m, row),
+            );
+        },
+    );
+    out.clicked
+}
+
 /// The DATs / Mods page: Install from File (and Download Standard Mods) at the top, or the file picker. DATs: the
 /// Installed / Available tabs, each pack with its toggle, chevrons and Uninstall, or the archives found and the
 /// catalogue's packs with Install. Mods: every installed mod with its toggle, Settings (when it has any) and Uninstall,
@@ -1761,57 +1929,18 @@ pub(super) fn mods_page(
     open: bool,
     follow: bool,
     act: &mut Vec<ModDo>,
+    cat: &ModsCatalogue,
 ) -> Option<usize> {
     let mut hover = None;
     let state = s.mods_state();
     if let Some(b) = state.and_then(|m| m.browse.as_ref()) {
-        ui.label(egui::RichText::new(b.dir.display().to_string()).size(m.theme.small).color(m.theme.color("gold")));
-        ui.add_space(4.0);
-        let tall = ui.ctx().content_rect().height() * 0.5;
-        let out = kit::list(
-            ui,
-            m,
-            "mods browse",
-            b.entries.len(),
-            Some(b.cursor),
-            open,
-            follow,
-            28.0,
-            tall,
-            |_| false,
-            |ui, row| {
-                let (name, pick) = &b.entries[row.index];
-                let dir = *pick == Picked::Folder;
-                let p = ui.painter();
-                // A folder's tabbed outline, or an archive's box with its strap (gold for a Lua mod's folder).
-                let r = Rect::from_center_size(pos2(row.rect.min.x + 22.0, row.rect.center().y), vec2(16.0, 12.0));
-                let st = egui::Stroke::new(
-                    1.5,
-                    if *pick == Picked::Archive { m.theme.color("muted") } else { m.theme.color("gold") },
-                );
-                p.rect_stroke(r, 2.0, st, egui::StrokeKind::Inside);
-                if dir {
-                    p.line_segment([r.left_top() + vec2(1.0, -2.0), r.left_top() + vec2(7.0, -2.0)], st);
-                } else {
-                    p.line_segment([pos2(r.center().x, r.min.y), pos2(r.center().x, r.max.y)], st);
-                }
-                let label = if dir && name != ".." { format!("{name}/") } else { name.clone() };
-                p.text(
-                    pos2(row.rect.min.x + 40.0, row.rect.center().y),
-                    Align2::LEFT_CENTER,
-                    label,
-                    FontId::proportional(m.theme.small),
-                    kit::ink(m, row),
-                );
-            },
-        );
-        if let Some(k) = out.clicked {
+        if let Some(k) = browse_list(ui, m, b, "mods browse", open, follow) {
             act.push(ModDo::Browse(k));
         }
         return None;
     }
     if let Some((i, yes)) = s.m_remove {
-        let name = s.mods_rows().0.get(i).map_or(String::new(), |p| p.0.clone());
+        let name = s.mods_rows(false).0.get(i).map_or(String::new(), |p| p.0.clone());
         let q = format!("Uninstall {name}? Its folder in the mods folder is deleted.");
         if let Some(a) = kit::yes_no(ui, m, &q, ["Yes", "No"], yes, m.theme.small) {
             act.push(ModDo::Remove(a));
@@ -1834,9 +1963,10 @@ pub(super) fn mods_page(
         mods_note(ui, m, &format!("The last install failed: {e}"), "hp");
     }
     ui.add_space(6.0);
-    let (packs, offers) = s.mods_rows();
+    let server = cat.dual && cat.server;
+    let (packs, offers) = s.mods_rows(server);
     let n = packs.len();
-    let first = first_row(lua);
+    let first = if lua { first_row(lua) } else { dats_data_start(s, cat) };
     let toggle = |ui: &mut Ui, enabled: bool, cur: Option<usize>, act: &mut Vec<ModDo>, st: usize| {
         let t = Btn { lit: enabled, cursor: cur == Some(0), off: false };
         if kit::clicked(&kit::button(ui, m, if enabled { "ON" } else { "OFF" }, 64.0, t), t) {
@@ -1904,8 +2034,9 @@ pub(super) fn mods_page(
         if n == 0 {
             mods_note(ui, m, "No DAT packs installed.", "muted");
         }
+        let pack_first = first_row(false);
         for (i, (name, enabled)) in packs.iter().enumerate() {
-            let st = first + i;
+            let st = pack_first + i;
             let cur = on(st);
             let (_, r) = kit::line_elided(ui, m, &format!("{}. {name}", i + 1), cur.is_some(), follow, |ui| {
                 let un = Btn { cursor: cur == Some(3), ..Default::default() };
@@ -1928,19 +2059,47 @@ pub(super) fn mods_page(
         }
         return None;
     }
+    if cat.dual {
+        ui.add_space(6.0);
+        if let Some(k) = kit::tab_strip(ui, m, "dats src", &CAT_SRC, cat.server as usize, at.is_some_and(|a| a.0 == 2))
+        {
+            act.push(ModDo::DatSource(k));
+        }
+    }
+    let has_catalogue = offers.iter().any(|o| o.catalogue);
     if offers.is_empty() {
         mods_note(ui, m, "Nothing found in the Downloads folder.", "muted");
     }
+    if cat.dual && !has_catalogue {
+        let text = if server {
+            if s.catalogue_keys.is_empty() {
+                "Set the server on login or paste a catalogue URL.".into()
+            } else if let Some(e) = state.and_then(|m| m.server_dat_error.as_ref()) {
+                format!("The server DAT catalogue could not be read: {e}")
+            } else {
+                "No server catalogue is configured for this server.".into()
+            }
+        } else {
+            match state.and_then(|m| m.dat_error.as_ref()) {
+                Some(e) => format!("The standard DAT catalogue could not be read: {e}"),
+                None if state.is_some_and(|m| m.loading()) => "Reading the list from GitHub...".into(),
+                None => "No standard DAT packs are listed.".into(),
+            }
+        };
+        mods_note(ui, m, &text, "muted");
+    }
     offer_rows(ui, act, first, &mut hover);
-    if let Some(e) = state.and_then(|m| m.dat_error.as_ref()).filter(|_| !offers.iter().any(|o| o.catalogue)) {
-        mods_heading(ui, m, "From the catalogue");
-        mods_note(ui, m, &format!("The catalogue could not be read: {e}"), "muted");
+    if !cat.dual {
+        if let Some(e) = state.and_then(|m| m.dat_error.as_ref()).filter(|_| !offers.iter().any(|o| o.catalogue)) {
+            mods_heading(ui, m, "From the catalogue");
+            mods_note(ui, m, &format!("The catalogue could not be read: {e}"), "muted");
+        }
     }
     hover
 }
 
 /// The mouse on the DATs / Mods page: what it leads to.
-pub(super) fn mods_do(s: &mut SettingsUi, act: Vec<ModDo>) -> ModOut {
+pub(super) fn mods_do(s: &mut SettingsUi, act: Vec<ModDo>, cat: &mut ModsCatalogue) -> ModOut {
     let mut out = ModOut::Stay;
     // A click on a button selects its row through the press.
     let pressed = act.iter().any(|a| matches!(a, ModDo::Press(..) | ModDo::Browse(_) | ModDo::Remove(_)));
@@ -1956,12 +2115,19 @@ pub(super) fn mods_do(s: &mut SettingsUi, act: Vec<ModDo>) -> ModOut {
                 s.m_mods = (1, 0);
                 s.sounds.push(Se::Cursor);
             }
+            ModDo::DatSource(k) => {
+                cat.server = k != 0;
+                if s.m_dat_tab == 1 {
+                    s.m_mods = (2, 0);
+                }
+                s.sounds.push(Se::Cursor);
+            }
             ModDo::Press(st, b) => {
                 s.m_mods = (st, b);
-                out = mods_act(s, kit::Act::Press(st, b), At::new(st, b));
+                out = mods_act(s, kit::Act::Press(st, b), At::new(st, b), cat);
             }
             ModDo::Browse(k) => {
-                mods_act(s, kit::Act::Press(0, k), At::new(0, k));
+                mods_act(s, kit::Act::Press(0, k), At::new(0, k), cat);
             }
             ModDo::Remove(yes) => remove_answer(s, yes),
         }
@@ -2035,7 +2201,11 @@ fn keys_page(
 }
 
 /// The title's Config list: retail's page (lobycwin) and ours.
+#[cfg(not(target_os = "android"))]
 const LOBBY: [&str; 2] = ["Title Screen", "Settings"];
+/// Android adds where the game files are read from (client/game_data.rs).
+#[cfg(target_os = "android")]
+const LOBBY: [&str; 3] = ["Title Screen", "Settings", "Game data"];
 
 /// lobycwin's settings in retail's order on screen: the title music first.
 fn lobby_shapes() -> Vec<Shape> {
@@ -2051,7 +2221,36 @@ pub fn lobby_settings(c: &ConfigUi) -> bool {
 
 /// The help for our page's cursor.
 fn ours_help(s: &SettingsUi) -> String {
-    if s.on_mods_page() { mods_help(s) } else { s.view().help }
+    if s.nr_browse.is_some() {
+        return NR_PICK_HELP.into();
+    }
+    if s.on_mods_page() { mods_help(s, &ModsCatalogue::default()) } else { s.view().help }
+}
+
+/// The DLL picker's help.
+const NR_PICK_HELP: &str = "Pick NVIDIA's nvngx_dlssnr.dll, or a zip holding it: the model is made from it and the file is left as it is. Escape: back.";
+
+/// The DLL picker's keys: the list, Enter opens a folder or takes the file, Escape back to the page.
+fn nr_browse_key(s: &mut SettingsUi, key: egui::Key) {
+    s.sounds.clear();
+    let Some(b) = s.nr_browse.as_mut() else { return };
+    let stops = [Stop::List { n: b.entries.len(), page: 10 }];
+    let mut at = At::new(0, b.cursor);
+    match kit::key(&stops, &mut at, key, false) {
+        kit::Act::Moved => {
+            b.cursor = at.sub;
+            s.sounds.push(Se::Cursor);
+        }
+        kit::Act::Press(_, k) => {
+            s.nr_pick(k);
+            s.sounds.push(Se::Select);
+        }
+        kit::Act::Back => {
+            s.nr_browse = None;
+            s.sounds.push(Se::Cancel);
+        }
+        _ => {}
+    }
 }
 
 /// The title's Config (lobycwin) in the modern style: the list, then retail's page or our Settings (`s`). Its step
@@ -2101,9 +2300,16 @@ pub fn lobby(p: &mut Panels, c: &mut ConfigUi, v: &mut Values, s: Option<&mut Se
                                     if let Some(k) = kit::tab_strip(ui, m, "settings tabs", &tabs, v.tab, false) {
                                         sact.push(Do::Tab(k));
                                     }
-                                    mods_page(ui, m, s, open, follow, &mut mact);
+                                    mods_page(ui, m, s, open, follow, &mut mact, &ModsCatalogue::default());
                                 }
-                                Some(s) => settings_page(ui, m, &s.view(), open, follow, 0, &mut sact),
+                                Some(s) => match s.nr_browse.as_ref() {
+                                    Some(b) => {
+                                        if let Some(k) = browse_list(ui, m, b, "nr browse", open, follow) {
+                                            sact.push(Do::Browse(k));
+                                        }
+                                    }
+                                    None => settings_page(ui, m, &s.view(), open, follow, 0, &mut sact),
+                                },
                                 None if lobby_settings(c) => {}
                                 None => {
                                     hover = native_rows(
@@ -2137,7 +2343,7 @@ pub fn lobby(p: &mut Panels, c: &mut ConfigUi, v: &mut Values, s: Option<&mut Se
     if let Some(s) = s.filter(|_| !sact.is_empty() || !mact.is_empty()) {
         s.sounds.clear();
         settings_do(s, sact);
-        mods_do(s, mact);
+        mods_do(s, mact, &mut ModsCatalogue::default());
         out.sounds.append(&mut s.sounds);
         c.m_open = true;
     }
@@ -2145,6 +2351,10 @@ pub fn lobby(p: &mut Panels, c: &mut ConfigUi, v: &mut Values, s: Option<&mut Se
         Some(Click::Entry(k)) => {
             (c.m_entry, c.m_open, c.m_row) = (k, true, 0);
             out.sounds.push(Se::Select);
+            #[cfg(target_os = "android")]
+            if k == 2 {
+                (out.open_game_data, out.closed) = (true, true);
+            }
         }
         Some(Click::Opt(i, x)) => {
             (c.m_open, c.m_row) = (true, i);
@@ -2201,6 +2411,10 @@ pub fn lobby_key(
             (kit::Act::Press(..), _) => {
                 (c.m_open, c.m_row) = (true, 0);
                 out.sounds.push(Se::Select);
+                #[cfg(target_os = "android")]
+                if c.m_entry == 2 {
+                    (out.open_game_data, out.closed) = (true, true);
+                }
             }
             (a, _) => out.sounds.extend(a.sound()),
         }
@@ -2219,7 +2433,10 @@ pub fn lobby_key(
                 s.m_tab((v.tab + if shift { n - 1 } else { 1 }) % n);
                 false
             } else if s.on_mods_page() {
-                mods_key(s, key, shift) == ModOut::Back
+                mods_key(s, key, shift, &mut ModsCatalogue::default()) == ModOut::Back
+            } else if s.nr_browse.is_some() {
+                nr_browse_key(s, key);
+                false
             } else {
                 ours_key(s, key, shift, 0, true)
             };
@@ -2292,6 +2509,9 @@ pub fn draw(p: &mut Panels, w: &mut World) {
     );
     let (keys, ask) = (c.m_keys, c.extra.ask_keys);
     let (mut click, mut pick, mut hover) = (None, None, None);
+    // Neural Rendering's DLL picker over the topic page while it is open (settings::SettingsUi::nr_browse).
+    let nr = w.settings.as_ref().and_then(|s| s.nr_browse.as_ref());
+    let mut nr_click = None;
     let mut help = String::new();
     let mut detail = Detail::default();
     // Font Colors is as wide as its names and samples side by side need (within the screen).
@@ -2377,9 +2597,15 @@ pub fn draw(p: &mut Panels, w: &mut World) {
                         if let (Some(f), true) = (find.as_ref(), all.is_empty()) {
                             ui.label(egui::RichText::new(format!("Nothing matches \u{201c}{f}\u{201d}.")).size(m.theme.small).color(m.theme.color("muted")));
                         }
-                        hover = topic_page(ui, m, Some(gu), c, v, &all, focus, follow, sw, &mut pick);
-                        detail = hover.or(focus).map_or_else(|| Detail::page(PAGES[entry].1, find.is_some()), |k| topic_detail(Some(gu), c, v, &all, k, find.is_some()));
-                        help = topic_keys(find.is_some()).into();
+                        if let Some(b) = nr {
+                            nr_click = browse_list(ui, m, b, "nr browse", open, follow);
+                            detail = Detail::page(PAGES[entry].1, false);
+                            help = NR_PICK_HELP.into();
+                        } else {
+                            hover = topic_page(ui, m, Some(gu), c, v, &all, focus, follow, sw, &mut pick);
+                            detail = hover.or(focus).map_or_else(|| Detail::page(PAGES[entry].1, find.is_some()), |k| topic_detail(Some(gu), c, v, &all, k, find.is_some()));
+                            help = topic_keys(find.is_some()).into();
+                        }
                     }
                     Entry::List(lp, _) => {
                         // The window's help (its first element's).
@@ -2414,6 +2640,11 @@ pub fn draw(p: &mut Panels, w: &mut World) {
         });
         help_line(ui, m, &help);
     });
+    if let (Some(k), Some(s)) = (nr_click, w.settings.as_mut()) {
+        s.nr_pick(k);
+        w.sounds.push(Se::Select as u32);
+        return;
+    }
     if let (Some(pick), Entry::Topic) = (pick, page) {
         return topic_do(w, pick, sw);
     }
@@ -2487,7 +2718,16 @@ pub fn draw(p: &mut Panels, w: &mut World) {
 pub fn sample(p: &mut Panels, s: &SettingsUi) {
     let m = p.m;
     let (mut c, v) = (ConfigUi::default(), Values::default());
-    c.m_find = Some("shadow".into());
+    // FFXI_SHOT_FIND: another search; FFXI_SHOT_NR: Neural Rendering's row asking for NVIDIA's DLL.
+    c.m_find = Some(std::env::var("FFXI_SHOT_FIND").unwrap_or_else(|_| "shadow".into()));
+    if std::env::var_os("FFXI_SHOT_NR").is_some() {
+        let found = crate::client::neural::Found {
+            path: "nvngx_dlssnr.dll".into(),
+            game: "Example Game".into(),
+            note: "Usable: version 310.9.16, both models".into(),
+        };
+        crate::client::neural::set_for_test(crate::client::neural::State::NeedsDll, vec![found]);
+    }
     refresh_hits(None, &mut c, &v, Some(s));
     let all: Vec<Line> = view(&c, Some(s)).into_iter().filter(|l| l.shape.is_none()).collect();
     p.panel(
@@ -2603,13 +2843,13 @@ fn fallback(ctl: Ctl) -> String {
 
 /// The details of the DATs / Mods page's row at stop `st`: an installed mod (its name, what it does, version, on or
 /// off), or an archive found or a catalogue entry (its name and what installing it does). None for the rest.
-pub(super) fn row_detail(s: &SettingsUi, st: usize) -> Option<Detail> {
+pub(super) fn row_detail(s: &SettingsUi, st: usize, cat: &ModsCatalogue) -> Option<Detail> {
     if s.mods_state().is_some_and(|m| m.browse.is_some()) || s.m_remove.is_some() {
         return None;
     }
     let lua = s.lua_page();
-    let first = first_row(lua);
-    let (packs, offers) = s.mods_rows();
+    let first = if lua { first_row(lua) } else { dats_data_start(s, cat) };
+    let (packs, offers) = s.mods_rows(cat.dual && cat.server);
     let i = st.checked_sub(first)?;
     if lua && i < packs.len() {
         let info = s.mod_id(i).and_then(|id| s.lua_info.get(&id).cloned()).unwrap_or_default();
@@ -2631,18 +2871,19 @@ pub(super) fn row_detail(s: &SettingsUi, st: usize) -> Option<Detail> {
 }
 
 /// The DATs / Mods page's help line: the cursor's row's.
-pub(super) fn mods_help(s: &SettingsUi) -> String {
+pub(super) fn mods_help(s: &SettingsUi, cat: &ModsCatalogue) -> String {
     if s.mods_state().is_some_and(|m| m.browse.is_some()) {
         return "Up / Down: a folder or an archive. Enter: open the folder, or install the archive (a mod's folder too). Escape: back.".into();
     }
     let lua = s.lua_page();
-    let first = first_row(lua);
-    let (packs, offers) = s.mods_rows();
+    let first = if lua { first_row(lua) } else { dats_data_start(s, cat) };
+    let (packs, offers) = s.mods_rows(cat.dual && cat.server);
     let (st, b) = s.m_mods;
     match st {
         0 if b == 1 && lua => "Download Standard Mods: our mods on GitHub, each to install with a press.".into(),
         0 => "Install from File: pick an archive (zip, 7z, rar) or a mod's folder.".into(),
         1 if !lua => "Left / Right or Tab: Installed or Available.".into(),
+        2 if !lua && s.m_dat_tab == 1 && cat.dual => "Left / Right or Tab: Standard or Server catalogue.".into(),
         st if st >= first && st - first < packs.len() && (lua || s.m_dat_tab == 0) => {
             if lua {
                 "Left / Right: ON / OFF, Settings, Uninstall. ON starts the mod at once, OFF stops it.".into()
@@ -2713,6 +2954,12 @@ pub fn key(w: &mut World, key: egui::Key, shift: bool) -> bool {
         return true;
     }
     match page {
+        Entry::Topic if w.settings.as_ref().is_some_and(|s| s.nr_browse.is_some()) => {
+            if let Some(s) = w.settings.as_mut() {
+                nr_browse_key(s, key);
+                w.sounds.extend(s.sounds.drain(..).map(|x| x as u32));
+            }
+        }
         Entry::Topic => {
             let all = view(c, w.settings.as_ref());
             let stops = topic_stops(c, &w.game, &all, sw);
@@ -2723,7 +2970,7 @@ pub fn key(w: &mut World, key: egui::Key, shift: bool) -> bool {
                 }
                 return true;
             }
-            let mut at = At::new(c.m_row.min(stops.len() - 1), 0);
+            let mut at = At::new(c.m_row.min(stops.len() - 1), c.m_col);
             // UI Setup's pick (its slider only picks) is done by Enter.
             if key == egui::Key::Enter
                 && let Some(Ours(label)) = stop_lines(&all).get(at.stop).map(|l| l.item)
@@ -2734,10 +2981,12 @@ pub fn key(w: &mut World, key: egui::Key, shift: bool) -> bool {
                 return true;
             }
             let act = kit::key(&stops, &mut at, key, shift);
+            // The button along an action row's buttons; another row starts at its first.
+            c.m_col = if at.stop == c.m_row { at.sub } else { 0 };
             c.m_row = at.stop;
             match act {
                 kit::Act::Set(i, x) => topic_do(w, Pick::Set(i, x, false), sw),
-                kit::Act::Press(i, _) => topic_do(w, Pick::Press(i), sw),
+                kit::Act::Press(i, x) => topic_do(w, Pick::Press(i, x), sw),
                 kit::Act::Back => {
                     c.m_open = false;
                     w.sounds.push(Se::Cancel as u32);
@@ -2880,12 +3129,22 @@ mod tests {
         // Of ours, only the rows that hold a retail setting stay (Lamp Lights does not).
         assert!(lines.iter().all(|l| !matches!(l.item, Ours(_)) || l.retail));
         assert!(!lines.iter().any(|l| l.item == Ours("Lamp Lights")));
-        c.m_entry = PAGES.iter().position(|p| p.1 == "Mouse, Camera & Keys").unwrap();
+        c.m_entry = PAGES.iter().position(|p| p.1 == "Mouse & Cursor").unwrap();
         let lines = view(&c, Some(&s));
         assert!(
             lines.iter().any(|l| l.item == Ours("Hardware Mouse"))
                 && !lines.iter().any(|l| l.item == Ours("Cursor Size"))
         );
+        // Camera & Keys keeps the camera and keyboard rows and none of the mouse's.
+        c.m_entry = PAGES.iter().position(|p| p.1 == "Camera & Keys").unwrap();
+        let lines = view(&c, Some(&s));
+        assert!(lines.iter().any(|l| l.item == Retail("conf7", 5)));
+        assert!(!lines.iter().any(|l| l.item == Ours("Hardware Mouse") || l.item == Ours("Mouse Camera Speed")));
+        // Movement Rate is a row of Camera & Keys (the kit's keys reach it), not in the Controller window.
+        let keys = self::lines(c.m_entry, Some(&s));
+        assert!(keys.iter().any(|l| l.item == Ours("Movement Rate")));
+        let pad = self::lines(PAGES.iter().position(|p| p.1 == "Controller").unwrap(), Some(&s));
+        assert!(!pad.iter().any(|l| l.item == Ours("Movement Rate")));
         c.m_entry = PAGES.iter().position(|p| p.1 == "Mods").unwrap();
         assert!(view(&c, Some(&s)).is_empty());
     }
@@ -2899,18 +3158,24 @@ mod tests {
         assert_eq!(names, ["Startup & Account", MODS]);
         let mut s = SettingsUi::open(&crate::config::Config::default(), [1920, 1080]);
         s.goto_page(false);
-        let st = mods_stops(&s);
+        let cat = ModsCatalogue::default();
+        let st = mods_stops(&s, &cat);
         assert!(matches!(st[0], Stop::Buttons { n: 1, .. }) && matches!(st[1], Stop::Tabs { n: 2, at: 0 }));
+        s.m_dat_tab = 1;
+        let dual = ModsCatalogue { server: false, dual: true };
+        assert!(matches!(mods_stops(&s, &dual)[2], Stop::Tabs { n: 2, at: 0 }));
         s.goto_page(true);
-        assert!(s.lua_page() && matches!(mods_stops(&s)[0], Stop::Buttons { n: 1, .. }));
+        assert!(s.lua_page() && matches!(mods_stops(&s, &cat)[0], Stop::Buttons { n: 1, .. }));
         s.in_game = true;
-        assert!(matches!(mods_stops(&s)[0], Stop::Buttons { n: 2, .. }));
+        assert!(matches!(mods_stops(&s, &cat)[0], Stop::Buttons { n: 2, .. }));
         // A cursor move ticks.
-        mods_key(&mut s, egui::Key::ArrowRight, false);
+        let mut cat = ModsCatalogue::default();
+        mods_key(&mut s, egui::Key::ArrowRight, false, &mut cat);
         assert_eq!(s.m_mods, (0, 1));
         assert!(matches!(s.sounds.as_slice(), [Se::Cursor]));
-        assert_eq!(mods_act(&mut s, kit::Act::Press(0, 1), At::new(0, 1)), ModOut::Standard);
-        assert_eq!(mods_act(&mut s, kit::Act::Back, At::new(0, 0)), ModOut::Back);
+        let mut cat = ModsCatalogue::default();
+        assert_eq!(mods_act(&mut s, kit::Act::Press(0, 1), At::new(0, 1), &mut cat), ModOut::Standard);
+        assert_eq!(mods_act(&mut s, kit::Act::Back, At::new(0, 0), &mut cat), ModOut::Back);
     }
 
     /// A page's headings with nothing under them go (ours left out in game, here the lobby's volumes).

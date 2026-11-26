@@ -1,7 +1,8 @@
 //! Ours: the Controller window (client/padcfg.rs), opened from the Settings window's Controller entry. Retail's
 //! Config > Gamepad starts the external FFXiPadConfig.exe instead (FUN_101bccb0); this is that tool's XInput page in the
 //! client: each function's button (Button Settings) and its button while Button Combination is held (Button
-//! Combination Settings), assigned by pressing it on the pad, with the tool's options at the right. Up / Down pick a
+//! Combination Settings), assigned by pressing it on the pad, with the tool's controller list and options at the
+//! right. Up / Down pick a
 //! function, Tab turns the page, Enter assigns (then press the button, or push a stick on a direction), Delete clears,
 //! Escape stops waiting, then closes.
 
@@ -30,7 +31,7 @@ pub fn takes_keys(w: &World) -> bool {
 /// Opens it (the Settings window's Controller entry).
 pub fn open(w: &mut World) {
     let p = &mut w.padcfg;
-    (p.open, p.listening, p.note) = (true, None, String::new());
+    (p.open, p.listening, p.note, p.list_devices) = (true, None, String::new(), true);
     p.follow.set(true);
     p.raise = true;
     w.sounds.push(Se::Select as u32);
@@ -96,6 +97,10 @@ enum Click {
     Clear,
     Options(bool, bool, u32),
     Rumble(bool),
+    /// padguid000.
+    Device(String),
+    /// One of padmode000's XInput, sliders and hat options (0..3), on or off.
+    Flag(usize, bool),
     Defaults,
     Copy,
     Retail,
@@ -159,8 +164,8 @@ fn list(ui: &mut Ui, m: &super::Modern, p: &PadCfg, click: &mut Option<Click>) {
                         ("Press a button or push a stick…".to_string(), "gold")
                     }
                     (true, Some(_)) => ("Press a button…".to_string(), "gold"),
-                    _ if map[r.pos] == -1 => (padcfg::name(-1), "muted"),
-                    _ => (padcfg::name(map[r.pos]), "text"),
+                    _ if map[r.pos] == -1 => (padcfg::name_of(-1, p.di), "muted"),
+                    _ => (padcfg::name_of(map[r.pos], p.di), "text"),
                 };
                 ui.painter().text(
                     pos2(rect.max.x - 10.0, rect.center().y),
@@ -212,8 +217,35 @@ fn side(ui: &mut Ui, m: &super::Modern, p: &PadCfg, click: &mut Option<Click>) {
             });
         }
         let set = p.set.clone().unwrap_or_else(|| super::super::gamepad::settings(&Default::default(), None));
-        heading(ui, m, "Gamepad Options", false);
+        heading(ui, m, "Controller", false);
+        let shown = match p.devices.iter().find(|d| d.0.eq_ignore_ascii_case(&set.padguid)) {
+            Some(d) => d.1.clone(),
+            None if set.padguid.is_empty() => "Not chosen (the first controller)".to_string(),
+            None => "The chosen controller (not connected)".to_string(),
+        };
+        egui::ComboBox::from_id_salt("controller device").selected_text(shown).width(SIDE_W - 20.0).show_ui(ui, |ui| {
+            for (guid, name) in &p.devices {
+                if ui.selectable_label(guid.eq_ignore_ascii_case(&set.padguid), name).clicked() {
+                    *click = Some(Click::Device(guid.clone()));
+                }
+            }
+        });
+        if p.devices.is_empty() {
+            note(ui, m, "No game controller connected.", "muted");
+        }
         let onoff = ["Off".to_string(), "On".to_string()];
+        for (k, label) in ["Use XInput", "Use sliders", "Use hat switch"].into_iter().enumerate() {
+            ui.label(egui::RichText::new(label).size(m.theme.small).color(m.theme.color("text")));
+            let at = [set.xinput, set.sliders, set.hat][k];
+            if let Some(v) = kit::choice(ui, m, &onoff, at as usize, 0) {
+                *click = Some(Click::Flag(k, v == 1));
+            }
+            // Retail keeps the XInput DLL's pad (+0xc9a) once it loaded, until the game starts again.
+            if k == 0 && !set.xinput {
+                note(ui, m, "Turning XInput off takes effect at the next start.", "muted");
+            }
+        }
+        heading(ui, m, "Gamepad Options", false);
         ui.label(egui::RichText::new("Enable Gamepad").size(m.theme.small).color(m.theme.color("text")));
         if let Some(k) = kit::choice(ui, m, &onoff, set.on as usize, 0) {
             *click = Some(Click::Options(k == 1, set.background, p.dead));
@@ -246,6 +278,9 @@ fn side(ui: &mut Ui, m: &super::Modern, p: &PadCfg, click: &mut Option<Click>) {
                 ),
                 "gold",
             ),
+            Source::Default if set.padsin == super::super::gamepad::DINPUT_PADSIN => {
+                ("The tool's Pattern A, for a DirectInput controller (no saved settings).".to_string(), "muted")
+            }
             Source::Default => ("The XInput setup (no saved settings).".to_string(), "muted"),
         };
         note(ui, m, &from, colour);
@@ -308,6 +343,14 @@ fn apply(w: &mut World, c: Click) {
             p.set_rumble(on);
             Se::Cursor
         }
+        Click::Device(guid) => {
+            p.set_device(guid);
+            Se::Cursor
+        }
+        Click::Flag(k, on) => {
+            p.set_flag(k, on);
+            Se::Cursor
+        }
         Click::Defaults => {
             p.defaults();
             Se::Select
@@ -322,7 +365,7 @@ fn apply(w: &mut World, c: Click) {
             Se::Select
         }
         Click::Reread => {
-            p.reread = true;
+            (p.reread, p.list_devices) = (true, true);
             p.note = "Looking for the retail settings again.".into();
             Se::Select
         }
@@ -355,6 +398,7 @@ pub(super) fn sample(p: &mut Panels) {
     let mut s = PadCfg { open: true, dead: 33, ..Default::default() };
     s.set = Some(super::super::gamepad::settings(&Default::default(), None));
     s.pads = vec!["Xbox Wireless Controller".into()];
+    s.devices = vec![("{6F1D2B61-D5A0-11CF-BFC7-444553540000}".into(), "Xbox Wireless Controller".into())];
     s.row = padcfg::rows().position(|r| r.0 == "Movement").unwrap_or(0);
     s.listening = Some(LISTEN);
     s.follow.set(true);

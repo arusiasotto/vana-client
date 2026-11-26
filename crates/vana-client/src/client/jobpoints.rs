@@ -79,6 +79,11 @@ fn points(w: &World, job: u8) -> Option<[u16; 3]> {
     w.jp_jobs.and_then(|j| j.get(job as usize).copied())
 }
 
+/// The main job's spent job points (s2c 0x063 sub 5), which gate job-point gift spells (FUN_1022b7d0).
+pub(super) fn main_spent(w: &World) -> u16 {
+    w.stats.as_ref().and_then(|st| points(w, st.main.0)).map_or(0, |p| p[2])
+}
+
 /// jbpcat +0x5e: in the Mog House and not in Monstrosity.
 fn can_spend(w: &World) -> bool {
     w.myroom.is_some() && !super::monstrosity::active(w)

@@ -18,6 +18,8 @@ local SUGGESTED = { 255, 214, 120, 255 }
 
 local open_macro = nil -- the group shown
 local open_bar = nil   -- the bar that opened it
+local open_suggested = nil -- its gold rule, for the rows drawn again
+local shown_rows = nil -- the rows as last sent
 local open_pick = nil  -- pick_list's callback(k)
 local open_count = 0
 
@@ -43,7 +45,7 @@ function M.is_open()
 end
 
 local function close()
-  open_macro, open_bar, open_pick = nil, nil, nil
+  open_macro, open_bar, open_pick, open_suggested, shown_rows = nil, nil, nil, nil, nil
   if ui.is_open(WIN) then ui.close(WIN) end
 end
 M.close = close
@@ -99,9 +101,28 @@ function M.open(macro, at, suggested, bar)
           { title = "", width = 20, align = "right" } } },
     },
   })
-  open_macro, open_bar, open_pick = macro, bar, nil
+  open_macro, open_bar, open_pick, open_suggested, shown_rows = macro, bar, nil, suggested, rows
   ui.open(WIN, at)
 end
+
+-- A row's recast and colour as they draw: the rows are sent again only when one changed.
+local function same(a, b)
+  if #a ~= #b then return false end
+  for k = 1, #a do
+    if a[k][2] ~= b[k][2] or a[k].colour ~= b[k].colour then return false end
+  end
+  return true
+end
+
+-- The group's recasts count down while it is open.
+function M.tick()
+  if not open_macro or not M.is_open() then return end
+  local rows = rows_of(open_macro, open_suggested)
+  if shown_rows and same(rows, shown_rows) then return end
+  shown_rows = rows
+  ui.update(WIN, "m", { rows = rows })
+end
+timer.every(0.25, M.tick)
 
 -- rows: { name, "", "", icon? }; on_pick(k); the cursor starts on `start`.
 function M.pick_list(title, rows, at, on_pick, start)
@@ -126,7 +147,7 @@ ui.on(WIN, function(_, e)
   if e.kind == "select" then
     M.pick(e.index)
   elseif e.kind == "close" then
-    open_macro, open_bar, open_pick = nil, nil, nil
+    open_macro, open_bar, open_pick, open_suggested, shown_rows = nil, nil, nil, nil, nil
   end
 end)
 
