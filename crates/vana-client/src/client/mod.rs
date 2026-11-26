@@ -19394,58 +19394,7 @@ impl App {
         } else {
             self.mouse.invalidate();
         }
-        #[cfg(target_os = "android")]
-        if platform.ime.is_none()
-            && let Some(ime) = self.lobby_ime.take()
-        {
-            let (ppp, k) = (ctx.pixels_per_point(), self.ui_k);
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(ime.rect[0] / k.0 / ppp, ime.rect[1] / k.1 / ppp),
-                egui::vec2(ime.rect[2] / k.0 / ppp, ime.rect[3] / k.1 / ppp),
-            );
-            platform.ime = Some(egui::output::IMEOutput {
-                purpose: if ime.password { egui::IMEPurpose::Password } else { egui::IMEPurpose::Normal },
-                rect,
-                cursor_rect: rect,
-                should_interrupt_composition: ime.retap,
-            });
-        }
-        #[cfg(target_os = "android")]
-        if let Phase::World(w) = &self.phase
-            && text_field_open(w)
-            && platform.ime.is_none()
-        {
-            let (ppp, k) = (ctx.pixels_per_point(), self.ui_k);
-            let rect = if w.typing {
-                if w.modern {
-                    self.modern.as_ref().and_then(|m| m.ime_caret.take())
-                } else {
-                    w.ime_at.take().map(|r| {
-                        egui::Rect::from_min_size(
-                            egui::pos2(r[0] / k.0 / ppp, r[1] / k.1 / ppp),
-                            egui::vec2(r[2] / k.0 / ppp, r[3] / k.1 / ppp),
-                        )
-                    })
-                }
-            } else {
-                None
-            };
-            let rect = rect.or_else(|| {
-                let (sw, sh) = (size[0] as f32, size[1] as f32);
-                Some(egui::Rect::from_min_size(
-                    egui::pos2(16.0 / k.0 / ppp, (sh - 56.0) / k.1 / ppp),
-                    egui::vec2((sw - 32.0) / k.0 / ppp, 40.0 / k.1 / ppp),
-                ))
-            });
-            if let Some(rect) = rect {
-                platform.ime = Some(egui::output::IMEOutput {
-                    purpose: egui::IMEPurpose::Normal,
-                    rect,
-                    cursor_rect: rect,
-                    should_interrupt_composition: false,
-                });
-            }
-        }
+        // Android: no platform IME — text uses retail swkbd (Back) or a hardware keyboard; see VanaClientNativeActivity.
         #[cfg(not(target_os = "android"))]
         if let Phase::World(w) = &self.phase
             && w.typing

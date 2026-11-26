@@ -16,6 +16,7 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
 
 /**
  * NativeActivity for {@code libvana_client.so}: full screen, and the system screens Rust asks for (All files access
@@ -35,6 +36,7 @@ public class VanaClientNativeActivity extends NativeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         applyImmersiveUi();
+        suppressSystemKeyboard();
     }
 
     @Override
@@ -49,7 +51,27 @@ public class VanaClientNativeActivity extends NativeActivity {
     protected void onResume() {
         super.onResume();
         applyImmersiveUi();
+        suppressSystemKeyboard();
         nativeAfterUiActivity();
+    }
+
+    /** Keep the Android IME hidden; in-game and lobby text use retail swkbd (Back), not the system keyboard. */
+    private void suppressSystemKeyboard() {
+        final Window window = getWindow();
+        if (window == null) {
+            return;
+        }
+        window.setSoftInputMode(
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+                        | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+        final View decor = window.getDecorView();
+        if (decor != null) {
+            decor.setShowSoftInputOnFocus(false);
+            final InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                imm.hideSoftInputFromWindow(decor.getWindowToken(), 0);
+            }
+        }
     }
 
     /** Status and navigation bars hidden; a swipe from the edge shows them for a moment. */
