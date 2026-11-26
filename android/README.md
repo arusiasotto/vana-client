@@ -11,7 +11,7 @@ The first start has two steps:
 1. **All files access**: *Open settings* and allow vana-client. The game files and installer volumes are read as plain paths on shared storage, so nothing loads without it.
 2. **Game files**, from one of:
    - **Square Enix**: opens PlayOnline's download page. Download all five US volumes (`FFXIFullSetup_US.part1.exe`, `part2.rar` … `part5.rar`) into one folder under **Download**.
-   - **Local installer**: installs from those volumes (found automatically under Download, or the *Archives* folder) into *Install to*, by default `/storage/emulated/0/Game/FFXI`. The volumes are left in place.
+   - **Local installer**: browse **Download** (or the folder where the browser saved the five parts). Volumes are staged into `Install to/.download`, validated, then unpacked. When the install finishes, you choose whether to **delete** those staged files (~7 GB) or **keep** them (nothing is removed without your tap).
    - **Existing install**: pick a folder holding `FINAL FANTASY XI/VTABLE.DAT` (or a folder above it).
 
 **Config → Game data** on the title screen changes the folder later. Config, mods, logs and caches stay in app storage.

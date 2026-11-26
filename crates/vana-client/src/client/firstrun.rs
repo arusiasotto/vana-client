@@ -29,8 +29,10 @@ const MARKER: &str = ".vana-installing";
 
 /// No game files where the config says they are, or a first start that did not finish.
 pub fn needed(ffxi_dir: &Path) -> bool {
-    !ffxi_dir.join("VTABLE.DAT").is_file()
-        || ffxi_dir.parent().is_some_and(|g| g.join(MARKER).is_file() || g.join(".download").is_dir())
+    if !ffxi_dir.join("VTABLE.DAT").is_file() {
+        return true;
+    }
+    ffxi_dir.parent().is_some_and(|g| g.join(MARKER).is_file())
 }
 
 /// The game folder (the one that holds `FINAL FANTASY XI`) for an install picked in the window: the
@@ -74,6 +76,8 @@ fn closing_note(phase: &str) -> &'static str {
 enum Stage {
     Ask,
     Working,
+    /// Install finished; the user chooses whether to delete staged installer volumes.
+    CleanupOffer(PathBuf),
     Done,
     Failed(String),
 }
@@ -171,7 +175,7 @@ impl FirstRun {
         let stage = match &*self.stage.lock().unwrap() {
             Stage::Ask => 0,
             Stage::Working => 1,
-            Stage::Done => 2,
+            Stage::Done | Stage::CleanupOffer(_) => 2,
             Stage::Failed(_) => 3,
         };
         if stage == 2 && !super::desktop::supported() {

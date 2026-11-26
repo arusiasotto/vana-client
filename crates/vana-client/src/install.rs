@@ -6,7 +6,7 @@ use crate::cabx;
 use crate::msi_db::{Database, DirResolver};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -81,6 +81,86 @@ pub fn installer_volume_ok(path: &Path, part: usize) -> Result<()> {
         bail!(
             "{name} is not a valid installer volume (no RAR data). Remove it and download again; failed downloads often save an HTML page with the right filename."
         );
+    }
+    Ok(())
+}
+
+/// Byte size of the five volumes when every file is present.
+pub fn installer_dir_bytes(dir: &Path) -> u64 {
+    (1..=INSTALLER_VOLUMES)
+        .filter_map(|i| {
+            let p = dir.join(installer_volume_name(i));
+            std::fs::metadata(&p).ok().map(|m| m.len())
+        })
+        .sum()
+}
+
+/// Copies or moves validated volumes into `stash` (for example `game_dir/.download`).
+pub fn stage_installer_volumes(src: &Path, stash: &Path, progress: &Progress) -> Result<()> {
+    validate_installer_dir(src)?;
+    std::fs::create_dir_all(stash)?;
+    let same = src
+        .canonicalize()
+        .ok()
+        .zip(stash.canonicalize().ok())
+        .is_some_and(|(a, b)| a == b);
+    if same {
+        return validate_installer_dir(stash);
+    }
+    let total: u64 = (1..=INSTALLER_VOLUMES)
+        .map(|i| std::fs::metadata(src.join(installer_volume_name(i))).map(|m| m.len()).unwrap_or(0))
+        .sum();
+    progress.begin("Preparing installer files", total);
+    let mut done = 0u64;
+    for i in 1..=INSTALLER_VOLUMES {
+        let name = installer_volume_name(i);
+        let from = src.join(&name);
+        let dest = stash.join(&name);
+        installer_volume_ok(&from, i)?;
+        if dest.is_file() {
+            installer_volume_ok(&dest, i)?;
+            done += std::fs::metadata(&dest)?.len();
+            progress.done.store(done, Ordering::Relaxed);
+            continue;
+        }
+        *progress.phase.lock().unwrap() = format!("Staging {name}");
+        if std::fs::rename(&from, &dest).is_err() {
+            copy_file_progress(&from, &dest, progress, &mut done)?;
+            std::fs::remove_file(&from).with_context(|| format!("removing {name} after copy"))?;
+        } else {
+            done += std::fs::metadata(&dest)?.len();
+            progress.done.store(done, Ordering::Relaxed);
+        }
+    }
+    validate_installer_dir(stash)
+}
+
+fn copy_file_progress(from: &Path, to: &Path, progress: &Progress, done: &mut u64) -> Result<()> {
+    let mut src = std::fs::File::open(from)?;
+    let mut dst = std::fs::File::create(to)?;
+    let mut buf = [0u8; 1024 * 1024];
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&buf[..n])?;
+        *done += n as u64;
+        progress.done.store(*done, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Deletes the five FFXIFullSetup volumes and removes `dir` when empty.
+pub fn remove_installer_volumes(dir: &Path) -> Result<()> {
+    for i in 1..=INSTALLER_VOLUMES {
+        let p = dir.join(installer_volume_name(i));
+        if p.is_file() {
+            std::fs::remove_file(&p).with_context(|| format!("removing {}", p.display()))?;
+        }
+    }
+    if dir.exists() {
+        let _ = std::fs::remove_dir(dir);
     }
     Ok(())
 }

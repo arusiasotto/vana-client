@@ -118,7 +118,7 @@ impl FirstRun {
             if crate::config::in_app_storage(&game_dir) { crate::config::default_game_dir() } else { game_dir };
         Self {
             path_input: game_dir.display().to_string(),
-            archive_path_input: downloads().join("FFXI-setup").display().to_string(),
+            archive_path_input: downloads().display().to_string(),
             game_dir,
             stage: Arc::new(Mutex::new(Stage::Ask)),
             progress: Arc::new(Progress::default()),
@@ -190,11 +190,10 @@ impl FirstRun {
         let (game_dir, stage, progress) = (self.game_dir.clone(), self.stage.clone(), self.progress.clone());
         std::thread::spawn(move || {
             // A panic would leave the window on its progress bar for good.
-            let r =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| install(&game_dir, &archive_dir, &progress)))
-                    .unwrap_or_else(|_| Err(anyhow::anyhow!("the install stopped unexpectedly (see logcat)")));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| install(&game_dir, &archive_dir, &progress)))
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("the install stopped unexpectedly (see logcat)")));
             *stage.lock().unwrap() = match r {
-                Ok(()) => Stage::Done,
+                Ok(stash) => Stage::CleanupOffer(stash),
                 Err(e) => {
                     log::warn!("first start: {e:#}");
                     Stage::Failed(format!("{e:#}"))
@@ -253,12 +252,24 @@ impl FirstRun {
     /// In-app folder list. Returns true when it drew (the rest of the form stays hidden).
     fn folder_browser(&mut self, ui: &mut egui::Ui) -> bool {
         let Some(what) = self.browse else { return false };
-        ui.label(egui::RichText::new("Choose a folder").size(15.0));
+        let title = match what {
+            Browse::Archives => "Choose the folder with your FFXI installer downloads",
+            _ => "Choose a folder",
+        };
+        ui.label(egui::RichText::new(title).size(15.0));
         if !self.note.is_empty() {
             ui.label(egui::RichText::new(&self.note).size(13.0).color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)));
         }
         let cwd = self.browser_at.clone();
+        if what == Browse::Archives {
+            if ui.button("Open Download folder").clicked() {
+                self.browser_at = downloads();
+            }
+        }
         let listing = crate::client::folder_pick::dir_listing(&cwd);
+        if what == Browse::Archives {
+            self.archives_files_hint(ui, &cwd);
+        }
         match crate::client::folder_pick::browser(ui, &cwd, listing) {
             crate::client::folder_pick::BrowserAction::Up => {
                 self.browser_at = crate::client::folder_pick::go_up(&cwd);
@@ -277,11 +288,39 @@ impl FirstRun {
         true
     }
 
+    fn archives_files_hint(&self, ui: &mut egui::Ui, cwd: &Path) {
+        ui.label(egui::RichText::new("Installer files here:").size(12.0).weak());
+        let mut any = false;
+        for i in 1..=VOLUMES {
+            let p = cwd.join(volume(i));
+            if !p.is_file() {
+                continue;
+            }
+            any = true;
+            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            let ok = crate::install::installer_volume_ok(&p, i).is_ok();
+            let mark = if ok { "✓" } else { "✗" };
+            let gb = size as f64 / 1e9;
+            ui.label(
+                egui::RichText::new(format!("{mark} {} ({gb:.2} GB)", volume(i)))
+                    .size(12.0)
+                    .font(egui::FontId::monospace(11.0)),
+            );
+        }
+        if !any {
+            ui.label(egui::RichText::new("None yet — pick the folder or a subfolder under Download.").weak().size(11.0));
+        }
+    }
+
     /// The window (egui: no game art exists yet).
     pub fn ui(&mut self, ctx: &egui::Context) -> Action {
         let failed = match &*self.stage.lock().unwrap() {
             Stage::Done => return Action::Ready,
             Stage::Failed(e) => Some(e.clone()),
+            _ => None,
+        };
+        let cleanup = match &*self.stage.lock().unwrap() {
+            Stage::CleanupOffer(dir) => Some(dir.clone()),
             _ => None,
         };
         let working = matches!(&*self.stage.lock().unwrap(), Stage::Working);
@@ -307,12 +346,13 @@ impl FirstRun {
                             .color(egui::Color32::from_rgb(0xe8, 0xc8, 0x80)),
                     );
                     ui.add_space(4.0);
-                    match (&failed, working) {
-                        (Some(e), _) => self.failed_ui(ui, e, &mut action),
-                        (None, true) => self.progress_ui(ui),
-                        (None, false) => self.ask_ui_scroll(ui, &mut action),
+                    match (&failed, working, &cleanup) {
+                        (Some(e), _, _) => self.failed_ui(ui, e, &mut action),
+                        (None, true, _) => self.progress_ui(ui),
+                        (None, false, Some(stash)) => self.cleanup_offer_ui(ui, stash, &mut action),
+                        (None, false, None) => self.ask_ui_scroll(ui, &mut action),
                     }
-                    if failed.is_none() && !working && self.browse.is_none() {
+                    if failed.is_none() && cleanup.is_none() && !working && self.browse.is_none() {
                         self.ask_ui_start_row(ui, &mut action);
                     }
                 });
@@ -389,6 +429,27 @@ impl FirstRun {
             ui.label(egui::RichText::new(&self.note).size(13.0).color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)));
         }
         ui.add_space(8.0);
+        ui.label(egui::RichText::new("Installer downloads").size(14.0));
+        ui.label(
+            egui::RichText::new(short_path(&archives))
+                .size(13.0)
+                .font(egui::FontId::monospace(13.0)),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("Browse Download").clicked() {
+                self.note.clear();
+                self.open_browser(Browse::Archives, &archives);
+            }
+            let n = installer_parts_in(&archives);
+            if n > 0 {
+                ui.label(
+                    egui::RichText::new(format!("{n}/{VOLUMES} valid"))
+                        .size(12.0)
+                        .color(if n == VOLUMES { green } else { egui::Color32::from_rgb(0xe0, 0xa0, 0x70) }),
+                );
+            }
+        });
+        ui.add_space(8.0);
         ui.label(egui::RichText::new("Install to").size(14.0));
         ui.label(egui::RichText::new(short_path(&install_parent)).size(13.0).font(egui::FontId::monospace(13.0)));
         if ui.button("Browse install folder").clicked() {
@@ -446,6 +507,33 @@ impl FirstRun {
         });
     }
 
+    fn cleanup_offer_ui(&mut self, ui: &mut egui::Ui, stash: &Path, action: &mut Action) {
+        ui.label(egui::RichText::new("Installation finished.").size(16.0));
+        let gb = crate::install::installer_dir_bytes(stash) as f64 / 1e9;
+        ui.label(
+            egui::RichText::new(format!(
+                "The five installer volumes are in {} ({gb:.1} GB). Delete them only if you accept — they are not removed automatically.",
+                short_path(stash)
+            ))
+            .size(13.0)
+            .weak(),
+        );
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button(egui::RichText::new("Delete installer files").size(16.0)).clicked() {
+                if let Err(e) = crate::install::remove_installer_volumes(stash) {
+                    log::warn!("installer cleanup: {e:#}");
+                }
+                *self.stage.lock().unwrap() = Stage::Done;
+                *action = Action::Ready;
+            }
+            if ui.button(egui::RichText::new("Keep files").size(16.0)).clicked() {
+                *self.stage.lock().unwrap() = Stage::Done;
+                *action = Action::Ready;
+            }
+        });
+    }
+
     fn failed_ui(&mut self, ui: &mut egui::Ui, failed: &str, action: &mut Action) {
         ui.label("It did not finish:");
         ui.label(egui::RichText::new(failed).weak().size(13.0));
@@ -491,12 +579,14 @@ fn poll_installer_ready(parent: &Path, archives: &Path) -> Option<bool> {
     }
 }
 
-/// Install from the volumes in `archive_dir` (left in place), update, clean up.
-fn install(game_dir: &Path, archive_dir: &Path, p: &Arc<Progress>) -> Result<()> {
+/// Stage volumes under `game_dir/.download`, install, patch; caller offers to delete the stash.
+fn install(game_dir: &Path, archive_dir: &Path, p: &Arc<Progress>) -> Result<PathBuf> {
+    let stash = game_dir.join(".download");
     std::fs::write(game_dir.join(MARKER), b"")?;
+    crate::install::stage_installer_volumes(archive_dir, &stash, p)?;
     let root = game_dir.join("FINAL FANTASY XI");
     let opts = crate::install::Options {
-        source: archive_dir.join(volume(1)),
+        source: stash.join(volume(1)),
         staging: game_dir.join(".staging"),
         game_dir: game_dir.to_path_buf(),
         verify: true,
@@ -508,10 +598,10 @@ fn install(game_dir: &Path, archive_dir: &Path, p: &Arc<Progress>) -> Result<()>
     let total: u64 = plan.todo.iter().map(|t| t.2).sum();
     let n = plan.todo.len();
     crate::patch::apply(&root, &plan, 4, &|f, b| set(p, format!("Updating game files ({f} of {n})"), b, total))?;
-    set(p, "Cleaning up", 0, 0);
+    set(p, "Installed", 0, 0);
     let _ = std::fs::remove_dir_all(game_dir.join(".staging"));
     std::fs::remove_file(game_dir.join(MARKER))?;
-    Ok(())
+    Ok(stash)
 }
 
 #[cfg(test)]
