@@ -99,6 +99,12 @@ pub fn parse_host_port(host_port: &str) -> Option<(String, u16)> {
     Some((host.trim().to_ascii_lowercase(), port))
 }
 
+/// Login / Catalogue overlay: every catalogue key for this server (search IP when cfg.server is an address).
+pub fn lobby_catalogue_keys(cfg: &crate::config::Config) -> Vec<String> {
+    let search = cfg.server.trim().parse::<std::net::Ipv4Addr>().ok().map(|ip| (ip, cfg.auth_port));
+    crate::config::active_server_keys(cfg, search)
+}
+
 pub fn key_from_host_port(host: &str, port: u16) -> String {
     if host.parse::<std::net::Ipv4Addr>().is_ok() {
         config::server_catalogue_key_search(host.parse().unwrap(), port)
@@ -110,6 +116,17 @@ pub fn key_from_host_port(host: &str, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[test]
+    fn lobby_keys_use_search_when_server_is_ip() {
+        let mut cfg = crate::config::Config::default();
+        cfg.server = "127.0.0.1".into();
+        cfg.auth_port = 54001;
+        let keys = lobby_catalogue_keys(&cfg);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], "127.0.0.1-54001");
+    }
 
     #[test]
     fn normalize_github_url() {

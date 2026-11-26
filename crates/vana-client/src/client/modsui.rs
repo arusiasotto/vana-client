@@ -173,7 +173,7 @@ impl Mods {
         self.server_list_error = None;
         self.server_dat_error = None;
         for list in [catalogue::List::Mods, catalogue::List::Dats] {
-            catalogue::clear_cache(catalogue::Source::Server, list);
+            catalogue::clear_cache(catalogue::Source::Server, list, &keys);
         }
         let sk = keys.clone();
         let (ltx, lrx) = channel();
@@ -346,10 +346,15 @@ impl Mods {
         self.install_entry(at, true)
     }
 
-    /// The newer version the catalogue has of installed mod or pack `id`.
+    /// The newer version the catalogue has of installed mod or pack `id` (same source it was installed from).
     pub fn update_for(&self, id: &str) -> Option<&str> {
+        let src = catalogue::installed_source(&crate::config::mods_dir(), id);
+        let rows: &[(&Entry, Option<bool>)] = match src {
+            Some(catalogue::Source::Server) => &self.server_entries,
+            Some(catalogue::Source::Standard) | None => &self.entries,
+        };
         let mut best: Option<&str> = None;
-        for e in self.entries.iter().chain(self.server_entries.iter()) {
+        for e in rows {
             if e.1 != Some(true) || !e.0.id.eq_ignore_ascii_case(id) {
                 continue;
             }
@@ -394,17 +399,20 @@ impl Mods {
     pub fn update(&mut self, id: &str) -> bool {
         let at_std = self.entries.iter().position(|e| e.1 == Some(true) && e.0.id.eq_ignore_ascii_case(id));
         let at_srv = self.server_entries.iter().position(|e| e.1 == Some(true) && e.0.id.eq_ignore_ascii_case(id));
-        let pick = match (at_std, at_srv) {
-            (Some(a), Some(b)) => {
+        let src = catalogue::installed_source(&crate::config::mods_dir(), id);
+        let pick = match (at_std, at_srv, src) {
+            (Some(a), Some(b), Some(catalogue::Source::Server)) => (b, true),
+            (Some(a), Some(b), Some(catalogue::Source::Standard)) => (a, false),
+            (Some(a), Some(b), None) => {
                 if super::updater::newer(&self.server_entries[b].0.version, &self.entries[a].0.version) {
                     (b, true)
                 } else {
                     (a, false)
                 }
             }
-            (Some(a), None) => (a, false),
-            (None, Some(b)) => (b, true),
-            (None, None) => return false,
+            (Some(a), None, _) => (a, false),
+            (None, Some(b), _) => (b, true),
+            (None, None, _) => return false,
         };
         if self.installing.as_ref().is_some_and(|i| i.0.eq_ignore_ascii_case(id)) || self.queued(id) {
             return true;
@@ -453,7 +461,8 @@ impl Mods {
         let pr = progress.clone();
         let id = e.id.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(catalogue::install(&e, &catalogue::root_of(&e), &pr));
+            let source = if server { catalogue::Source::Server } else { catalogue::Source::Standard };
+            let _ = tx.send(catalogue::install(&e, &catalogue::root_of(&e), &pr, source));
         });
         self.installing = Some((id, progress, rx));
         true

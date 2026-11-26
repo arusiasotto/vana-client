@@ -1407,6 +1407,10 @@ fn login_window(
                     chosen = Some(LoginChoice::Catalogue);
                     sounds.push(crate::audio::Ui::Select);
                 }
+                egui::Key::Enter if *focus < first => {
+                    chosen = enabled[0].then_some(LoginChoice::LogIn);
+                    sounds.push(if enabled[0] { crate::audio::Ui::Select } else { crate::audio::Ui::Error });
+                }
                 egui::Key::Enter if *focus >= first && *focus < first + 3 => {
                     let k = *focus - first;
                     chosen = enabled[k].then_some(CHOICES[k]);
@@ -1449,6 +1453,12 @@ fn login_window(
          trusting it."
     } else if *focus == cat {
         "Set the GitHub repository for this server's mod and DAT catalogue."
+    } else if *focus == twofa && !filled {
+        if playonline {
+            "Enter the PlayOnline ID and password and the Square Enix ID and password first."
+        } else {
+            "Enter the server, account name and password first."
+        }
     } else if *focus >= first && *focus < first + 3 && !enabled[*focus - first] {
         if playonline {
             "Enter the PlayOnline ID and password and the Square Enix ID and password first."
@@ -16749,7 +16759,7 @@ impl App {
                         Some(LoginChoice::Exit) => self.exit_requested = true,
                         Some(LoginChoice::TwoFa) => self.twofa = Some(twofa::TwoFa::new()),
                         Some(LoginChoice::Catalogue) if !is_playonline(&self.cfg.server) => {
-                            let keys = crate::config::active_server_keys(&self.cfg, None);
+                            let keys = catalogue_cfg::lobby_catalogue_keys(&self.cfg);
                             self.login_catalogue = Some(login_catalogue::LoginCatalogue::new(keys));
                         }
                         Some(LoginChoice::Update) => {

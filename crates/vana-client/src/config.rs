@@ -269,6 +269,7 @@ pub fn expand_server_catalogue(repo: &str, list_file: &str) -> Option<String> {
     }
     if s.contains('/') && !s.starts_with('/') {
         return Some(format!("https://raw.githubusercontent.com/{s}/master/catalogue/{list_file}"));
+        // `fetch_http_text` tries `main` when `master` 404s.
     }
     None
 }

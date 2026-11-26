@@ -13,8 +13,49 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// The list's format this client reads.
 const FORMAT: u32 = 1;
 
-/// In a folder the catalogue installed: the version.
+/// In a folder the catalogue installed: line 1 version, line 2 `standard` or `server`.
 const MARK: &str = ".catalogue";
+
+fn write_mark(dir: &Path, version: &str, source: Source) {
+    let tag = if source == Source::Server { "server" } else { "standard" };
+    let _ = std::fs::write(dir.join(MARK), format!("{version}\n{tag}"));
+}
+
+fn mark_version(text: &str) -> &str {
+    text.lines().next().unwrap_or("").trim()
+}
+
+fn mark_source(text: &str) -> Option<Source> {
+    match text.lines().nth(1).map(str::trim) {
+        Some("server") => Some(Source::Server),
+        Some("standard") => Some(Source::Standard),
+        _ => None,
+    }
+}
+
+fn server_cache_key(server_keys: &[String]) -> String {
+    server_keys.first().cloned().unwrap_or_else(|| "_default".into())
+}
+
+fn cache_path(source: Source, list: List, server_keys: &[String]) -> std::path::PathBuf {
+    match source {
+        Source::Standard => crate::config::catalogue_dir().join(source.cache_name(list)),
+        Source::Server => crate::config::catalogue_dir()
+            .join("server")
+            .join(server_cache_key(server_keys))
+            .join(list.file()),
+    }
+}
+
+fn fetch_http_text(url: &str) -> Result<String> {
+    match super::updater::get_text(url) {
+        Ok(t) => Ok(t),
+        Err(e) => {
+            let alt = url.replace("/master/", "/main/");
+            if alt != url { super::updater::get_text(&alt).map_err(|_| e) } else { Err(e) }
+        }
+    }
+}
 
 /// Hosts an archive may come from (VANA_MOD_CATALOGUE lifts this for test lists).
 const HOSTS: [&str; 3] = ["https://github.com/", "https://raw.githubusercontent.com/", "https://codeload.github.com/"];
@@ -220,11 +261,11 @@ fn fetch_all(source: Source, list: List, server_keys: &[String]) -> Result<Vec<E
     let Some(fetch_url) = resolved else {
         return Ok(Vec::new());
     };
-    let kept = crate::config::catalogue_dir().join(source.cache_name(list));
+    let kept = cache_path(source, list, server_keys);
     let got = if !fetch_url.starts_with("http") {
         std::fs::read_to_string(&fetch_url).with_context(|| fetch_url.clone())
     } else {
-        super::updater::get_text(&fetch_url)
+        fetch_http_text(&fetch_url)
     };
     let keep = source == Source::Standard && std::env::var(list.env()).is_err()
         || source == Source::Server && std::env::var(list.server_env()).is_err();
@@ -239,14 +280,15 @@ fn fetch_all(source: Source, list: List, server_keys: &[String]) -> Result<Vec<E
         }
         Err(e) if keep => {
             log::info!("mod catalogue ({source:?}): {e:#}; using the last copy");
-            parse(&std::fs::read_to_string(&kept).map_err(|_| e)?, false)
+            parse(&std::fs::read_to_string(&kept).map_err(|_| e)?, any_host)
         }
         Err(e) => Err(e),
     }
 }
 
-pub fn clear_cache(source: Source, list: List) {
-    let _ = std::fs::remove_file(crate::config::catalogue_dir().join(source.cache_name(list)));
+pub fn clear_cache(source: Source, list: List, server_keys: &[String]) {
+    let path = cache_path(source, list, server_keys);
+    let _ = std::fs::remove_file(&path);
 }
 
 /// The material pack's id: its folder in the data folder (material::dir).
@@ -264,10 +306,22 @@ pub fn installed(root: &Path, id: &str) -> Option<String> {
         return None;
     }
     if let Ok(v) = std::fs::read_to_string(dir.join(MARK)) {
-        return Some(v.trim().to_string());
+        return Some(mark_version(&v).to_string());
     }
     let text = std::fs::read_to_string(dir.join("mod.toml")).ok();
     Some(text.and_then(|t| modpack::lua_manifest(&t, id).ok()).map_or_else(String::new, |m| m.1))
+}
+
+/// Which catalogue installed the folder (`standard` unless the mark says `server`).
+pub fn installed_source(root: &Path, id: &str) -> Option<Source> {
+    let dir = root.join(id);
+    if !dir.is_dir() {
+        return None;
+    }
+    let Ok(text) = std::fs::read_to_string(dir.join(MARK)) else {
+        return Some(Source::Standard);
+    };
+    mark_source(&text).or(Some(Source::Standard))
 }
 
 /// Whether to offer the entry: Some(false) to install, Some(true) to update (a newer version than `have`).
@@ -323,7 +377,7 @@ fn fetch_files(e: &Entry, work: &Path, progress: &AtomicU32) -> Result<()> {
 /// Downloads, checks and unpacks an entry's archives (or puts its files) into `root/<id>` (an older copy replaced).
 /// `progress` counts per mille: each archive's download is four fifths of its share, its unpacking the rest. A standard
 /// Lua mod is given the permissions it asks for. Returns the folder's name.
-pub fn install(e: &Entry, root: &Path, progress: &AtomicU32) -> Result<String> {
+pub fn install(e: &Entry, root: &Path, progress: &AtomicU32, source: Source) -> Result<String> {
     if e.files.iter().any(|f| f.path.is_some()) {
         std::fs::create_dir_all(root)?;
         let work = modpack::work_dir(root, &e.id)?;
@@ -331,9 +385,11 @@ pub fn install(e: &Entry, root: &Path, progress: &AtomicU32) -> Result<String> {
             let _ = std::fs::remove_dir_all(&work);
             return Err(err);
         }
-        std::fs::write(work.join(MARK), &e.version)?;
+        write_mark(&work, &e.version, source);
         modpack::place(&work, &root.join(&e.id))?;
-        super::lua::grant_manifest(&root.join(&e.id));
+        if source == Source::Standard {
+            super::lua::grant_manifest(&root.join(&e.id));
+        }
         progress.store(1000, Ordering::Relaxed);
         log::info!("mods: installed {} {} from the standard mods", e.id, e.version);
         return Ok(e.id.clone());
@@ -380,10 +436,11 @@ pub fn install(e: &Entry, root: &Path, progress: &AtomicU32) -> Result<String> {
         let _ = std::fs::remove_dir_all(&work);
         return Err(err);
     }
-    std::fs::write(work.join(MARK), &e.version)?;
+    write_mark(&work, &e.version, source);
     modpack::place(&work, &root.join(&e.id))?;
     progress.store(1000, Ordering::Relaxed);
-    log::info!("mods: installed {} {} from the catalogue", e.id, e.version);
+    let from = if source == Source::Server { "a server catalogue" } else { "the standard mods" };
+    log::info!("mods: installed {} {} from {}", e.id, e.version, from);
     Ok(e.id.clone())
 }
 
