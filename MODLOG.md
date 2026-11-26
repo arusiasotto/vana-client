@@ -1611,6 +1611,12 @@ Decompile: ~/ffxi/lab/creatorwork/ghidra/all.c.
 - 0x02A: UniqueNo @4, num[4] @8, ActIndex @0x18, MesNum @0x1a, Type @0x1c, Flag @0x1d, String[32] @0x1e.
 - Ids are mapped with MsgShift (only zones whose dialogue file matches). num[0..3] fill {num}; names come from
   dat/names.rs.
+- 0x02A's String (LAB_100a12a0, current build): with Flag @0x1d 0 and String set it is copied (0x20 bytes) to
+  0x10488d08, the line's string 0 (the 0x1c code; 0x043 fills the same buffer from sName), the buffer saved before
+  and put back after. With Flag set it names the speaker: always with MesNum bit 15 set, and with it clear only
+  when UniqueNo is 0; else the speaker is the entity at ActIndex. Ours took String as the speaker always, so retail's
+  Dynamis "{string0}'s attack staggers the fiend!" (Dynamis - Bastok 7355) lost the name. LSB sends Flag 0 with the
+  entity's own name in String (ShowName), so its lines read the same either way.
 - **Gaps in the bundled map.** Zone 230 LSB 6439 "Obtained: <item>." is DAT 6432, which is -7, the next
   segment's delta. 6433 and 6434 are both "Obtained {num0} gil", so the generator had no unique anchor. The
   client takes the next segment's delta within 8 ids (inferred rule; unit test text_gap).
@@ -22657,8 +22663,8 @@ From FFXiMain.dll (Steven's unpacked copy, full_text.asm / all_decomp.c).
 - Not retail. The modern interface's Config window (client/modern/config.rs) becomes "Settings": retail's Config list
   (Gameplay, Chat Filters, Font Colors, Misc. 1..4, Effects, Mouse/Cam., Global) and our Settings / Extras entries are
   replaced by fourteen topic pages in five groups (Game: Gameplay, Interface, Chat & Log, Maps & Timers; Graphics:
-  Display, Image Quality, Lighting & Shadows, Characters & World, Effects & Colour; Sound; Input: Mouse, Camera & Keys,
-  Controller; System: Startup & Account, Mods).
+  Display, Image Quality, Lighting & Shadows, Characters & World, Effects & Colour; Sound; Input: Mouse & Cursor,
+  Camera & Keys, Controller; System: Startup & Account, Mods).
 - `PAGES` lists each page's lines: a heading, retail's setting by its Config page and first control (its captions,
   options and help still read from the page's layout), ours by its row's label (`SettingsUi::item` / `item_set` find a
   row of Settings or Extras whatever page that state is on), or a button opening Chat Filters, Effects, Font Colors,
@@ -23589,6 +23595,8 @@ still gave `cor`. Both now go through actmotion::sdep_stand.
   same bits as the classic sort window's Auto). Manual Sort clears those bits and starts storage's Manual Sort on that
   pane: a pick, then the row to put it at (FUN_101f0b30's rules), within one part. Num+ (FUN_101db690 case 8) focuses
   the pair: Left / Right between them, Enter takes one.
+- The pane titles ("Mog Wardrobe  232 / 640") sit on their own line, the sort buttons on the next (2026-11-24):
+  beside them the eight wardrobes' counts ran under Auto-sort.
 
 ## s2c 0x03B: an NPC line in the event message window (2026-11-08)
 
@@ -24659,6 +24667,33 @@ Addresses are 30261006_0's.
 - Seen live: Lnxcsfix as RDM 99 with Excalibur 119 III: `!hide` translucent (after a bot's Cure tasks on her ended),
   `!hide` again solid with the aura, `!hide status` 0.
 
+## Ctrl / Alt shortcuts: the common test (2026-11-17)
+
+Addresses are 30261006_0's.
+
+- The shortcut records (built in FUN_101ae140) run each frame in the field (FUN_101ae3e0), each through FUN_101adf20:
+  the press edge, then its condition set (FUN_101ae010, the set number from the record's +0x100):
+  - Set 1, A "/attack" (0x3b) and H "/heal" (0x3d): no event hold (FUN_10087070(0)), plus the common part.
+  - Set 4, E Equipment (0x36), I Items (0x39), C check / talk (0x3f) and M / J / W / B (0x41 / 0x7f / 0x80 / 0x9f):
+    no event hold, the UI shown, no window with flag 0x20000 (FUN_1015ecc0), plus the common part.
+  - The common part: no sub-target prompt (T +0x59, +0xc4; T = DAT_1057876c), not dead (own status not 2 / 3), no
+    Num+ focus (T +0x68 == 0: neither the log nor the status icons), not in Mog House layout mode (DAT_106631d4 +0x1c
+    == 0).
+- Ours checked M / J / W / B only for an event, death and the prompt, and A / H / E / I / C for nothing.
+  - Alt+A under a forgotten prompt sent /attack. Then the battle menu opened at the engage and cancelled the prompt.
+  - The cancel put back the prompt's saved target and lock: the monster that died before. It was dropped at once
+    with the lock (user, 2026-11-17).
+  - The prompt in that run was most likely the engaged battle menu's Switch Target (Enter on its first row) *(inf:
+    from the key log)*.
+- All of them now share one test (mod.rs shortcut_ok): no event, alive, no prompt (or party cursor), no Num+ focus
+  (log_active, log_focus != 2), no layout; E / I / C / M / J / W / B also no 0x20000 window (World.main_open). The
+  UI-shown part needs nothing: with the UI hidden no key arm runs.
+- egui-winit turns Ctrl+C into a Copy event before any key event, so the Copy arm takes the same test.
+- Opening a prompt is now logged with its callback and the saved target and lock.
+- Seen live: Lnxcsfix with a `/ma "Cure" <st>` prompt up: Alt+A sent nothing; after Escape it sent /attack. Ctrl+C
+  under the prompt checked nothing (after Escape: "examines you"); Ctrl+M over the map opened nothing (after Escape:
+  the magic list).
+
 ## Distortion reads the scene in place (2026-11-18)
 
 - User report: many effects, fire spells most, looked like they played at a low frame rate.
@@ -24762,3 +24797,266 @@ Addresses are 30261006_0's.
   skill file that no other actor holds (extra list or skill_want). Test fx::tasks::tests::released_skill_file_takes_its_clones.
 - Seen live (Lnxcsfix, Mithra DRK 75, Mythril Scythe, a Snipper in Valkurm Dunes): the sphere goes at +5.4 s, when
   "skill files dropped" is logged; before, it sat by the corpse until the despawn about 15 s later.
+
+## Records of Eminence: the search, and the modern Journal follows the log (2026-11-19)
+
+Ours (not retail): client/roe.rs (follow_tree, search_all / search_rows / search_pick), modern/journal.rs (roe_search_open),
+modern/search.rs (the "roe" list).
+
+- LSB sends the whole log (s2c 0x112, Offset 0..3) on every completion (roeutils::SetEminenceRecordCompletion), and a
+  record flagged `retro` in roe_records.lua completes as it is taken when its condition already holds (the Windurst
+  mission chain 1355.. does, with its item reward). The four parts land in one frame, so FUN_10231080's wait (flags
+  0x110, 0x111 and the whole 0x112, rows built again from row 0 when one goes) never sees the log go, and an open
+  category keeps hiding the follow-up a completion opens until it is left and entered again. Retail servers do the
+  same: in retail captures (Memoria, 2026-11-17, 9 sessions) 80 of 89 0x112 bursts carry parts 0..3 at one timestamp,
+  including both bursts with no 0x110 / 0x111 beside them (7 split by 1-2 ms, 2 at zone-in by 342 / 375 ms). Part 0
+  clears the log bit and part 3 sets it (quests.rs), so the stale list is retail's too and the classic window keeps it.
+- The modern Journal (ours) follows the log: once built, mode 3's rows are worked out again each frame from the
+  current category (FUN_10231000 over its 28 children at most) and replace the rows when they differ, the cursor kept
+  on its row (follow_tree, only with the modern UI on; test roe::tests::refollow_keeps_the_cursor_row). This covers
+  every condition input (the log, job levels, zones, skills, Unity, the 0x110 bytes). Seen live: Lnxcsfix in Tutorial
+  with 937 (Alter Ego: Joachim) not done, completed by a server timer (setEminenceCompleted), and Intermediate came
+  into the open list under Basics with the cursor left on Basics.
+- The modern Journal's Records of Eminence tab (its entries or any of its lists) is one of the search lists: typing
+  searches every objective of the tree, once each. A shown one has its categories as the note ("Tutorial › Basics"); a
+  hidden one (a condition failing on its way: the walk tests each condition alone) is greyed with the objective that
+  opens it ("after An Eminent Scholar 3", condition type 1) or "hidden"; a set record outside the tree "current".
+  A set record the tree hides (a condition that stopped passing after it was set: the rotation, type 6, or the Unity
+  leader, type 7, which reads 0 until the recasts come after login) is "current" too and opens Current
+  (set_in_current, test roe::tests::set_objective_hidden_in_the_tree_is_current).
+  Shown hits rank before hidden ones among equal scores.
+- A pick: a set objective opens Current, any other the Objective List with the stack built down its categories (each
+  parent left on the row that leads there, for Escape), the cursor on it and its description and prompt as Enter
+  (Set objective? on Yes). The open sends c2s 0x117 and clears the 0x110 flag (FUN_100871a0), so the rows come a frame
+  or more later: List.want holds the pick until they are built. A hidden one opens the deepest category the list
+  reaches on its way, the cursor on row 0. Seen live (Lnxcsfix): "always" found Always Stand on 117 greyed, after An
+  Eminent Scholar 3, and Enter opened Tutorial > Intermediate; "first step" found First Step Forward (Tutorial ›
+  Basics) and Enter put the cursor on it with Set objective? up.
+- LSB refuses a record its Lua lacks: "The record #N is not implemented at this time." (RoE System, NS say); the
+  user's log showed 1064 taken three times for that reason.
+
+## Auto-sort: the list order kept through a zone change (2026-11-19)
+
+- Ours: the zone-in reset of the inventory (LSB re-sends every container after c2s 0x00C) emptied the list order too,
+  so the resend refilled each list in slot order, and #21 had kept our keep-sorted path off for the inventory
+  whenever Auto-sort (config 0x9a) was on.
+- Retail's view (30261006_0): FUN_1021c380 syncs it with the slots each frame the inventory has settled. FUN_1021c210
+  compares the row's item id (record u16 @+0x80 + slot * 0x18) with the slot's: the same id keeps its row, another
+  id drops it (FUN_1021c680) and appends it (FUN_1021c5b0); an emptied slot drops its row. Append and drop both set
+  the view record's +8 to 0x52 (0x1021c654 / 0x1021c764). FUN_1021c4c0 then compares the free slots (FUN_100eb8d0)
+  with +8; 0x52 is above any free count, so with Auto-sort (+5) on and no Manual hold (+6) every frame whose sync
+  added or dropped a row sorts (FUN_1021c7c0) and clears the hold. The login load (every slot appended) is sorted by
+  retail's own Auto-sort, and so is an emptied slot (an item used up, stacks merged).
+- Now the view outlives the reset: Inventory::order with the item id each row took (viewed_ids). A refilled slot with
+  its item keeps its place, one with another item (LSB pushVisitedFurniture fills the Mog Safe with the host's
+  furniture on a Mog House visit) and a new one go last, and at the settle (0x01D State 1) the slots the resend left
+  empty in the loaded containers leave it (Inventory::prune_order). Appends and drops set Inventory::view_changed, and
+  retail_auto_sort compares against 0x52 when the inventory's bit is set. A (re)appended row also counts as new for
+  the keep-sorted path, which stays off for the inventory while 0x9a is on.
+- Tests: items::order_tests::kept_order_survives_a_resend, changed_item_goes_last, view_change_sorts.
+- Seen live (Lnxcsfix, slots pearlsack / wind crystal / cotton cloth / cipher), before the 0x52 reset: sorted at
+  login, still sorted after zoning to Northern San d'Oria and back.
+
+## An attack that ends a ride: the motions read the held status (2026-11-19)
+
+- LSB takes an attack (c2s 0x01A category 2) while mounted: DelStatusEffectSilent(Mounted), then Engage, so our status
+  goes 5 -> 1 in one update with no 0 between.
+- The ride machine (FUN_1008b460) holds the applied status +0x170 at the riding one through the stand (state 0xf) and
+  `coff` (0x10), and the status motion picker FUN_100c8bb0 reads its status through FUN_10084390, which returns that
+  +0x170. Ours read the raw status in actmotion (status_motion_posed and status()): with the walk held for the stand
+  (ride::dismounting), an engaged rider picked battle motions and loaded the battle files, so the riding stand `?hi`
+  could be late or never come. The user's run (a gear-swapping DRK holding forward) swapped riding and battle files
+  back and forth for the whole fight: the chocobo stayed and the walk stayed held.
+- Now both take ride::applied: the riding stand plays the frame the input stops, `coff` runs, and the engage (battle
+  files, the draw "in N") starts once the ride has ended *(inferred: retail's engage states of the same machine wait
+  the same way)*. Seen live (Lnxcsfix on a chocobo in West Ronfaure, numpad 8 held, Ctrl+A on a Forest Hare): `chi`
+  and `coff` in the same frame, battle files 3.1 s later when `coff` ended, walking and hitting the hare after the
+  draw.
+
+## Material Maps: normal, roughness and metal maps for the textures (ours, not retail; 2026-11-20)
+
+User request: generate normal, roughness and metal maps for our HD pack and use them. Retail has no such maps; its
+only per-pixel relief is config 0017's Bp height maps on some zones' walls ("Config tool 0017").
+- Maps: PBRify Remix (Kim2091, CC0 models trained on CC0 ambientCG / Poly Haven materials; SPAN, 1x) makes the
+  normal map (DirectX: green along +v, checked against its height model's gradients) and the roughness. Run on our
+  pack's images (Upscayl Standard 4x) at half their size (2x stock): at the full 4x the models see only soft
+  gradients and the normals come out nearly flat, at stock size they are strongest but coarse. No CC0 model makes
+  metal maps (Ubisoft's CHORD does, research-only licence), so metal is a guess for equipment textures (name `tim`)
+  only: grey or gold, bright, and smooth by the roughness map; scenery keeps metal 0 (lava and sand read as gold).
+  Only the world's and characters' images (names `model`, `ship`, `ship_f`, `tim`, `timws`: 17,060 of the 33,363) get
+  maps; effect sprites never go through these shaders.
+- `mat-pack --manifest DIR --maps DIR [--hd MODDIR] --out DIR` (texpack.rs): each image's maps once as
+  `maps/<2 hex>/<key>.vmat` (BC5 normal x / y renormalised per mip, BC5 roughness / metal, mips down to 4 texels), and
+  `index.bin` from Texture::content_key (FNV-1a over the size and the stored DXT blocks, else RGBA, by 64-bit words,
+  splitmix finish) of the stock image and of the tex-pack copy to the map key. So the maps follow the stock textures
+  and ours; another HD pack's images are not indexed.
+- Client (material.rs): config `material_maps`, Settings > Textures > Material Maps (both UIs): Off (default) / Low /
+  Medium / High, strength 1 / 2 / 3 (Uniforms modes.w; FFXI_MATERIAL_STRENGTH for the tools). Turning it on takes
+  effect at the next zone (the maps are attached as zone and character files load: dat::zone::load_scene,
+  dat::character::load_file). The pack is `<data>/materials` (VANA_MATERIALS elsewhere; FFXI_MATERIAL_MAPS=1 for the
+  offscreen tools). It follows the setting at the top of every frame (App::frame_updates), before loader tasks start:
+  opened first in draw_scene, it came after the login zone's load, so that zone kept no maps at any strength (the
+  user's log: zone 243's textures on the GPU at 04:45:37.879, the pack at .881).
+- Render: the texture group (group 1) gains bindings 2 / 3 (the two maps; a flat 1 x 1 pair for textures without),
+  so every pipeline keeps its layout. zone.wgsl surface(): the normal map in a frame from the screen derivatives of
+  the world position and uv (no vertex tangents), taken before any branch on varyings. lit_zone / lit_actor use it
+  for the sun / moon (and in two-light mode both) N.L and the point lights, add GGX specular from the roughness (F0
+  0.04, the colour for metal; faded out toward roughness 1, the flat default) under the baked vertex light (scenery)
+  or the model tint (actors), take half the diffuse for metal (no reflections), and scale the ambient by
+  1 + 0.4 (n.y - n'.y) (Y down): FFXI's ambient has no direction, so without it bumps would show only where the sun
+  falls. The strength scales the maps' tilt and that ambient term, and shades the baked vertex light (most of the
+  scenery's light) by 1 + 0.5 k (n'.L - n.L) against the key light (the sun, or the first of the two), clamped
+  0.3..2 (ours: retail's 0017 bump scales only the directional diffuse; FFXI's light is mostly baked, so the maps
+  would hardly show). A flat map changes nothing. Type-3 (Bp) meshes take our maps where their texture has them, and keep
+  retail's bump (fs_bump) where it has none (0017 on).
+- The maps need BC5 (TEXTURE_COMPRESSION_BC): without it (GL / GLES, most mobile Vulkan) the pack stays closed and
+  Settings shows Material Maps as Unavailable. Each map goes up once (Material::gpu, shared by every texture and
+  actor that uses it), streamed after its image under the upload budget (upload::TexUp / MatUp).
+- Generation: 17,060 images (1.9 Gpx at half size) in 12 min on the 7900 XTX (ROCm PyTorch, fp16, 1024 tiles);
+  the pack is 17,079 maps, 34,179 indexed textures, 4.8 GB.
+- Seen: zone-shot 230 at 15:00 at strengths 1..4: at 1 hardly a change (the ambient carries most of the light),
+  2 the walls' stone blocks and mortar lines and the floor's wear stand out, 4 the floor turns to noise.
+  flash-shot (zone 101, the Hume in body 8): the wall and the beam carved, the leather and boots a little raised
+  and glossy. Not seen live yet.
+- Fixes after the user's runs (2026-11-22):
+  - Roughness: PBRify rates every image 0.3..0.6 (median 0.42; its glossiest are the dark, flat ones such as `black`),
+    so grass and dark ground glinted under the moon like wet stone. Non-metal surfaces now stretch it to 0.6..1, and
+    the Fresnel term rises toward max(1 - roughness, F0), not 1, so rough surfaces lose the grazing sheen.
+  - Checkerboard on the ground (snow, grass, sand): the maps keep a small average tilt (median 0.03), and ground
+    tiles are one model placed at different turns (Beaucedine Glacier [S]'s 40 x 40 `ga_clro_co1_m` at 90 / 270
+    degrees), so the tilt pointed each tile a different way in the world and a low sun lit them apart. surface()
+    subtracts the map's last mip (4 x 4) before using it. Diffuse terms also use the normal with its lost component
+    along the geometric normal put back, so a bumpier map is not darker on average.
+  - Metal on actors reflects the zone's sky dome (the room's ambient without one), blurred by roughness, and takes a
+    quarter of the diffuse. Few equipment texels are tagged metal (a plate body 16 shows only specks), so armour
+    changes little until the metal maps improve.
+
+## Upscaling: FSR 3.1 and the inputs for a temporal upscaler (ours, not retail)
+
+Settings > Graphics > Upscaling (config `upscaler` 0 off / 1 FSR / 2 external, `upscale_quality`,
+`upscale_sharpness`, `upscale_debug`), in both UIs; off by default. Code `render/upscale/`, docs/upscaler-engine.md.
+
+- The frame: frame_targets makes the scene target at the render size (FFX's ratios 1.0 / 1.5 / 1.7 / 2.0 / 3.0 of the
+  window size, truncated; not of the Background size: a Background above the window would be upscaled only to be
+  shrunk again, at FSR's cost per output pixel) in the world only, not in 3D LCD Mode. The frame's bg is the render
+  size, as the effects and screen passes take it for the scene target's. `Camera::jitter` adds the Halton(2, 3) offset
+  (render pixels, sequence 8 x ratio² as FFX's) to the projection's z column (NDC x += 2 jx / w, y -= 2 jy / h; minus
+  in the matrix as clip w = -z). Everything drawn into the scene through `camera.proj` (scenery, actors, effects,
+  SSAO, shadows' receive passes) takes it; `Camera::steady` drops it.
+- finish_scene, before the scaling pass: the inputs pass (prep.wgsl) makes linear colour (scene^2.2, Rgba16Float),
+  camera motion (depth through the jittered inverse, then last and this frame's steady view-projection: previous minus
+  current, render pixels, y down), the reactive mask (largest channel change between the snapshot before the effects
+  and the end) and the composition mask (the change between the snapshots after modes 0..1 and after mode 3).
+  The snapshots are texture copies at the zone pass's existing breaks (mode 2, mode 4) and at draw_effects' start.
+- Moving things draw their own motion into an Rgba16Float target over the scene depth (LessEqual, bias -16, no
+  writes), taken where alpha is 1:
+  - skinned actors (vs_skinned_motion): this frame's pose region against last frame's, from a copy of the pose
+    buffer made after the pass (`Skinned::prev_offset`; an actor not posed last frame moves with the camera only);
+  - door and lift parts at this and last frame's part clock, a voyage's world through this and last frame's voyage
+    matrix (vs_scenery_motion, the zone's modes 0..1 with the cull's draws; every other instance is pushed past the
+    far plane). Only while a part moves (`parts_busy`, set by move_part) or the voyage matrix changes.
+  - The scenery pass ran clean with the gate forced open; a moving door, lift or voyage not seen live yet.
+  - Not covered: ship model actors (move_model_actor), furniture, effects and faded / refracting actors (those have
+    the reactive mask instead).
+- Reset: a zone change, a render size change, the first frame, a camera move over 8 units or a turn over 30° in a
+  frame.
+- FSR 3.1 (render/upscale/fsr.rs): AMD's GLSL passes (FidelityFX SDK 1.1.4, vendor/fidelityfx) through glslc,
+  spirv-opt and naga into WGSL (vendor/fidelityfx/gen.py), so they run on every wgpu backend. Changes for naga /
+  wgpu: image atomics as storage buffer atomics (the reconstructed depth, SPD's counter), SPD's coherent mip 5 mirrored
+  in a coherent buffer, SPD without subgroup operations, the samplers' bindings 1000 / 1001 moved to 98 / 99, the
+  output image given a format. The host side follows ffx_fsr3upscaler.cpp: the ping-pong halves by frame parity,
+  the first-frame and reset clears, the reconstructed depth filled with 1.0 each frame (a compute fill: wgpu clears
+  only to zero), the constants (deviceToViewDepth for standard finite depth, the jitter phase count ramp,
+  motionVectorScale 1 / render size for pixel vectors). Needs TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES (read-write
+  R8 / R16F / RG16F / RGBA8 / RGBA32F storage), FLOAT32_FILTERABLE, MEMORY_DECORATION_COHERENT, CLEAR_TEXTURE and 6
+  storage textures per stage; without them the scene draws at full size.
+- The external engine (render/upscale/external.rs): a library's `vana_upscale_dispatch` gets the inputs as Vulkan
+  handles (wgpu-hal) and a raw command buffer. wgpu 30 panics when raw (`as_hal_mut`) and wgpu recording mix in one
+  encoder, so the frame is submitted up to there and the engine's buffer goes in a submit of its own; a settle
+  dispatch first leaves the inputs in SHADER_READ_ONLY_OPTIMAL (depth DEPTH_STENCIL_READ_ONLY_OPTIMAL) and the output
+  in GENERAL (wgpu-hal's layouts by last use). Seen working with a test engine that blits colour to the output.
+- Neural rendering (config `neural`, Settings' Upscaling page, both UIs): the engine library's vana_nr_dispatch runs
+  on the render-size colour after the inputs pass and before the upscaler, writing a render-size Rgba16Float image
+  the upscaler (or with Upscaling off the scaling pass, render size = output size, no jitter) reads instead; a
+  frame it declines keeps the colour. When the library has that export, render/upscale/vkdevice.rs makes the device
+  through wgpu-hal's open_with_callback: SHADER_F16, SHADER_I16 and EXPERIMENTAL_COOPERATIVE_MATRIX for what
+  wgpu-hal enables itself (shaderFloat16 / shaderInt8 / shaderInt16, 16-bit storage, cooperativeMatrix, the memory
+  model with device scope), and on the pNext chain the struct types wgpu-hal never chains (8-bit storage,
+  synchronization2, the optional workgroup explicit layout, pipeline robustness, pipeline binaries with
+  maintenance5; the binaries' struct by hand, newer than the ash in the tree); then create_device_from_hal. A
+  missing required feature keeps the usual device and the row shows Unavailable with the reason. Seen live with the
+  DLSSNR-RDNA3 engine on the 7900 XTX: 14.5 ms of GPU a frame at 1920 x 1080.
+- /updebug [0..4] (motion, depth, reactive, composition in place of the scene) and /upcapture [frames] [label] (raw
+  f32 files and inputs.json under the data folder's captures/).
+- Checked: GPU tests (all passes build; a flat frame stays flat through three dispatches; camera vectors against the
+  pinhole shift). Live: a captured /wave emote, warping by the vectors leaves a third of the error of no warp, and the
+  reversed sign is worse.
+
+## Gearshift: Rare pieces named once per pair, GM-only gear left out (2026-11-24)
+- Item flag 0x0002 marks GM-only gear *(inferred)*: in the current item data only the 19 Judge's pieces carry it
+  (shield, helm, cuirass, gauntlets, cuisses, greaves, gorget, belt, earring, ring, cape, the swords, bow, arrow, rod,
+  minnow, lure, fly), all described "GMs Only". Gearshift's whole-list candidates (references and worth getting) skip
+  it; held pieces are still picked.
+- Flag 0x8000 is Rare (one may be held). A pair's references (ears 11 / 12, rings 13 / 14) could name one Rare piece
+  twice: the curated list gave the left ear and the automatic pass, having put another piece left, gave the right.
+  The automatic one (else the second) now takes its slot's next best; worth getting skips a Rare piece the pair's
+  other slot already suggests.
+
+## Mod list cells name items; Gearshift's categories and set switch (2026-11-24)
+- A list row's `items` ({[column] = id} or {id, bag, index}) names the item in a cell. Modern UI: while the pointer
+  rests on that cell (0.35 s, as other tips), the item info panel's body is drawn by the pointer in the pack's
+  window_normal frame, 396 points wide (Modern::tip_framed; tip_at is its window_tooltip form). Classic UI: the cell
+  under the pointer (column from the classic columns' x) is an item_info_source, so the retail item window shows it
+  at mode 0. A bag and index give the extdata (augments) while that slot still holds the id. Seen live in both UIs.
+- A row's `tags` ({[column] = {"Rare", "Ex"}}) follow a cell's text: in the modern UI as the item info panel's
+  mark tags (items::tag: charcoal, bronze edge, gold text), in the classic UI as the item window's windowps marks
+  (293 Aug, 294 Rare, 295 Ex, 296 Temp, 842 Alt; another tag as [text]). Seen live in both UIs.
+- Item flag 0x4000 is Ex; Gearshift's Worth getting cells carry the Rare (0x8000) and Ex tags. Its window switch is
+  now Enable Gearshift.
+- Gearshift lists a job's sets by category (sets.group: weapon skill and ability sets by kind, the rest by name),
+  categories in the order of their first set, each keeping the set last picked in it. Wear This Set Off (saved per
+  character and job, builder.off) keeps a set from being worn: the status set, an action's precast or midcast set and
+  the Movement overlay are skipped with the gear left on, not replaced by another set.
+- Gearshift's Match column is now the worn piece's set score over the best in slot's (pick.score; may pass 100%),
+  coloured by the same bands, and the slot's alternatives menu shows and sorts by it. It was pick.share: the part of
+  the piece's value from stat kinds the best in slot also has, amounts ignored, so Heidrek Mask read 100% against
+  Skulker's Bonnet +3 in the TP set at about 40% of its score. The pick itself still goes by share.
+- Gearshift picks by score: a slot takes the held best in slot (worn even at a score of 0, as Toutatis's Cape in
+  the TP set, whose Sneak Attack and Triple Attack damage the weights do not count), else best_by_score's piece (the
+  next best unused when the pair's other slot took it). The old rule, the held piece most like the reference
+  (pick.share, at least 25% alike), put a STR+1 MND+1 San d'Orian Ring over Rajas Ring ("Store TP"+5) against Gere
+  Ring, whose stats have no Store TP; worth getting went by the same rule and is by score now too. The window's
+  Slot column has no icon.
+- Gearshift left slots empty when every held piece scored 0 for the set: Suppanomimi reads `AGI+2`, `Enhances
+  "Dual Wield" effect`, `Sword skill +5` (no Dual Wield amount in the text), Fugacity Mantle +1 only DEF / AGI /
+  Evasion / Magic Evasion, which the TP weights do not count. An unnumbered `Enhances "X" effect` line now counts as
+  X+1 *(inferred: the amount is not shown)*, outside a "Word:" context. In the Combat and Idle and Defence sets
+  (not Movement) a slot with no pick takes the held piece best by a general table (DEF, HP, MP, attributes,
+  accuracy, attack, evasion); not weapons, ammo or element gear (obis, gorgets, belts), and not in action sets, where
+  an empty slot keeps the piece on.
+- Gearshift 0.2.20, from review: each slot claims its held best in slot before any slot picks by score (the left
+  ring, its reference not held, took the right ring's Rajas Ring by score, and the right then had the next best); a
+  set's switch no longer forgets the worn signature (turning an unrelated set off and on wore the status set again,
+  over gear changed by hand); after a job change to a shorter category the Set dropdown's index goes back to the
+  first set, so the dropdown and Wear This Set name the same one. Wear Now wears a set even when it is off (a
+  manual press).
+- Classic mod windows: classic_places gives each window its room (screen height less its top and 8), and the first
+  list shows fewer rows (at least 3) when the page would run past it, the keys scrolling within those. Gearshift's
+  page (four dropdowns and choices over a 16-row list) is 600 tall: at a 600-line classic menu its buttons were below
+  the screen. The list cell under the pointer is forgotten every frame, not only while the pointer is in the client
+  (it stayed after the pointer left the window), and comes before the item lists' cursor as the item window's source.
+
+## Canvas drags say whether the HUD under them is covered (2026-11-25)
+- A canvas `drag` / `drag_end` event carries `covered`: whether a window or panel is under the pointer, over the HUD
+  there (ours, for mods dropping onto HUD elements). Modern UI: egui's layer under the pointer is above the background
+  (tooltips aside), the dragging window included. Classic UI: a mod window's classic rect (classic_places,
+  classic_reach) or a game window recorded in win_hits holds the pointer. Older clients leave it out. Hotbars' manager
+  drops a library tile on an overlay slot only where nothing covers it (before: only outside its tiles canvas and the
+  mod's other canvases, so a release over the manager's builder fell through to the slot under it).
+
+## Mod updates told at login (ours, 2026-11-25)
+- Once a login (World is new each one), when the world and the message tables are in (as the server message waits),
+  client/modupdates.rs reads both catalogue lists on a thread (catalogue::fetch: GitHub, else the last copy) and counts
+  the installed Lua mods and DAT packs offered an update (catalogue::offer Some(true)). Any found: one log line in
+  lua::ERROR red, "Updates are available for N mods (Settings > Mods)." (DAT packs: Settings > DAT Packs). Seen live
+  (modern UI) with a test list (VANA_MOD_CATALOGUE) one version ahead.
