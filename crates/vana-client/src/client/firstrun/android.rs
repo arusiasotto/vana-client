@@ -29,7 +29,12 @@ fn installer_search_dirs(install_parent: &Path) -> Vec<PathBuf> {
 }
 
 fn installer_parts_in(dir: &Path) -> usize {
-    (1..=VOLUMES).filter(|i| dir.join(volume(*i)).is_file()).count()
+    (1..=VOLUMES)
+        .filter(|i| {
+            let p = dir.join(volume(*i));
+            p.is_file() && crate::install::installer_volume_ok(&p, *i).is_ok()
+        })
+        .count()
 }
 
 /// The folder holding all five volumes: the one typed in, else the first found.
@@ -158,10 +163,10 @@ impl FirstRun {
         let archives = PathBuf::from(self.archive_path_input.trim());
         let Some(archive_dir) = installer_dir(&parent, &archives) else {
             let hint = if !archives.as_os_str().is_empty() {
-                format!("Found {} of {VOLUMES} parts in {}.", installer_parts_in(&archives), archives.display())
+                format!("Found {} valid of {VOLUMES} parts in {}.", installer_parts_in(&archives), archives.display())
             } else {
                 best_installer_parts(&parent)
-                    .map(|(d, n)| format!("Found {n} of {VOLUMES} parts in {}.", d.display()))
+                    .map(|(d, n)| format!("Found {n} valid of {VOLUMES} parts in {}.", d.display()))
                     .unwrap_or_else(|| format!("No installer parts in {}.", downloads().display()))
             };
             self.note = format!(
@@ -169,6 +174,10 @@ impl FirstRun {
             );
             return Action::None;
         };
+        if let Err(e) = crate::install::validate_installer_dir(&archive_dir) {
+            self.note = format!("{e:#}");
+            return Action::None;
+        }
         log::info!("installing from the volumes in {} to {}", archive_dir.display(), parent.display());
         self.game_dir = parent.clone();
         self.archive_path_input = archive_dir.display().to_string();
@@ -469,7 +478,7 @@ fn request_installer_ready(parent: PathBuf, archives: PathBuf) {
     }
     *g = Some((parent.clone(), archives.clone(), InstallerPoll::Loading));
     std::thread::spawn(move || {
-        let ok = installer_dir(&parent, &archives).is_some();
+        let ok = installer_dir(&parent, &archives).is_some_and(|d| crate::install::validate_installer_dir(&d).is_ok());
         *INSTALLER.lock().unwrap() = Some((parent, archives, InstallerPoll::Ready(ok)));
     });
 }
@@ -515,12 +524,18 @@ mod tests {
         let install_parent = base.join("SquareEnix");
         let stash = install_parent.join(".download");
         std::fs::create_dir_all(&stash).unwrap();
-        std::fs::write(stash.join(volume(1)), b"stub").unwrap();
-        std::fs::write(stash.join(volume(2)), b"stub").unwrap();
+        let fake = |path: &Path, part: usize| {
+            let mut f = std::fs::File::create(path).unwrap();
+            std::io::Write::write_all(&mut f, b"Rar!\x1a\x07\x00").unwrap();
+            let len = if part == 1 { 1_000_001u64 } else { 50_000_001 };
+            f.set_len(len).unwrap();
+        };
+        fake(&stash.join(volume(1)), 1);
+        fake(&stash.join(volume(2)), 2);
         assert_eq!(best_installer_parts(&install_parent).unwrap().1, 2);
         assert!(installer_dir(&install_parent, Path::new("")).is_none());
         for i in 3..=VOLUMES {
-            std::fs::write(stash.join(volume(i)), b"stub").unwrap();
+            fake(&stash.join(volume(i)), i);
         }
         assert_eq!(installer_dir(&install_parent, Path::new("")).unwrap(), stash);
         std::fs::remove_dir_all(&base).unwrap();

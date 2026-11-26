@@ -18,7 +18,7 @@ const VOLUMES: usize = 5;
 const TOTAL: u64 = 7_734_210_712;
 
 fn volume(i: usize) -> String {
-    if i == 1 { "FFXIFullSetup_US.part1.exe".into() } else { format!("FFXIFullSetup_US.part{i}.rar") }
+    crate::install::installer_volume_name(i)
 }
 
 /// The first-start window's size (fixed; the configured size applies once the game files are in).

@@ -6,9 +6,17 @@ use crate::cabx;
 use crate::msi_db::{Database, DirResolver};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Square Enix's five FFXIFullSetup volumes (part1 is the self-extracting RAR).
+pub const INSTALLER_VOLUMES: usize = 5;
+
+pub fn installer_volume_name(i: usize) -> String {
+    if i == 1 { "FFXIFullSetup_US.part1.exe".into() } else { format!("FFXIFullSetup_US.part{i}.rar") }
+}
 
 const PACKAGE_DIR: &str = "FFXIFullSetup_US";
 const FFXI_MSI: &str = "FINAL_FANTASY_XI/FINAL_FANTASY_XI.msi";
@@ -50,6 +58,45 @@ fn package_root(dir: &Path) -> Option<PathBuf> {
     [dir.to_path_buf(), dir.join(PACKAGE_DIR)].into_iter().find(|d| d.join(FFXI_MSI).is_file())
 }
 
+fn has_rar_magic(buf: &[u8]) -> bool {
+    buf.windows(7).any(|w| w.starts_with(b"Rar!\x1a\x07"))
+}
+
+/// True when a volume looks like a real Square Enix part, not a stub or a failed browser download.
+pub fn installer_volume_ok(path: &Path, part: usize) -> Result<()> {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+    let meta = std::fs::metadata(path).with_context(|| format!("cannot read {name}"))?;
+    let size = meta.len();
+    let min = if part == 1 { 1_000_000 } else { 50_000_000 };
+    if size < min {
+        bail!(
+            "{name} is only {size} bytes (expected at least {min}). Download all five FFXIFullSetup parts from Square Enix into one folder — partial or placeholder files cannot install."
+        );
+    }
+    let mut f = std::fs::File::open(path).with_context(|| format!("cannot open {name}"))?;
+    let mut head = vec![0u8; if part == 1 { 1 << 20 } else { 16 }];
+    let n = f.read(&mut head)?;
+    let head = &head[..n];
+    if !has_rar_magic(head) {
+        bail!(
+            "{name} is not a valid installer volume (no RAR data). Remove it and download again; failed downloads often save an HTML page with the right filename."
+        );
+    }
+    Ok(())
+}
+
+/// All five volumes in one folder, each readable and large enough to unpack.
+pub fn validate_installer_dir(dir: &Path) -> Result<()> {
+    for i in 1..=INSTALLER_VOLUMES {
+        let path = dir.join(installer_volume_name(i));
+        if !path.is_file() {
+            bail!("missing {}", path.file_name().and_then(|s| s.to_str()).unwrap_or("?"));
+        }
+        installer_volume_ok(&path, i)?;
+    }
+    Ok(())
+}
+
 /// Extracts the wanted files from the multi-volume RAR self-extractor; the package folder they land in.
 fn unpack_rar(
     first_volume: &Path,
@@ -57,8 +104,14 @@ fn unpack_rar(
     progress: &Progress,
     wanted: impl Fn(&Path) -> bool,
 ) -> Result<PathBuf> {
+    if let Some(dir) = first_volume.parent() {
+        validate_installer_dir(dir)?;
+    }
+    let first_volume = std::fs::canonicalize(first_volume).unwrap_or_else(|_| first_volume.to_path_buf());
     let mut total = 0;
-    let mut listing = unrar::Archive::new(first_volume).open_for_listing().context("opening RAR archive")?;
+    let mut listing = unrar::Archive::new(&first_volume)
+        .open_for_listing()
+        .with_context(|| format!("opening RAR archive at {}", first_volume.display()))?;
     while let Some(Ok(entry)) = listing.next() {
         if entry.is_file() && wanted(&entry.filename) && !entry.is_split_before() {
             total += entry.unpacked_size;
@@ -67,7 +120,7 @@ fn unpack_rar(
     progress.begin("Unpacking installer archive", total);
 
     std::fs::create_dir_all(staging)?;
-    let mut archive = unrar::Archive::new(first_volume).open_for_processing()?;
+    let mut archive = unrar::Archive::new(&first_volume).open_for_processing()?;
     while let Some(header) = archive.read_header()? {
         let entry = header.entry();
         archive = if entry.is_file() && wanted(&entry.filename) {
@@ -242,4 +295,37 @@ pub fn install(opts: &Options, progress: Arc<Progress>) -> Result<()> {
     }
     *progress.phase.lock().unwrap() = "Installed".into();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn fake_volume(path: &Path, part: usize) {
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(b"Rar!\x1a\x07\x00").unwrap();
+        let len = if part == 1 { 1_000_001u64 } else { 50_000_001 };
+        f.set_len(len).unwrap();
+    }
+
+    #[test]
+    fn rejects_stub_installer_parts() {
+        let dir = std::env::temp_dir().join(format!("vana-install-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(installer_volume_name(1)), b"stub").unwrap();
+        assert!(installer_volume_ok(&dir.join(installer_volume_name(1)), 1).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn accepts_sparse_fake_volumes() {
+        let dir = std::env::temp_dir().join(format!("vana-install-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 1..=INSTALLER_VOLUMES {
+            fake_volume(&dir.join(installer_volume_name(i)), i);
+        }
+        validate_installer_dir(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
