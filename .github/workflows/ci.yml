@@ -65,3 +65,26 @@ jobs:
           rm -rf warp-tmp
       - name: Test
         run: cargo test --profile ci-test --locked
+
+  # The neural rendering engine (engine/): Linux only. The Vulkan headers and glslang are the versions it was tested
+  # with; Ubuntu's are too old for the network's FP8 component types.
+  engine:
+    name: engine (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ libvulkan-dev zlib1g-dev python3
+          git clone -q --depth 1 --branch v1.4.357 https://github.com/KhronosGroup/Vulkan-Headers.git "$RUNNER_TEMP/vulkan-headers"
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/glslang.tgz" https://github.com/KhronosGroup/glslang/releases/download/16.5.0/glslang-16.5.0-linux-x86_64-release.tar.gz
+          echo "b9b1f96acb898a62251b171f7695efcecfc206a530299054071919b06820f657  $RUNNER_TEMP/glslang.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/glslang" && tar -C "$RUNNER_TEMP/glslang" -xzf "$RUNNER_TEMP/glslang.tgz"
+          echo "$RUNNER_TEMP/glslang/bin" >> "$GITHUB_PATH"
+      - name: Build
+        run: VULKAN_INCLUDE="$RUNNER_TEMP/vulkan-headers/include" engine/build.sh
+      - name: Exports
+        run: |
+          for f in vana_nr_dispatch vana_nr_version vana_nr_model_status vana_nr_check_dll vana_nr_make_model; do
+            nm -D --defined-only target/engine/upscale-engine.so | grep -qw "$f" || { echo "missing $f"; exit 1; }
+          done

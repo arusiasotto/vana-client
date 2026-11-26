@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Publishes a GitHub release vVERSION of lenonk/vana-client with the assets release/build-linux.sh made and those
-# release/fetch-ci-builds.sh downloaded (Windows always; Linux aarch64 and macOS when present), each with its .sig. VERSION must be the
+# release/fetch-ci-builds.sh downloaded (Windows always; Linux aarch64 and macOS when present) and the neural rendering engine
+# release/build-engine.sh made (when present), each with its .sig. VERSION must be the
 # crate's version (crates/vana-client/Cargo.toml), newer than the last release: clients offer the update when the tag
 # is newer and its signature checks against release/signing-key.pub, built in.
 # The private key: VANA_SIGNING_KEY, or ~/.config/vana-client-release/signing.pem (Ed25519; never in the repo).
@@ -14,6 +15,9 @@ assets=(target/assets/vana-client-linux-x86_64 target/assets/vana-client-windows
 for a in target/assets/vana-client-linux-aarch64 target/assets/vana-client-macos-aarch64 target/assets/vana-client-macos-x86_64; do
     if [ -f "$a" ]; then assets+=("$a"); else echo "note: no $a (release/fetch-ci-builds.sh); left out" >&2; fi
 done
+# The neural rendering engine, downloaded by the client when Neural Rendering is turned on.
+engine=target/assets/vana-client-nr-engine-linux-x86_64.so
+if [ -f "$engine" ]; then assets+=("$engine"); else echo "note: no $engine (release/build-engine.sh); left out" >&2; fi
 key="${VANA_SIGNING_KEY:-$HOME/.config/vana-client-release/signing.pem}"
 [ -f "$key" ] || { echo "no signing key at $key" >&2; exit 1; }
 pub=$(tr -d '[:space:]' < release/signing-key.pub)
@@ -22,9 +26,9 @@ pub=$(tr -d '[:space:]' < release/signing-key.pub)
 sigs=()
 for a in "${assets[@]}"; do
     [ -f "$a" ] || { echo "missing $a (run release/build-linux.sh and release/fetch-ci-builds.sh)" >&2; exit 1; }
-    # A binary built without this key could never update itself to the next release.
-    grep -a -q "$pub" "$a" || { echo "$a was not built with release/signing-key.pub" >&2; exit 1; }
-    # Its updater's user agent: an asset left from another version is never signed as this one.
+    # A binary built without this key could never update itself to the next release (the engine has no updater).
+    [ "$a" = "$engine" ] || grep -a -q "$pub" "$a" || { echo "$a was not built with release/signing-key.pub" >&2; exit 1; }
+    # Its updater's user agent, the engine's vana_nr_version: an asset left from another version is never signed as this one.
     grep -a -q "vana-client/$version" "$a" || { echo "$a is not version $version" >&2; exit 1; }
     # What the client checks (updater::signed_text): the tag, the asset's name, its SHA-256.
     text="$a.text"
