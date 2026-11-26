@@ -16661,14 +16661,20 @@ impl App {
                                     _ => modern::LoginErrorAck::None,
                                 }
                             };
-                            let key_dismiss = input.events.iter().any(|ev| {
-                                matches!(
-                                    ev,
-                                    egui::Event::Key { key: egui::Key::Enter | egui::Key::Escape, pressed: true, .. }
-                                )
-                            });
-                            let ack = if key_dismiss && ack == modern::LoginErrorAck::None {
-                                modern::LoginErrorAck::Ok
+                            let ack = if ack == modern::LoginErrorAck::None {
+                                let enter = input.events.iter().any(|ev| {
+                                    matches!(ev, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+                                });
+                                let escape = input.events.iter().any(|ev| {
+                                    matches!(ev, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. })
+                                });
+                                if enter {
+                                    modern::LoginErrorAck::Trust
+                                } else if escape {
+                                    modern::LoginErrorAck::Ok
+                                } else {
+                                    ack
+                                }
                             } else {
                                 ack
                             };

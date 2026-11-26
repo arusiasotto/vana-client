@@ -380,7 +380,14 @@ pub(crate) fn cert_trust_dialog(
     if input
         .events
         .iter()
-        .any(|ev| matches!(ev, egui::Event::Key { key: egui::Key::Escape | egui::Key::Enter, pressed: true, .. }))
+        .any(|ev| matches!(ev, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. }))
+    {
+        return CertTrustAction::Trust;
+    }
+    if input
+        .events
+        .iter()
+        .any(|ev| matches!(ev, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. }))
     {
         return CertTrustAction::Dismiss;
     }
