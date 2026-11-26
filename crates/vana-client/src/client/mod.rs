@@ -22077,7 +22077,24 @@ impl ApplicationHandler for App {
         let title = if self.drive.driven() { "FINAL FANTASY XI [test]" } else { "FINAL FANTASY XI" };
         // No game files yet: the first-start window is a fixed size, whatever the config says.
         let bootstrap = firstrun::before_title(&self.cfg.game_dir, &self.cfg.ffxi_dir(), self.cfg.installed);
-        let [ww, wh] = if bootstrap { firstrun::WINDOW } else { self.cfg.window_size() };
+        let [ww, wh] = if bootstrap {
+            #[cfg(target_os = "android")]
+            {
+                pick_monitor(&self.cfg.monitor, event_loop.primary_monitor(), event_loop.available_monitors(), [1, 1])
+                    .as_ref()
+                    .map(|m| {
+                        let s = m.size();
+                        [s.width, s.height]
+                    })
+                    .unwrap_or(firstrun::WINDOW)
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                firstrun::WINDOW
+            }
+        } else {
+            self.cfg.window_size()
+        };
         // Test runs are windowed, unless their config puts them borderless on a named monitor (mode 3), which keeps
         // them off the screen the user works on.
         let test_monitor = self.drive.driven() && self.cfg.window_mode() == 3 && !self.cfg.monitor.is_empty();
@@ -22303,9 +22320,19 @@ impl ApplicationHandler for App {
             // 5120 at 200%); full screen keeps the monitor's size.
             WindowEvent::ScaleFactorChanged { scale_factor, mut inner_size_writer } => {
                 if gfx.window.fullscreen().is_none() {
-                    let [w, h] = if self.first_run.is_some() { firstrun::WINDOW } else { self.cfg.window_size() };
-                    log::info!("window: scale factor {scale_factor}, keeping {w}x{h}");
-                    let _ = inner_size_writer.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+                    let lock = if self.first_run.is_some() {
+                        if cfg!(target_os = "android") {
+                            None
+                        } else {
+                            Some(firstrun::WINDOW)
+                        }
+                    } else {
+                        Some(self.cfg.window_size())
+                    };
+                    if let Some([w, h]) = lock {
+                        log::info!("window: scale factor {scale_factor}, keeping {w}x{h}");
+                        let _ = inner_size_writer.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+                    }
                 }
             }
             WindowEvent::Resized(size) => {

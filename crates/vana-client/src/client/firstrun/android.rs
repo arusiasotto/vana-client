@@ -14,6 +14,19 @@ use std::sync::{Arc, Mutex};
 /// PlayOnline's page for the five FFXIFullSetup volumes (the browser downloads them; the install reads them locally).
 const SE_CLIENT_DOWNLOAD: &str = "https://www.playonline.com/ff11us/download/media/install_win.html";
 
+const FIRSTRUN_FOOTER_H: f32 = 52.0;
+const FIRSTRUN_HEADER_H: f32 = 36.0;
+const FIRSTRUN_FRAME_VPAD: f32 = 24.0;
+
+fn firstrun_viewport(ctx: &egui::Context) -> egui::Rect {
+    let viewport = ctx.viewport_rect();
+    if viewport.width() > 1.0 && viewport.height() > 1.0 {
+        viewport
+    } else {
+        ctx.content_rect()
+    }
+}
+
 fn downloads() -> PathBuf {
     crate::config::downloads_dir().unwrap_or_default()
 }
@@ -481,60 +494,63 @@ impl FirstRun {
         let wiping = self.wipe_running();
         let recovery = matches!(&*self.stage.lock().unwrap(), Stage::Recovery);
         let mut action = Action::None;
-        let screen = ctx.content_rect();
-        let ppp = ctx.pixels_per_point();
-        let two_cols = screen.width() / ppp >= 480.0;
-        let margin = if two_cols { 14.0 } else { 8.0 };
-        let panel_w = (screen.width() - margin * 2.0).max(280.0);
-        let pinned_footer = failed.is_some() || cleanup.is_some();
-        let scroll_max = (screen.height() - 44.0 - if pinned_footer { 56.0 } else { 0.0 }).max(120.0);
+        let viewport = firstrun_viewport(ctx);
+        let ask = failed.is_none() && !working && cleanup.is_none() && !recovery;
+        let pin_start = ask && self.browse.is_none();
+        let pin_recovery_footer = recovery && !wiping;
+        let pin_footer = failed.is_some() || cleanup.is_some() || pin_start || pin_recovery_footer;
+        let footer_reserve = if pin_footer { FIRSTRUN_FOOTER_H } else { 0.0 };
+        let body_scroll = (viewport.height() - FIRSTRUN_HEADER_H - FIRSTRUN_FRAME_VPAD - footer_reserve).max(64.0);
         ctx.layer_painter(egui::LayerId::background()).rect_filled(
-            screen,
+            viewport,
             0.0,
             egui::Color32::from_rgb(0x12, 0x14, 0x22),
         );
-        egui::Area::new(egui::Id::new("first run")).anchor(egui::Align2::CENTER_TOP, [0.0, 6.0]).show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(egui::Color32::from_rgb(0x1e, 0x22, 0x3a))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x6a, 0x70, 0xa8)))
-                .corner_radius(6.0)
-                .inner_margin(12.0)
-                .show(ui, |ui| {
-                    ui.set_min_width(panel_w);
-                    ui.set_max_width(panel_w);
-                    ui.style_mut().spacing.button_padding = egui::vec2(10.0, 6.0);
-                    ui.label(
-                        egui::RichText::new("FINAL FANTASY XI game files")
-                            .size(20.0)
-                            .color(egui::Color32::from_rgb(0xe8, 0xc8, 0x80)),
-                    );
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("firstrun body")
-                        .max_height(scroll_max)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            match (&failed, working, &cleanup, recovery) {
-                                (Some(e), _, _, _) => self.failed_body(ui, e),
-                                (None, true, _, _) => self.progress_ui(ui),
-                                (None, false, Some(stash), _) => self.cleanup_offer_body(ui, stash),
-                                (None, false, None, true) => self.recovery_ui(ui, &mut action),
-                                (None, false, None, false) => {
-                                    self.ask_ui_scroll(ui, two_cols);
-                                    if self.browse.is_none() {
-                                        self.ask_ui_start_row(ui, &mut action);
+        egui::Area::new(egui::Id::new("first run"))
+            .fixed_pos(viewport.min)
+            .show(ctx, |ui| {
+                ui.set_width(viewport.width());
+                ui.set_min_height(viewport.height());
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(0x1e, 0x22, 0x3a))
+                    .inner_margin(egui::Margin::symmetric(12, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_min_height((viewport.height() - FIRSTRUN_FRAME_VPAD).max(120.0));
+                        ui.style_mut().spacing.button_padding = egui::vec2(10.0, 6.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("FINAL FANTASY XI game files")
+                                    .size(20.0)
+                                    .color(egui::Color32::from_rgb(0xe8, 0xc8, 0x80)),
+                            );
+                            ui.add_space(4.0);
+                            egui::ScrollArea::vertical()
+                                .id_salt("firstrun body")
+                                .auto_shrink([false, false])
+                                .max_height(body_scroll)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    match (&failed, working, &cleanup, recovery) {
+                                        (Some(e), _, _, _) => self.failed_body(ui, e),
+                                        (None, true, _, _) => self.progress_ui(ui),
+                                        (None, false, Some(stash), _) => self.cleanup_offer_body(ui, stash),
+                                        (None, false, None, true) => self.recovery_body(ui),
+                                        (None, false, None, false) => self.ask_ui_scroll(ui),
                                     }
-                                }
+                                });
+                            if let Some(e) = &failed {
+                                self.failed_actions(ui, e, &mut action);
+                            } else if let Some(stash) = &cleanup {
+                                self.cleanup_offer_actions(ui, stash, &mut action);
+                            } else if pin_recovery_footer {
+                                self.recovery_actions(ui, &mut action);
+                            } else if pin_start {
+                                self.ask_ui_start_row(ui, &mut action);
                             }
                         });
-                    if let Some(e) = &failed {
-                        self.failed_actions(ui, e, &mut action);
-                    } else if let Some(stash) = &cleanup {
-                        self.cleanup_offer_actions(ui, stash, &mut action);
-                    }
-                });
-        });
+                    });
+            });
         ctx.request_repaint_after(std::time::Duration::from_millis(if working || wiping { 250 } else { 16 }));
         action
     }
@@ -591,7 +607,7 @@ impl FirstRun {
         }
     }
 
-    fn recovery_ui(&mut self, ui: &mut egui::Ui, action: &mut Action) {
+    fn recovery_body(&mut self, ui: &mut egui::Ui) {
         if self.wipe_running() {
             self.wipe_progress_ui(ui);
             return;
@@ -648,7 +664,14 @@ impl FirstRun {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(&self.note).size(12.0).weak());
         }
-        ui.add_space(10.0);
+        if !crate::android_fs::poll_all_files_access().unwrap_or(false) {
+            ui.label(egui::RichText::new("All files access is required to check or wipe on-device files.").weak());
+        }
+    }
+
+    fn recovery_actions(&mut self, ui: &mut egui::Ui, action: &mut Action) {
+        let install_parent = self.install_parent();
+        ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(!self.wipe_running(), egui::Button::new(egui::RichText::new("Check install complete").size(15.0)))
@@ -677,12 +700,9 @@ impl FirstRun {
                 *action = Action::Quit;
             }
         });
-        if !crate::android_fs::poll_all_files_access().unwrap_or(false) {
-            ui.label(egui::RichText::new("All files access is required to check or wipe on-device files.").weak());
-        }
     }
 
-    fn ask_ui_scroll(&mut self, ui: &mut egui::Ui, two_cols: bool) {
+    fn ask_ui_scroll(&mut self, ui: &mut egui::Ui) {
         if self.folder_browser(ui) {
             return;
         }
@@ -733,23 +753,9 @@ impl FirstRun {
             ui.label(egui::RichText::new(&self.note).size(13.0).color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)));
         }
         ui.add_space(8.0);
-        if two_cols {
-            let gap = 12.0;
-            let col_w = ((ui.available_width() - gap) * 0.5).max(120.0);
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(egui::vec2(col_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    self.ask_ui_archives(ui, &archives, green);
-                });
-                ui.add_space(gap);
-                ui.allocate_ui_with_layout(egui::vec2(col_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    self.ask_ui_install_to(ui, &install_parent);
-                });
-            });
-        } else {
-            self.ask_ui_archives(ui, &archives, green);
-            ui.add_space(8.0);
-            self.ask_ui_install_to(ui, &install_parent);
-        }
+        self.ask_ui_archives(ui, &archives, green);
+        ui.add_space(8.0);
+        self.ask_ui_install_to(ui, &install_parent);
     }
 
     fn ask_ui_archives(&mut self, ui: &mut egui::Ui, archives: &Path, green: egui::Color32) {
@@ -854,33 +860,24 @@ impl FirstRun {
         let p = &self.progress;
         let (done, total) = (p.done.load(Ordering::Relaxed), p.total.load(Ordering::Relaxed));
         let phase = p.phase.lock().unwrap().clone();
-        let width = ui.available_width();
-        let (left, gap) = ((width * 0.38).clamp(120.0, 280.0), 10.0);
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(egui::vec2(left, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.label(egui::RichText::new(&phase).size(14.0));
-                if total > 0 {
-                    ui.label(
-                        egui::RichText::new(format!("{:.2} / {:.2} GB", done as f64 / 1e9, total as f64 / 1e9))
-                            .size(12.0)
-                            .weak(),
-                    );
-                }
-                let note = closing_note(&phase);
-                if !note.is_empty() {
-                    ui.label(egui::RichText::new(note).weak().size(11.0));
-                }
-            });
-            ui.add_space(gap);
-            ui.vertical(|ui| {
-                ui.add_space(4.0);
-                ui.add(
-                    egui::ProgressBar::new(p.fraction())
-                        .desired_width((width - left - gap).max(80.0))
-                        .fill(egui::Color32::from_rgb(0x9a, 0x7a, 0x40)),
-                );
-            });
-        });
+        ui.label(egui::RichText::new(&phase).size(14.0));
+        if total > 0 {
+            ui.label(
+                egui::RichText::new(format!("{:.2} / {:.2} GB", done as f64 / 1e9, total as f64 / 1e9))
+                    .size(12.0)
+                    .weak(),
+            );
+        }
+        let note = closing_note(&phase);
+        if !note.is_empty() {
+            ui.label(egui::RichText::new(note).weak().size(11.0));
+        }
+        ui.add_space(8.0);
+        ui.add(
+            egui::ProgressBar::new(p.fraction())
+                .desired_width(ui.available_width())
+                .fill(egui::Color32::from_rgb(0x9a, 0x7a, 0x40)),
+        );
     }
 
     fn cleanup_offer_body(&mut self, ui: &mut egui::Ui, stash: &Path) {
