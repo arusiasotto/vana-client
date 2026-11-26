@@ -18,6 +18,44 @@ pub fn installer_volume_name(i: usize) -> String {
     if i == 1 { "FFXIFullSetup_US.part1.exe".into() } else { format!("FFXIFullSetup_US.part{i}.rar") }
 }
 
+/// One installer volume under `dir`, matching [`installer_volume_name`] without regard to case (Android shared storage
+/// and some download managers keep different casing).
+pub fn find_installer_volume(dir: &Path, part: usize) -> Option<PathBuf> {
+    let want = installer_volume_name(part);
+    let exact = dir.join(&want);
+    if exact.is_file() {
+        return Some(exact);
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return None };
+    rd.flatten()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(&want))
+        .map(|e| e.path())
+}
+
+fn missing_volume_hint(dir: &Path, want: &str) -> String {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return format!(" (cannot read {}; check All files access)", dir.display());
+    };
+    let prefix = "ffxifullsetup_us.part";
+    let similar: Vec<String> = rd
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy();
+            n.to_ascii_lowercase().starts_with(prefix).then(|| n.into_owned())
+        })
+        .collect();
+    if !similar.is_empty() {
+        return format!(" (saw: {})", similar.join(", "));
+    }
+    let n = std::fs::read_dir(dir).map(|rd| rd.flatten().count()).unwrap_or(0);
+    if n == 0 {
+        " (folder is empty or not readable — check All files access)".into()
+    } else {
+        format!(" ({n} other entries, none named {want})")
+    }
+}
+
 const PACKAGE_DIR: &str = "FFXIFullSetup_US";
 const FFXI_MSI: &str = "FINAL_FANTASY_XI/FINAL_FANTASY_XI.msi";
 const POL_MSI: &str = "PlayOnline/PlayOnlineViewer.msi";
@@ -88,10 +126,7 @@ pub fn installer_volume_ok(path: &Path, part: usize) -> Result<()> {
 /// Byte size of the five volumes when every file is present.
 pub fn installer_dir_bytes(dir: &Path) -> u64 {
     (1..=INSTALLER_VOLUMES)
-        .filter_map(|i| {
-            let p = dir.join(installer_volume_name(i));
-            std::fs::metadata(&p).ok().map(|m| m.len())
-        })
+        .filter_map(|i| find_installer_volume(dir, i).and_then(|p| std::fs::metadata(&p).ok().map(|m| m.len())))
         .sum()
 }
 
@@ -108,13 +143,13 @@ pub fn stage_installer_volumes(src: &Path, stash: &Path, progress: &Progress) ->
         return validate_installer_dir(stash);
     }
     let total: u64 = (1..=INSTALLER_VOLUMES)
-        .map(|i| std::fs::metadata(src.join(installer_volume_name(i))).map(|m| m.len()).unwrap_or(0))
+        .map(|i| find_installer_volume(src, i).and_then(|p| std::fs::metadata(&p).ok().map(|m| m.len())).unwrap_or(0))
         .sum();
     progress.begin("Preparing installer files", total);
     let mut done = 0u64;
     for i in 1..=INSTALLER_VOLUMES {
         let name = installer_volume_name(i);
-        let from = src.join(&name);
+        let from = find_installer_volume(src, i).with_context(|| format!("missing {name} under {}", src.display()))?;
         let dest = stash.join(&name);
         installer_volume_ok(&from, i)?;
         if dest.is_file() {
@@ -154,8 +189,7 @@ fn copy_file_progress(from: &Path, to: &Path, progress: &Progress, done: &mut u6
 /// Deletes the five FFXIFullSetup volumes and removes `dir` when empty.
 pub fn remove_installer_volumes(dir: &Path) -> Result<()> {
     for i in 1..=INSTALLER_VOLUMES {
-        let p = dir.join(installer_volume_name(i));
-        if p.is_file() {
+        if let Some(p) = find_installer_volume(dir, i) {
             std::fs::remove_file(&p).with_context(|| format!("removing {}", p.display()))?;
         }
     }
@@ -168,10 +202,10 @@ pub fn remove_installer_volumes(dir: &Path) -> Result<()> {
 /// All five volumes in one folder, each readable and large enough to unpack.
 pub fn validate_installer_dir(dir: &Path) -> Result<()> {
     for i in 1..=INSTALLER_VOLUMES {
-        let path = dir.join(installer_volume_name(i));
-        if !path.is_file() {
-            bail!("missing {}", path.file_name().and_then(|s| s.to_str()).unwrap_or("?"));
-        }
+        let want = installer_volume_name(i);
+        let Some(path) = find_installer_volume(dir, i) else {
+            bail!("missing {want}{}", missing_volume_hint(dir, &want));
+        };
         installer_volume_ok(&path, i)?;
     }
     Ok(())
@@ -404,6 +438,18 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for i in 1..=INSTALLER_VOLUMES {
             fake_volume(&dir.join(installer_volume_name(i)), i);
+        }
+        validate_installer_dir(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn find_installer_volume_ignores_case() {
+        let dir = std::env::temp_dir().join(format!("vana-install-case-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        fake_volume(&dir.join("ffxifullsetup_us.part1.exe"), 1);
+        for i in 2..=INSTALLER_VOLUMES {
+            fake_volume(&dir.join(format!("FFXIFullSetup_US.part{i}.rar")), i);
         }
         validate_installer_dir(&dir).unwrap();
         std::fs::remove_dir_all(&dir).ok();

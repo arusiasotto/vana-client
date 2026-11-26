@@ -41,7 +41,16 @@ pub fn in_app_storage(path: &std::path::Path) -> bool {
 /// The Downloads folder: mod packs, Install from File, and on Android the installer volumes.
 pub fn downloads_dir() -> Option<PathBuf> {
     #[cfg(target_os = "android")]
-    return Some(PathBuf::from(SHARED_STORAGE).join("Download"));
+    {
+        let root = PathBuf::from(SHARED_STORAGE);
+        for name in ["Download", "Downloads"] {
+            let p = root.join(name);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+        return Some(root.join("Download"));
+    }
     #[cfg(not(target_os = "android"))]
     dirs::download_dir()
 }

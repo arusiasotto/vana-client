@@ -31,16 +31,32 @@ fn installer_search_dirs(install_parent: &Path) -> Vec<PathBuf> {
 fn installer_parts_in(dir: &Path) -> usize {
     (1..=VOLUMES)
         .filter(|i| {
-            let p = dir.join(volume(*i));
-            p.is_file() && crate::install::installer_volume_ok(&p, *i).is_ok()
+            let Some(p) = crate::install::find_installer_volume(dir, *i) else { return false };
+            crate::install::installer_volume_ok(&p, *i).is_ok()
         })
         .count()
 }
 
+/// `archives` and its immediate subfolders (some browsers unzip into a child folder).
+fn archive_candidate_dirs(archives: &Path) -> Vec<PathBuf> {
+    if archives.as_os_str().is_empty() {
+        return vec![];
+    }
+    let mut dirs = vec![archives.to_path_buf()];
+    if let Ok(rd) = std::fs::read_dir(archives) {
+        dirs.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
 /// The folder holding all five volumes: the one typed in, else the first found.
 fn installer_dir(install_parent: &Path, archives: &Path) -> Option<PathBuf> {
-    if !archives.as_os_str().is_empty() && installer_parts_in(archives) == VOLUMES {
-        return Some(archives.to_path_buf());
+    for d in archive_candidate_dirs(archives) {
+        if installer_parts_in(&d) == VOLUMES {
+            return Some(d);
+        }
     }
     installer_search_dirs(install_parent).into_iter().find(|d| installer_parts_in(d) == VOLUMES)
 }
@@ -292,23 +308,47 @@ impl FirstRun {
         ui.label(egui::RichText::new("Installer files here:").size(12.0).weak());
         let mut any = false;
         for i in 1..=VOLUMES {
-            let p = cwd.join(volume(i));
-            if !p.is_file() {
+            let want = volume(i);
+            let Some(p) = crate::install::find_installer_volume(cwd, i) else {
+                ui.label(
+                    egui::RichText::new(format!("✗ {want} (missing)"))
+                        .size(12.0)
+                        .font(egui::FontId::monospace(11.0))
+                        .weak(),
+                );
                 continue;
-            }
+            };
             any = true;
             let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
             let ok = crate::install::installer_volume_ok(&p, i).is_ok();
             let mark = if ok { "✓" } else { "✗" };
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| want.clone());
             let gb = size as f64 / 1e9;
             ui.label(
-                egui::RichText::new(format!("{mark} {} ({gb:.2} GB)", volume(i)))
+                egui::RichText::new(format!("{mark} {name} ({gb:.2} GB)"))
                     .size(12.0)
                     .font(egui::FontId::monospace(11.0)),
             );
         }
         if !any {
-            ui.label(egui::RichText::new("None yet — pick the folder or a subfolder under Download.").weak().size(11.0));
+            let err = match std::fs::read_dir(cwd) {
+                Err(e) => format!("Cannot read this folder: {e}. Turn on All files access (step 1)."),
+                Ok(rd) => {
+                    let files: Vec<String> = rd
+                        .flatten()
+                        .filter_map(|e| e.file_type().ok().filter(|t| t.is_file()).map(|_| e))
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect();
+                    if files.is_empty() {
+                        "No files here — open a folder that contains the five FFXIFullSetup parts.".into()
+                    } else if files.len() <= 6 {
+                        format!("No installer volumes here. Files: {}", files.join(", "))
+                    } else {
+                        format!("No installer volumes here ({n} other files).", n = files.len())
+                    }
+                }
+            };
+            ui.label(egui::RichText::new(err).weak().size(11.0));
         }
     }
 
