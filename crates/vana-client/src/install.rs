@@ -41,8 +41,8 @@ fn missing_volume_hint(dir: &Path, want: &str) -> String {
     let similar: Vec<String> = rd
         .flatten()
         .filter_map(|e| {
-            let n = e.file_name().to_string_lossy();
-            n.to_ascii_lowercase().starts_with(prefix).then(|| n.into_owned())
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.to_ascii_lowercase().starts_with(prefix).then_some(n)
         })
         .collect();
     if !similar.is_empty() {

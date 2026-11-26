@@ -549,8 +549,8 @@ impl FirstRun {
                 .size(12.0)
                 .color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)),
         );
-        if let Some(pending) = &self.wipe_confirm {
-            if norm_install_root(pending) != norm_install_root(&install_parent) {
+        if let Some(pending) = self.wipe_confirm.clone() {
+            if norm_install_root(&pending) != norm_install_root(&install_parent) {
                 self.wipe_confirm = None;
             }
         }
@@ -725,21 +725,21 @@ impl FirstRun {
                 self.wipe_confirm = None;
             }
         }
-        if let Some(pending) = &self.wipe_confirm {
+        if let Some(pending) = self.wipe_confirm.clone() {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(format!(
                     "Delete everything under {}? This cannot be undone.",
-                    short_path(pending)
+                    short_path(&pending)
                 ))
                 .size(12.0)
                 .color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)),
             );
             ui.horizontal(|ui| {
                 if ui.button("Delete all").clicked() {
-                    match wipe_install_dir(pending, true) {
+                    match wipe_install_dir(&pending, true) {
                         Ok(()) => {
-                            self.note = format!("Removed old files under {}.", short_path(pending));
+                            self.note = format!("Removed old files under {}.", short_path(&pending));
                             self.wipe_confirm = None;
                         }
                         Err(e) => self.note = format!("Could not remove files: {e}"),
