@@ -69,13 +69,39 @@ pub struct Offer {
 const ALL: usize = usize::MAX;
 
 /// The catalogue's entries, each with what it is here: to install, to update or installed.
-fn statuses(list: Vec<Entry>) -> Vec<(Entry, Option<bool>)> {
+fn statuses(
+    list: Vec<Entry>,
+    source: catalogue::Source,
+    hide_ids: Option<&std::collections::HashSet<String>>,
+) -> Vec<(Entry, Option<bool>)> {
     list.into_iter()
+        .filter(|e| hide_ids.is_none_or(|ids| !ids.contains(&e.id)))
         .map(|e| {
-            let have = catalogue::installed(&catalogue::root_of(&e), &e.id);
-            let st = catalogue::offer(&e, have.as_deref());
+            let root = catalogue::root_of(&e);
+            let have = catalogue::installed(&root, &e.id);
+            let inst_src = catalogue::installed_source(&root, &e.id);
+            let st = match (have.as_deref(), inst_src) {
+                (None, _) => catalogue::offer(&e, None),
+                (Some(v), Some(s)) if s == source => catalogue::offer(&e, Some(v)),
+                (Some(v), None) if source == catalogue::Source::Standard => catalogue::offer(&e, Some(v)),
+                (Some(_), _) => None,
+            };
             (e, st)
         })
+        .collect()
+}
+
+fn standard_ids_for_server_filter() -> std::collections::HashSet<String> {
+    catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Mods, &[])
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| e.id)
+        .chain(
+            catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Dats, &[])
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| e.id),
+        )
         .collect()
 }
 
@@ -98,24 +124,34 @@ impl Mods {
         let keys = server_keys.clone();
         let (ltx, lrx) = channel();
         std::thread::spawn(move || {
-            let _ =
-                ltx.send(catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Mods, &[]).map(statuses));
+            let _ = ltx.send(
+                catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Mods, &[])
+                    .map(|v| statuses(v, catalogue::Source::Standard, None)),
+            );
         });
         let (dtx, drx) = channel();
         std::thread::spawn(move || {
-            let _ =
-                dtx.send(catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Dats, &[]).map(statuses));
+            let _ = dtx.send(
+                catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Dats, &[])
+                    .map(|v| statuses(v, catalogue::Source::Standard, None)),
+            );
         });
         let sk = server_keys.clone();
         let (sltx, slrx) = channel();
         std::thread::spawn(move || {
-            let _ =
-                sltx.send(catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Mods, &sk).map(statuses));
+            let hide = standard_ids_for_server_filter();
+            let _ = sltx.send(
+                catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Mods, &sk)
+                    .map(|v| statuses(v, catalogue::Source::Server, Some(&hide))),
+            );
         });
         let (sdtx, sdrx) = channel();
         std::thread::spawn(move || {
-            let _ =
-                sdtx.send(catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Dats, &keys).map(statuses));
+            let hide = standard_ids_for_server_filter();
+            let _ = sdtx.send(
+                catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Dats, &keys)
+                    .map(|v| statuses(v, catalogue::Source::Server, Some(&hide))),
+            );
         });
         Self {
             packs: Vec::new(),
@@ -173,18 +209,24 @@ impl Mods {
         self.server_list_error = None;
         self.server_dat_error = None;
         for list in [catalogue::List::Mods, catalogue::List::Dats] {
-            catalogue::clear_cache(catalogue::Source::Server, list);
+            catalogue::clear_cache(catalogue::Source::Server, list, &keys);
         }
         let sk = keys.clone();
         let (ltx, lrx) = channel();
         std::thread::spawn(move || {
-            let _ =
-                ltx.send(catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Mods, &sk).map(statuses));
+            let hide = standard_ids_for_server_filter();
+            let _ = ltx.send(
+                catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Mods, &sk)
+                    .map(|v| statuses(v, catalogue::Source::Server, Some(&hide))),
+            );
         });
         let (dtx, drx) = channel();
         std::thread::spawn(move || {
-            let _ =
-                dtx.send(catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Dats, &keys).map(statuses));
+            let hide = standard_ids_for_server_filter();
+            let _ = dtx.send(
+                catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Dats, &keys)
+                    .map(|v| statuses(v, catalogue::Source::Server, Some(&hide))),
+            );
         });
         self.server_list = Some(lrx);
         self.server_dat_list = Some(drx);
@@ -346,26 +388,26 @@ impl Mods {
         self.install_entry(at, true)
     }
 
-    /// The newer version the catalogue has of installed mod or pack `id`.
-    pub fn update_for(&self, id: &str) -> Option<&str> {
-        let mut best: Option<&str> = None;
-        for e in self.entries.iter().chain(self.server_entries.iter()) {
-            if e.1 != Some(true) || !e.0.id.eq_ignore_ascii_case(id) {
-                continue;
-            }
-            let v = e.0.version.as_str();
-            if best.is_none_or(|b| super::updater::newer(v, b)) {
-                best = Some(v);
-            }
+    fn rows_for_installed_source(&self, id: &str) -> &[(Entry, Option<bool>)] {
+        match catalogue::installed_source_for_id(id) {
+            Some(catalogue::Source::Server) => &self.server_entries,
+            Some(catalogue::Source::Standard) | None => &self.entries,
         }
-        best
     }
 
-    /// The installed Lua mods (`lua`) or DAT packs with a newer version in either catalogue.
+    /// The newer version the catalogue has of installed mod or pack `id`.
+    pub fn update_for(&self, id: &str) -> Option<&str> {
+        self.rows_for_installed_source(id)
+            .iter()
+            .find(|e| e.1 == Some(true) && e.0.id.eq_ignore_ascii_case(id))
+            .map(|e| e.0.version.as_str())
+    }
+
+    /// The installed Lua mods (`lua`) or DAT packs with a newer version in their install source's catalogue.
     pub fn updates(&self, lua: bool) -> usize {
         let mut ids = std::collections::HashSet::new();
         for e in self.entries.iter().chain(self.server_entries.iter()) {
-            if e.1 == Some(true) && (e.0.kind == "lua") == lua {
+            if e.1 == Some(true) && (e.0.kind == "lua") == lua && self.update_for(&e.0.id).is_some() {
                 ids.insert(e.0.id.as_str());
             }
         }
@@ -381,6 +423,7 @@ impl Mods {
             .chain(self.server_entries.iter())
             .filter(|e| e.1 == Some(true) && (e.0.kind == "lua") == lua && !busy(&e.0.id))
             .filter(|e| seen.insert(e.0.id.as_str()))
+            .filter(|e| self.update_for(&e.0.id).is_some())
             .count()
     }
 
@@ -392,20 +435,12 @@ impl Mods {
     /// Installed mod or pack `id` updated from the catalogue, now or after the install running; false when it has no
     /// update.
     pub fn update(&mut self, id: &str) -> bool {
-        let at_std = self.entries.iter().position(|e| e.1 == Some(true) && e.0.id.eq_ignore_ascii_case(id));
-        let at_srv = self.server_entries.iter().position(|e| e.1 == Some(true) && e.0.id.eq_ignore_ascii_case(id));
-        let pick = match (at_std, at_srv) {
-            (Some(a), Some(b)) => {
-                if super::updater::newer(&self.server_entries[b].0.version, &self.entries[a].0.version) {
-                    (b, true)
-                } else {
-                    (a, false)
-                }
-            }
-            (Some(a), None) => (a, false),
-            (None, Some(b)) => (b, true),
-            (None, None) => return false,
+        let server = matches!(catalogue::installed_source_for_id(id), Some(catalogue::Source::Server));
+        let rows = if server { &self.server_entries } else { &self.entries };
+        let Some(at) = rows.iter().position(|e| e.1 == Some(true) && e.0.id.eq_ignore_ascii_case(id)) else {
+            return false;
         };
+        let pick = (at, server);
         if self.installing.as_ref().is_some_and(|i| i.0.eq_ignore_ascii_case(id)) || self.queued(id) {
             return true;
         }
@@ -438,7 +473,7 @@ impl Mods {
                 push(&mut ids, &mut seen, &self.server_entries);
             }
         }
-        ids.iter().filter(|id| self.update(id)).count()
+        ids.into_iter().filter(|id| self.update(id)).count()
     }
 
     /// Catalogue entry `at` installed off the UI thread; false while another install runs.
@@ -452,8 +487,9 @@ impl Mods {
         let (tx, rx) = channel();
         let pr = progress.clone();
         let id = e.id.clone();
+        let src = if server { catalogue::Source::Server } else { catalogue::Source::Standard };
         std::thread::spawn(move || {
-            let _ = tx.send(catalogue::install(&e, &catalogue::root_of(&e), &pr));
+            let _ = tx.send(catalogue::install(&e, &catalogue::root_of(&e), &pr, src));
         });
         self.installing = Some((id, progress, rx));
         true
@@ -488,10 +524,12 @@ impl Mods {
         // The next queued update starts (an error ends none of them).
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
-            let hit =
-                self.entries.iter().position(|e| e.1 == Some(true) && e.0.id == id).map(|at| (at, false)).or_else(
-                    || self.server_entries.iter().position(|e| e.1 == Some(true) && e.0.id == id).map(|at| (at, true)),
-                );
+            let server = matches!(catalogue::installed_source_for_id(&id), Some(catalogue::Source::Server));
+            let hit = if server {
+                self.server_entries.iter().position(|e| e.1 == Some(true) && e.0.id == id).map(|at| (at, true))
+            } else {
+                self.entries.iter().position(|e| e.1 == Some(true) && e.0.id == id).map(|at| (at, false))
+            };
             if let Some((at, srv)) = hit
                 && self.install_entry(at, srv)
             {
