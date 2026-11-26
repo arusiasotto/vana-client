@@ -3736,8 +3736,8 @@
       "files": [
         {
           "path": "README.md",
-          "sha256": "43934f399aa2ddb1d7132431bb6690ad744fdfe6cb87ec40ac231013db20103a",
-          "size": 4072,
+          "sha256": "766725453a94cf8c293a34c8882f1ce420f7ee882a1120275ca5c762989f37af",
+          "size": 4088,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/README.md"
         },
         {
@@ -3886,7 +3886,7 @@
         },
         {
           "path": "mod.toml",
-          "sha256": "f17fbf178a474c4acf92876cef461f274d5035692783f0c69223ea5268fef786",
+          "sha256": "9c7d3ee4788d7f6420bcf7ad1f618204f53f354efc4eb5b9f5d428198dd48838",
           "size": 9937,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/mod.toml"
         },
@@ -4060,8 +4060,8 @@
         },
         {
           "path": "modules/party/src/trusts.lua",
-          "sha256": "40cb077292b54cecd5b00ac324fb0fa3794034911036164566b2a9e31374cc09",
-          "size": 5648,
+          "sha256": "35238aad70bd7fa0a6ae5f8a0e9a85704af53dd5f31d16795d4589aae781a1d7",
+          "size": 6997,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/party/src/trusts.lua"
         },
         {
@@ -4458,7 +4458,7 @@
       "id": "xiv-ui",
       "kind": "lua",
       "name": "XIV-UI",
-      "version": "0.4.24"
+      "version": "0.4.25"
     },
     {
       "authors": [],
