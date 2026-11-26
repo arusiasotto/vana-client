@@ -38,6 +38,39 @@
       "kind": "pack",
       "name": "Vana Upscale",
       "version": "1.1.0"
+    },
+    {
+      "authors": [
+        "vana-client"
+      ],
+      "description": "Normal, roughness and metal maps for Settings > Material Maps: every world and equipment texture of the game and of Vana Upscale (the material-pack-1 release: four parts). About 4.8 GB once installed.",
+      "files": [
+        {
+          "sha256": "c5ca765252161899d37b3dde391db0734409ee957bd3cfe92cdf98aebb854811",
+          "size": 946296928,
+          "url": "https://github.com/lenonk/vana-client/releases/download/material-pack-1/vana-materials-01.7z"
+        },
+        {
+          "sha256": "63f6308f6db8dc392be256bda8d68467c20ec091fb546c8a1c8e6303ee075a55",
+          "size": 961942907,
+          "url": "https://github.com/lenonk/vana-client/releases/download/material-pack-1/vana-materials-02.7z"
+        },
+        {
+          "sha256": "dc1506b5d1ee71b2777371941dc6b83d02191655601c6d212120a862611b3d92",
+          "size": 968580869,
+          "url": "https://github.com/lenonk/vana-client/releases/download/material-pack-1/vana-materials-03.7z"
+        },
+        {
+          "sha256": "c3d7e01f4b2ea6c59a0125ec16c35326167b59c2112ad8585fa415d41e0a8fd9",
+          "size": 937552618,
+          "url": "https://github.com/lenonk/vana-client/releases/download/material-pack-1/vana-materials-04.7z"
+        }
+      ],
+      "homepage": "https://github.com/lenonk/vana-client/releases/tag/material-pack-1",
+      "id": "materials",
+      "kind": "materials",
+      "name": "Material Maps",
+      "version": "1.0.0"
     }
   ]
 }

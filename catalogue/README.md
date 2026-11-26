@@ -40,7 +40,7 @@ its `version` and `files`.
 |---|---|
 | `id` | The folder it installs to in the mods folder: letters, digits, `_` and `-`. For a Lua mod it is the mod's id: its `mod.toml` must name the same id, or none. |
 | `name` | Shown on the page. |
-| `kind` | `lua` (a Lua mod, the default) or `pack` (a DAT pack: game files in XIPivot's layout, `ROM*/<dir>/<file>.DAT`). |
+| `kind` | `lua` (a Lua mod, the default), `pack` (a DAT pack: game files in XIPivot's layout, `ROM*/<dir>/<file>.DAT`) or `materials` (the material pack for Settings' Material Maps: `index.bin` and `maps/<2 hex>/<key>.vmat`, id `materials`, installed as the data folder's `materials`; listed with the DAT packs, and left out by clients older than the kind). |
 | `version` | Compared with the installed copy's: a newer one is offered as Update. For a Lua mod, keep it the same as `mod.toml`'s. |
 | `authors`, `description` | Shown in the help line. |
 | `homepage` | Where to read more (for people reading the list; the client does not show it). |
