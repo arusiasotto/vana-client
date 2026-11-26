@@ -1,7 +1,10 @@
 //! The first-start window on Android: All files access first, then game files from Square Enix's installer volumes
 //! the user downloaded (kept where they are), or an install already on the device.
 
-use super::{Action, MARKER, Stage, VOLUMES, closing_note, existing, incomplete, set, volume};
+use super::{
+    Action, MARKER, Stage, VOLUMES, closing_note, existing, install_complete, install_incomplete_detail, needs_recovery,
+    set, volume,
+};
 use crate::install::Progress;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -116,25 +119,6 @@ pub fn wipe_install_dir(game_dir: &Path, allow_non_default: bool) -> std::io::Re
     Ok(())
 }
 
-/// Clears a stale or partial install under the default folder when first-start opens.
-fn auto_wipe_default_if_stale(game_dir: &Path) {
-    if !is_default_install_dir(game_dir) {
-        return;
-    }
-    let ffxi = game_dir.join("FINAL FANTASY XI");
-    if !incomplete(&ffxi) && !install_dir_has_content(game_dir) {
-        return;
-    }
-    if !incomplete(&ffxi) {
-        // A complete retail tree at the default path is kept (for example after Clear data + Existing install).
-        return;
-    }
-    match wipe_install_dir(game_dir, false) {
-        Ok(()) => log::info!("cleared incomplete default install at {}", game_dir.display()),
-        Err(e) => log::warn!("could not clear default install at {}: {e}", game_dir.display()),
-    }
-}
-
 /// Which choice the in-app folder list is filling in.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Browse {
@@ -190,12 +174,16 @@ impl FirstRun {
         // Configs from before shared storage kept the game in app storage.
         let game_dir =
             if crate::config::in_app_storage(&game_dir) { crate::config::default_game_dir() } else { game_dir };
-        auto_wipe_default_if_stale(&game_dir);
+        let stage = if needs_recovery(&game_dir) {
+            Stage::Recovery
+        } else {
+            Stage::Ask
+        };
         Self {
             path_input: game_dir.display().to_string(),
             archive_path_input: downloads().display().to_string(),
             game_dir,
-            stage: Arc::new(Mutex::new(Stage::Ask)),
+            stage: Arc::new(Mutex::new(stage)),
             progress: Arc::new(Progress::default()),
             browse: None,
             browser_at: crate::client::folder_pick::storage_root(),
@@ -231,11 +219,6 @@ impl FirstRun {
                 default.display()
             );
             return Action::None;
-        }
-        if is_default_install_dir(&parent) {
-            if let Err(e) = wipe_install_dir(&parent, false) {
-                log::warn!("clearing default install folder before install: {e}");
-            }
         }
         if let Err(e) = std::fs::create_dir_all(&parent) {
             self.note = format!("Cannot use that install folder: {e}");
@@ -430,6 +413,7 @@ impl FirstRun {
             _ => None,
         };
         let working = matches!(&*self.stage.lock().unwrap(), Stage::Working);
+        let recovery = matches!(&*self.stage.lock().unwrap(), Stage::Recovery);
         let mut action = Action::None;
         let screen = ctx.content_rect();
         let ppp = ctx.pixels_per_point();
@@ -464,11 +448,12 @@ impl FirstRun {
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            match (&failed, working, &cleanup) {
-                                (Some(e), _, _) => self.failed_ui(ui, e, &mut action),
-                                (None, true, _) => self.progress_ui(ui),
-                                (None, false, Some(stash)) => self.cleanup_offer_ui(ui, stash, &mut action),
-                                (None, false, None) => {
+                            match (&failed, working, &cleanup, recovery) {
+                                (Some(e), _, _, _) => self.failed_ui(ui, e, &mut action),
+                                (None, true, _, _) => self.progress_ui(ui),
+                                (None, false, Some(stash), _) => self.cleanup_offer_ui(ui, stash, &mut action),
+                                (None, false, None, true) => self.recovery_ui(ui, &mut action),
+                                (None, false, None, false) => {
                                     self.ask_ui_scroll(ui, two_cols);
                                     if self.browse.is_none() {
                                         self.ask_ui_start_row(ui, &mut action);
@@ -499,6 +484,131 @@ impl FirstRun {
             self.try_start(action);
         } else {
             *action = self.begin_install();
+        }
+    }
+
+    fn check_install_complete(&mut self, action: &mut Action) {
+        self.note.clear();
+        if !crate::android_fs::has_all_files_access() {
+            self.note = "Turn on All files access in settings, then try again.".into();
+            return;
+        }
+        let parent = self.install_parent();
+        let ffxi = parent.join("FINAL FANTASY XI");
+        if !install_complete(&ffxi) {
+            self.note = install_incomplete_detail(&ffxi);
+            return;
+        }
+        match existing(&parent) {
+            Ok(game_dir) => {
+                log::info!("recovery: install at {} is complete", game_dir.display());
+                self.game_dir = game_dir.clone();
+                self.path_input = game_dir.display().to_string();
+                *action = Action::Ready;
+            }
+            Err(e) => self.note = format!("{e:#}"),
+        }
+    }
+
+    fn recovery_wipe(&mut self, install_parent: &Path) {
+        if is_default_install_dir(install_parent) {
+            match wipe_install_dir(install_parent, false) {
+                Ok(()) => {
+                    log::info!("recovery: wiped {}", install_parent.display());
+                    self.note = format!("Removed old files under {}.", short_path(install_parent));
+                    *self.stage.lock().unwrap() = Stage::Ask;
+                    self.wipe_confirm = None;
+                }
+                Err(e) => self.note = format!("Could not remove files: {e}"),
+            }
+        } else {
+            self.wipe_confirm = Some(install_parent.to_path_buf());
+            self.note.clear();
+        }
+    }
+
+    fn recovery_ui(&mut self, ui: &mut egui::Ui, action: &mut Action) {
+        let install_parent = self.install_parent();
+        let ffxi = install_parent.join("FINAL FANTASY XI");
+        ui.label(egui::RichText::new("Install needs attention").size(17.0));
+        ui.label(
+            egui::RichText::new(
+                "Game files on disk look incomplete or stale (a crash, partial install, or a cleared setup flag).",
+            )
+            .size(13.0)
+            .weak(),
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(short_path(&install_parent))
+                .size(13.0)
+                .font(egui::FontId::monospace(13.0)),
+        );
+        ui.label(
+            egui::RichText::new(install_incomplete_detail(&ffxi))
+                .size(12.0)
+                .color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)),
+        );
+        if let Some(pending) = &self.wipe_confirm {
+            if norm_install_root(pending) != norm_install_root(&install_parent) {
+                self.wipe_confirm = None;
+            }
+        }
+        if let Some(pending) = self.wipe_confirm.clone() {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Delete everything under {}? This cannot be undone.",
+                    short_path(&pending)
+                ))
+                .size(12.0)
+                .color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Delete all").clicked() {
+                    match wipe_install_dir(&pending, true) {
+                        Ok(()) => {
+                            self.note = format!("Removed old files under {}.", short_path(&pending));
+                            self.wipe_confirm = None;
+                            *self.stage.lock().unwrap() = Stage::Ask;
+                        }
+                        Err(e) => self.note = format!("Could not remove files: {e}"),
+                    }
+                }
+                if ui.button("Cancel").clicked() {
+                    self.wipe_confirm = None;
+                }
+            });
+        }
+        if !self.note.is_empty() {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(&self.note).size(12.0).weak());
+        }
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(egui::RichText::new("Check install complete").size(15.0)).clicked() {
+                self.check_install_complete(action);
+            }
+            if self.wipe_confirm.is_none() {
+                let wipe_label = if is_default_install_dir(&install_parent) {
+                    "Wipe Game/FFXI folder"
+                } else {
+                    "Wipe install folder"
+                };
+                if ui.button(egui::RichText::new(wipe_label).size(15.0)).clicked() {
+                    self.recovery_wipe(&install_parent);
+                }
+            }
+            if ui.button("Continue to setup").clicked() {
+                *self.stage.lock().unwrap() = Stage::Ask;
+                self.note.clear();
+            }
+            if ui.button("Quit").clicked() {
+                *action = Action::Quit;
+            }
+        });
+        if !crate::android_fs::poll_all_files_access().unwrap_or(false) {
+            ui.label(egui::RichText::new("All files access is required to check or wipe on-device files.").weak());
         }
     }
 
@@ -738,6 +848,12 @@ impl FirstRun {
             if ui.button("Try again").clicked() {
                 *self.stage.lock().unwrap() = Stage::Ask;
                 *action = self.begin_install();
+            }
+            if needs_recovery(&self.install_parent())
+                && ui.button("Recovery options").clicked()
+            {
+                *self.stage.lock().unwrap() = Stage::Recovery;
+                self.note.clear();
             }
             if ui.button("Quit").clicked() {
                 *action = Action::Quit;

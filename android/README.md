@@ -22,7 +22,7 @@ Android **Settings → Apps → vana-client → Storage → Clear data** (or **C
 
 After clear data the client has no config (`installed` is false again) and shows the **first-start** screen even when `VTABLE.DAT` is still on disk. Use **Existing install** to point at that folder and skip reinstalling. Installer archives in **Download** are also left on the device unless you removed them yourself.
 
-The default install folder (`/storage/emulated/0/Game/FFXI`, the config default) is cleared automatically when first-start opens with an **incomplete or stale** install there (missing files, `.vana-installing`, `.staging`, or staged installer volumes). A **complete** tree at that path is kept so you can use **Existing install** after Clear data. Starting a **local install** into the default folder wipes it first. **Remove old install files** on the first-start screen deletes everything under the chosen install folder; custom paths ask for confirmation first.
+When first-start finds an **incomplete or stale** install (partial files, `.vana-installing`, `.staging`, staged installer volumes, or a stale setup flag), it opens a **recovery** screen before the normal setup steps. You can **Check install complete** (validates `VTABLE.DAT`, `FTABLE.DAT`, FFXiMain, and staging markers — a complete tree continues into the game), **Wipe Game/FFXI folder** at the default path (`/storage/emulated/0/Game/FFXI`), or **Continue to setup** for a fresh or resumed local install. Custom install folders are never deleted automatically; **Wipe install folder** asks for confirmation first. A complete tree at the default path after **Clear data** is not treated as broken — use **Existing install** on the setup screen.
 
 ## Mods, addons, and Download
 

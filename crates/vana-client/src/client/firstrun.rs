@@ -40,6 +40,55 @@ pub fn incomplete(ffxi_dir: &Path) -> bool {
     })
 }
 
+/// True when the retail tree is present and no install staging markers remain.
+pub fn install_complete(ffxi_dir: &Path) -> bool {
+    !incomplete(ffxi_dir)
+}
+
+/// Short explanation for the recovery screen when [`incomplete`] is true.
+pub fn install_incomplete_detail(ffxi_dir: &Path) -> String {
+    let mut parts = Vec::new();
+    if !ffxi_dir.join("VTABLE.DAT").is_file() {
+        parts.push("VTABLE.DAT is missing");
+    }
+    if !ffxi_dir.join("FTABLE.DAT").is_file() {
+        parts.push("FTABLE.DAT is missing");
+    }
+    if !crate::dat::ffximain(ffxi_dir).is_file() {
+        parts.push("FFXiMain.dll is missing");
+    }
+    if let Some(parent) = ffxi_dir.parent() {
+        if parent.join(MARKER).is_file() {
+            parts.push("a previous install did not finish (.vana-installing)");
+        }
+        if parent.join(".staging").is_dir() {
+            parts.push("installer staging (.staging) is still present");
+        }
+        if parent.join(".download").join(volume(1)).is_file() {
+            parts.push("installer volumes are staged under .download");
+        }
+    }
+    if parts.is_empty() {
+        "The install could not be verified.".into()
+    } else {
+        parts.join("; ")
+    }
+}
+
+/// Partial or interrupted install under `game_dir` (parent of `FINAL FANTASY XI`).
+#[cfg(target_os = "android")]
+pub fn needs_recovery(game_dir: &Path) -> bool {
+    let ffxi = game_dir.join("FINAL FANTASY XI");
+    if !incomplete(&ffxi) {
+        return false;
+    }
+    game_dir.join(MARKER).is_file()
+        || game_dir.join(".staging").is_dir()
+        || game_dir.join(".download").is_dir()
+        || ffxi.join("VTABLE.DAT").is_file()
+        || game_dir.is_dir() && std::fs::read_dir(game_dir).map(|mut rd| rd.next().is_some()).unwrap_or(false)
+}
+
 /// On Android, `installed` lives in app storage while game files stay on disk — clear a stale `installed` when setup
 /// still needs to run.
 #[cfg(target_os = "android")]
@@ -112,6 +161,8 @@ fn closing_note(phase: &str) -> &'static str {
 }
 
 enum Stage {
+    /// Android: stale or partial install on disk before the normal setup steps.
+    Recovery,
     Ask,
     Working,
     /// Install finished; the user chooses whether to delete staged installer volumes.
@@ -211,7 +262,7 @@ impl FirstRun {
     pub fn ui(&mut self, ctx: &egui::Context) -> Action {
         let mut action = Action::None;
         let stage = match &*self.stage.lock().unwrap() {
-            Stage::Ask => 0,
+            Stage::Recovery | Stage::Ask => 0,
             Stage::Working => 1,
             Stage::Done | Stage::CleanupOffer(_) => 2,
             Stage::Failed(_) => 3,
@@ -416,6 +467,25 @@ pub use android::FirstRun;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "android")]
+    fn needs_recovery_when_install_is_partial() {
+        let base = std::env::temp_dir().join(format!("vana-recovery-{}", std::process::id()));
+        let game = base.join("Game").join("FFXI");
+        let ffxi = game.join("FINAL FANTASY XI");
+        std::fs::create_dir_all(&ffxi).unwrap();
+        assert!(!needs_recovery(&game));
+        std::fs::write(game.join(MARKER), b"").unwrap();
+        assert!(needs_recovery(&game));
+        std::fs::write(ffxi.join("VTABLE.DAT"), b"").unwrap();
+        assert!(needs_recovery(&game));
+        std::fs::write(ffxi.join("FTABLE.DAT"), &[0u8; 2]).unwrap();
+        std::fs::write(ffxi.join("FFXiMain.dll"), b"").unwrap();
+        std::fs::remove_file(game.join(MARKER)).unwrap();
+        assert!(!needs_recovery(&game));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     fn needed_follows_installed_on_android() {
