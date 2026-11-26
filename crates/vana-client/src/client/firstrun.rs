@@ -27,6 +27,15 @@ pub const WINDOW: [u32; 2] = [760, 540];
 /// Left in the game folder while the first start runs: one stopped part-way resumes in this window.
 const MARKER: &str = ".vana-installing";
 
+/// Install staging under the game folder (parent of `FINAL FANTASY XI`): a partial run may leave the marker while the
+/// retail tree already has `VTABLE.DAT`.
+pub fn interrupted_install(game_dir: &Path) -> bool {
+    game_dir.join(MARKER).is_file()
+        || game_dir.join(".staging").is_dir()
+        || game_dir.join(".download").join(volume(1)).is_file()
+        || game_dir.join(".download").is_dir()
+}
+
 /// The install at `ffxi_dir` is missing game files or was stopped part-way.
 pub fn incomplete(ffxi_dir: &Path) -> bool {
     if !ffxi_dir.join("VTABLE.DAT").is_file() {
@@ -35,9 +44,7 @@ pub fn incomplete(ffxi_dir: &Path) -> bool {
     if !ffxi_dir.join("FTABLE.DAT").is_file() || !crate::dat::ffximain(ffxi_dir).is_file() {
         return true;
     }
-    ffxi_dir.parent().is_some_and(|g| {
-        g.join(MARKER).is_file() || g.join(".staging").is_dir() || g.join(".download").join(volume(1)).is_file()
-    })
+    ffxi_dir.parent().is_some_and(interrupted_install)
 }
 
 /// True when the retail tree is present and no install staging markers remain.
@@ -78,14 +85,14 @@ pub fn install_incomplete_detail(ffxi_dir: &Path) -> String {
 /// Partial or interrupted install under `game_dir` (parent of `FINAL FANTASY XI`).
 #[cfg(target_os = "android")]
 pub fn needs_recovery(game_dir: &Path) -> bool {
+    if interrupted_install(game_dir) {
+        return true;
+    }
     let ffxi = game_dir.join("FINAL FANTASY XI");
     if !incomplete(&ffxi) {
         return false;
     }
-    game_dir.join(MARKER).is_file()
-        || game_dir.join(".staging").is_dir()
-        || game_dir.join(".download").is_dir()
-        || ffxi.join("VTABLE.DAT").is_file()
+    ffxi.join("VTABLE.DAT").is_file()
         || game_dir.is_dir() && std::fs::read_dir(game_dir).map(|mut rd| rd.next().is_some()).unwrap_or(false)
 }
 
@@ -93,7 +100,7 @@ pub fn needs_recovery(game_dir: &Path) -> bool {
 /// still needs to run.
 #[cfg(target_os = "android")]
 pub fn sync_config(cfg: &mut crate::config::Config) {
-    if !needed(&cfg.ffxi_dir(), cfg.installed) {
+    if !before_title(&cfg.game_dir, &cfg.ffxi_dir(), cfg.installed) {
         return;
     }
     if !cfg.installed {
@@ -106,20 +113,38 @@ pub fn sync_config(cfg: &mut crate::config::Config) {
     }
 }
 
-/// Whether the client should open the first-start window before the title screen.
+/// Whether first-start / recovery should run before the opening movie and title.
+///
+/// Checks [`interrupted_install`] on `game_dir` first so `.vana-installing` is not missed when the config path and
+/// `ffxi_dir.parent()` differ or the retail tree already has `VTABLE.DAT`.
 ///
 /// On Android, game files live on shared storage and survive **Clear data**; only app storage (including
 /// `config.json` and `installed`) is wiped. Until setup has finished (`installed`), first-start runs even when
 /// `VTABLE.DAT` is already on disk (the user can pick **Existing install** or reinstall).
-pub fn needed(ffxi_dir: &Path, installed: bool) -> bool {
+pub fn before_title(game_dir: &Path, ffxi_dir: &Path, installed: bool) -> bool {
+    if interrupted_install(game_dir) {
+        log::info!("first-start: install staging under {}", game_dir.display());
+        return true;
+    }
     if incomplete(ffxi_dir) {
         return true;
     }
     #[cfg(target_os = "android")]
-    if !installed {
-        return true;
+    {
+        if needs_recovery(game_dir) {
+            return true;
+        }
+        if !installed {
+            return true;
+        }
     }
     false
+}
+
+/// Whether the client should open the first-start window before the title screen.
+pub fn needed(ffxi_dir: &Path, installed: bool) -> bool {
+    let game_dir = ffxi_dir.parent().unwrap_or(ffxi_dir);
+    before_title(game_dir, ffxi_dir, installed)
 }
 
 /// The game folder (the one that holds `FINAL FANTASY XI`) for an install picked in the window: the
@@ -469,6 +494,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn before_title_sees_marker_on_game_dir_with_retail_tree() {
+        let base = std::env::temp_dir().join(format!("vana-before-title-{}", std::process::id()));
+        let game = base.join("Game").join("FFXI");
+        let ffxi = game.join("FINAL FANTASY XI");
+        std::fs::create_dir_all(&ffxi).unwrap();
+        std::fs::write(ffxi.join("VTABLE.DAT"), b"").unwrap();
+        std::fs::write(ffxi.join("FTABLE.DAT"), &[0u8; 2]).unwrap();
+        std::fs::write(ffxi.join("FFXiMain.dll"), b"").unwrap();
+        assert!(!incomplete(&ffxi));
+        assert!(!needed(&ffxi, true));
+        std::fs::write(game.join(MARKER), b"").unwrap();
+        assert!(before_title(&game, &ffxi, true));
+        assert!(before_title(&game, &ffxi, false));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     #[cfg(target_os = "android")]
     fn needs_recovery_when_install_is_partial() {
         let base = std::env::temp_dir().join(format!("vana-recovery-{}", std::process::id()));
@@ -482,6 +524,7 @@ mod tests {
         assert!(needs_recovery(&game));
         std::fs::write(ffxi.join("FTABLE.DAT"), &[0u8; 2]).unwrap();
         std::fs::write(ffxi.join("FFXiMain.dll"), b"").unwrap();
+        assert!(needs_recovery(&game));
         std::fs::remove_file(game.join(MARKER)).unwrap();
         assert!(!needs_recovery(&game));
         std::fs::remove_dir_all(&base).unwrap();

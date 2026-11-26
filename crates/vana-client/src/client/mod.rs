@@ -9461,8 +9461,12 @@ impl App {
         crate::render::SHINE_WRAP.store(cfg.tool("0040") == 0, std::sync::atomic::Ordering::Relaxed);
         let (tasks_tx, tasks) = channel();
         let phase = Phase::login(&cfg);
+        // Recovery / first-start must draw before the title; the opening movie blocks redraw until it finishes.
+        let bootstrap = firstrun::before_title(&cfg.game_dir, &cfg.ffxi_dir(), cfg.installed);
         // Config 0022 (FUN_10010d20 state 1): the opening movie before the title; in a test drive only with FFXI_OPENING.
-        let opening = (cfg.tool("0022") != 0 && (!drive.driven() || std::env::var_os("FFXI_OPENING").is_some()))
+        let opening = (!bootstrap
+            && cfg.tool("0022") != 0
+            && (!drive.driven() || std::env::var_os("FFXI_OPENING").is_some()))
             .then(|| opening::Opening::open(&cfg.ffxi_dir().join("mov")))
             .flatten();
         let installed = crate::dat::installed(&cfg.ffxi_dir());
@@ -9613,7 +9617,7 @@ impl App {
             lobby_values: Default::default(),
             lobby_settings: None,
             updates,
-            first_run: None,
+            first_run: bootstrap.then(|| firstrun::FirstRun::new(cfg.game_dir.clone())),
             #[cfg(target_os = "android")]
             game_data: None,
             update_ui: None,
@@ -9637,7 +9641,7 @@ impl App {
         #[cfg(target_os = "android")]
         if app.cfg.ffxi_dir().join("VTABLE.DAT").is_file()
             && crate::android_fs::has_all_files_access()
-            && !firstrun::needed(&app.cfg.ffxi_dir(), app.cfg.installed)
+            && !firstrun::before_title(&app.cfg.game_dir, &app.cfg.ffxi_dir(), app.cfg.installed)
         {
             app.start_index_warm();
         }
@@ -16140,7 +16144,9 @@ impl App {
         if self.game_ui.is_none() {
             if self.game_ui_state == LoadState::Failed {
                 #[cfg(target_os = "android")]
-                if self.first_run.is_none() && firstrun::needed(&self.cfg.ffxi_dir(), self.cfg.installed) {
+                if self.first_run.is_none()
+                    && firstrun::before_title(&self.cfg.game_dir, &self.cfg.ffxi_dir(), self.cfg.installed)
+                {
                     log::warn!("lobby UI failed; opening first-start (install may be incomplete)");
                     if self.cfg.installed {
                         self.cfg.installed = false;
@@ -18452,7 +18458,7 @@ impl App {
     /// Parses the lobby DATs and font on a worker thread.
     fn load_game_ui(&mut self) {
         self.game_ui_state = LoadState::Loading;
-        if firstrun::needed(&self.cfg.ffxi_dir(), self.cfg.installed) {
+        if firstrun::before_title(&self.cfg.game_dir, &self.cfg.ffxi_dir(), self.cfg.installed) {
             // scene_loads runs every frame while the UI is idle. Replacing the window drops the button's result.
             if self.first_run.is_none() {
                 self.first_run = Some(firstrun::FirstRun::new(self.cfg.game_dir.clone()));
@@ -18990,10 +18996,15 @@ impl App {
 
     /// Whether this frame draws the game: not while the opening movie plays, nor before the title can draw.
     fn frame_shown(&mut self) -> bool {
-        // Config 0022: the opening movie before the title, which loads behind it.
+        // Config 0022: the opening movie before the title, which loads behind it (not during install / recovery).
         if self.opening.is_some() {
-            self.draw_opening();
-            return false;
+            if self.first_run.is_some() {
+                log::info!("opening: skipped for first-start / recovery");
+                (self.opening, self.movie) = (None, None);
+            } else {
+                self.draw_opening();
+                return false;
+            }
         }
         #[cfg(target_os = "android")]
         {
@@ -22064,7 +22075,7 @@ impl ApplicationHandler for App {
         // don't ask for focus and say so in the title, so they never take the user's keyboard.
         let title = if self.drive.driven() { "FINAL FANTASY XI [test]" } else { "FINAL FANTASY XI" };
         // No game files yet: the first-start window is a fixed size, whatever the config says.
-        let bootstrap = firstrun::needed(&self.cfg.ffxi_dir(), self.cfg.installed);
+        let bootstrap = firstrun::before_title(&self.cfg.game_dir, &self.cfg.ffxi_dir(), self.cfg.installed);
         let [ww, wh] = if bootstrap { firstrun::WINDOW } else { self.cfg.window_size() };
         // Test runs are windowed, unless their config puts them borderless on a named monitor (mode 3), which keeps
         // them off the screen the user works on.
