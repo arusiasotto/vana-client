@@ -19394,7 +19394,28 @@ impl App {
         } else {
             self.mouse.invalidate();
         }
-        // Android: no platform IME — text uses retail swkbd (Back) or a hardware keyboard; see VanaClientNativeActivity.
+        #[cfg(target_os = "android")]
+        if platform.ime.is_none()
+            && !matches!(&self.phase, Phase::World(_))
+            && let Some(ime) = self.lobby_ime.take()
+        {
+            let (ppp, k) = (ctx.pixels_per_point(), self.ui_k);
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(ime.rect[0] / k.0 / ppp, ime.rect[1] / k.1 / ppp),
+                egui::vec2(ime.rect[2] / k.0 / ppp, ime.rect[3] / k.1 / ppp),
+            );
+            platform.ime = Some(egui::output::IMEOutput {
+                purpose: if ime.password { egui::IMEPurpose::Password } else { egui::IMEPurpose::Normal },
+                rect,
+                cursor_rect: rect,
+                should_interrupt_composition: ime.retap,
+            });
+        }
+        #[cfg(target_os = "android")]
+        if matches!(&self.phase, Phase::World(_)) {
+            // In-world text uses retail swkbd (Back), not the Android keyboard over the game view.
+            platform.ime = None;
+        }
         #[cfg(not(target_os = "android"))]
         if let Phase::World(w) = &self.phase
             && w.typing

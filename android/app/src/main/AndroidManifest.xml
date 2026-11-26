@@ -20,7 +20,7 @@
             android:launchMode="singleTask"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
-            android:windowSoftInputMode="stateAlwaysHidden|adjustNothing"
+            android:windowSoftInputMode="adjustNothing"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
             <meta-data android:name="android.app.lib_name" android:value="vana_client" />
             <intent-filter>
