@@ -349,9 +349,9 @@ impl Mods {
     /// The newer version the catalogue has of installed mod or pack `id` (same source it was installed from).
     pub fn update_for(&self, id: &str) -> Option<&str> {
         let src = catalogue::installed_source(&crate::config::mods_dir(), id);
-        let rows: &[(&Entry, Option<bool>)] = match src {
-            Some(catalogue::Source::Server) => &self.server_entries,
-            Some(catalogue::Source::Standard) | None => &self.entries,
+        let rows = match src {
+            Some(catalogue::Source::Server) => self.server_entries.iter(),
+            Some(catalogue::Source::Standard) | None => self.entries.iter(),
         };
         let mut best: Option<&str> = None;
         for e in rows {
