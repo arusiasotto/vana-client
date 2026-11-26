@@ -247,12 +247,37 @@ impl Mods {
         Some(Some(self.entries.iter().map(|(e, _)| e.id.clone()).collect()))
     }
 
+    fn standard_list_holdback_reason(&self) -> String {
+        match (&self.list_error, &self.dat_error) {
+            (Some(e), _) => format!("the standard mod list could not be read ({e})"),
+            (_, Some(e)) => format!("the standard DAT list could not be read ({e})"),
+            _ => "the standard list could not be read, so server mods are held back".into(),
+        }
+    }
+
     /// Server catalogue is additive: drop any row whose id is already on the standard (lenonk) list.
     fn filter_server_rows(&self, rows: Vec<(Entry, Option<bool>)>) -> Vec<(Entry, Option<bool>)> {
         let Some(hide) = self.standard_hide_ids().flatten() else {
             return Vec::new();
         };
         rows.into_iter().filter(|(e, _)| !hide.contains(&e.id)).collect()
+    }
+
+    fn apply_server_list(&mut self, l: anyhow::Result<Vec<(Entry, Option<bool>)>>, dats: bool) {
+        if self.standard_hide_ids().is_none() {
+            return;
+        }
+        if self.standard_hide_ids() == Some(None) {
+            let msg = self.standard_list_holdback_reason();
+            if dats {
+                self.server_dat_error = Some(msg);
+            } else {
+                self.server_list_error = Some(msg);
+            }
+            return;
+        }
+        let l = l.map(|rows| self.filter_server_rows(rows));
+        self.take_server_list(l, dats);
     }
 
     fn ingest_server_list(&mut self, l: anyhow::Result<Vec<(Entry, Option<bool>)>>, dats: bool) {
@@ -264,8 +289,7 @@ impl Mods {
             }
             return;
         }
-        let l = l.map(|rows| self.filter_server_rows(rows));
-        self.take_server_list(l, dats);
+        self.apply_server_list(l, dats);
     }
 
     fn flush_pending_server(&mut self) {
@@ -273,12 +297,10 @@ impl Mods {
             return;
         }
         if let Some(l) = self.pending_server_mods.take() {
-            let l = l.map(|rows| self.filter_server_rows(rows));
-            self.take_server_list(l, false);
+            self.apply_server_list(l, false);
         }
         if let Some(l) = self.pending_server_dats.take() {
-            let l = l.map(|rows| self.filter_server_rows(rows));
-            self.take_server_list(l, true);
+            self.apply_server_list(l, true);
         }
     }
 

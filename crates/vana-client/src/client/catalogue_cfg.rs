@@ -15,22 +15,14 @@ pub fn repo_for_keys(keys: &[String]) -> String {
     String::new()
 }
 
-/// Search and login keys for the current server config: login host-port plus any search IP-port keys already tied to
-/// that server (prior sessions in `rest_models`, or catalogue entries that match the login row).
+/// Login host-port plus search IP-port keys explicitly paired with this login (not every `rest_models` server).
 pub fn catalogue_keys_for_cfg(cfg: &config::Config) -> Vec<String> {
-    let mut keys = config::active_server_keys(cfg, None);
     let login = config::server_catalogue_key_login(&cfg.server, cfg.auth_port);
-    for k in cfg.rest_models.keys() {
-        if is_search_key(k) && !keys.contains(k) {
-            keys.push(k.clone());
-        }
-    }
+    let mut keys = vec![login.clone()];
     let store = ServerCatalogues::load();
-    if let Some(login_e) = store.get(&login) {
-        for (k, e) in store.list() {
-            if is_search_key(k) && !keys.contains(k) && entry_matches(login_e, e) {
-                keys.push(k.clone());
-            }
+    for (k, e) in store.list() {
+        if is_search_key(k) && !keys.contains(k) && e.paired_login == login {
+            keys.push(k.clone());
         }
     }
     keys
@@ -43,8 +35,30 @@ fn is_search_key(key: &str) -> bool {
     host.parse::<std::net::Ipv4Addr>().is_ok() && port.parse::<u16>().is_ok()
 }
 
-fn entry_matches(a: &config::ServerCatalogueEntry, b: &config::ServerCatalogueEntry) -> bool {
-    a.repo == b.repo && a.mods == b.mods && a.dats == b.dats
+fn login_key_in(keys: &[String]) -> Option<&str> {
+    keys.iter().find(|k| !is_search_key(k)).map(String::as_str)
+}
+
+/// Remember which login row a search key belongs to (Get mods save, lobby save, or after login).
+pub fn pair_search_to_login(keys: &[String]) {
+    let Some(login) = login_key_in(keys) else { return };
+    let mut store = ServerCatalogues::load();
+    let mut dirty = false;
+    for key in keys {
+        if !is_search_key(key) {
+            continue;
+        }
+        let mut entry = store.get(key).cloned().unwrap_or_default();
+        if entry.paired_login == login {
+            continue;
+        }
+        entry.paired_login = login.to_string();
+        store.set(key, entry);
+        dirty = true;
+    }
+    if dirty && let Err(e) = store.save() {
+        log::warn!("server catalogues: {e:#}");
+    }
 }
 
 /// Clears the saved catalogue repo for `keys` only (search + login for this server); returns keys touched for refetch.
@@ -76,13 +90,20 @@ pub fn save_repo(keys: &[String], text: &str) -> Option<Vec<String>> {
         let mut entry = keys.iter().find_map(|key| store.get(key).cloned()).unwrap_or_default();
         entry.repo = repo.clone();
         for key in keys {
-            store.set(key, entry.clone());
+            let mut e = entry.clone();
+            if is_search_key(key)
+                && let Some(login) = login_key_in(keys)
+            {
+                e.paired_login = login.to_string();
+            }
+            store.set(key, e);
         }
     }
     if let Err(e) = store.save() {
         log::warn!("server catalogues: {e:#}");
         return None;
     }
+    pair_search_to_login(keys);
     Some(keys.to_vec())
 }
 

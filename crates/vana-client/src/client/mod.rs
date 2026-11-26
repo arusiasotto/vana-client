@@ -10666,7 +10666,11 @@ impl App {
                             ground: None,
                             name: login.name.clone(),
                             search_addr: login.search,
-                            catalogue_keys: crate::config::active_server_keys(&self.cfg, Some(login.search)),
+                            catalogue_keys: {
+                                let keys = crate::config::active_server_keys(&self.cfg, Some(login.search));
+                                catalogue_cfg::pair_search_to_login(&keys);
+                                keys
+                            },
                             searches: Vec::new(),
                             search: None,
                             search_words: self.search_words.clone(),
@@ -17789,6 +17793,7 @@ impl App {
                             s.in_game = true;
                             s.scope_at = Some(uiconf::at(world));
                             s.catalogue_keys = crate::config::active_server_keys(&self.cfg, Some(world.search_addr));
+                            catalogue_cfg::pair_search_to_login(&s.catalogue_keys);
                             world.modmgr = Some(modern::ModMgr::new(s, world.lua.settings_pages(&self.cfg.mods), id));
                         }
                     }

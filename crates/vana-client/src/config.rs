@@ -130,6 +130,9 @@ pub struct ServerCatalogueEntry {
     pub dats: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    /// Search IP-port key rows only: the login host-port key for this server (so lobby Save does not touch other servers).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub paired_login: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
