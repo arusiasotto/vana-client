@@ -19,6 +19,42 @@ pub fn data_dir() -> PathBuf {
     app_dir(dirs::data_dir())
 }
 
+/// Android's shared storage. The game files and the installer volumes live here: app storage (`$HOME`, set by
+/// android_main) goes with the app and has no room for them.
+#[cfg(target_os = "android")]
+const SHARED_STORAGE: &str = "/storage/emulated/0";
+
+/// Where a first start installs the game files.
+pub fn default_game_dir() -> PathBuf {
+    #[cfg(target_os = "android")]
+    return PathBuf::from(SHARED_STORAGE).join("Game").join("FFXI");
+    #[cfg(not(target_os = "android"))]
+    data_dir().join("game")
+}
+
+/// `path` is in Android's app storage.
+#[cfg(target_os = "android")]
+pub fn in_app_storage(path: &std::path::Path) -> bool {
+    dirs::home_dir().is_some_and(|h| path.starts_with(h))
+}
+
+/// The Downloads folder: mod packs, Install from File, and on Android the installer volumes.
+pub fn downloads_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        let root = PathBuf::from(SHARED_STORAGE);
+        for name in ["Download", "Downloads"] {
+            let p = root.join(name);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+        return Some(root.join("Download"));
+    }
+    #[cfg(not(target_os = "android"))]
+    dirs::download_dir()
+}
+
 /// The PlayOnline Viewer's files, kept as its update leaves them (never run): its patch.ver gates a PlayOnline log-in.
 pub fn viewer_dir() -> PathBuf {
     data_dir().join("PlayOnlineViewer")
@@ -88,6 +124,163 @@ pub fn known_servers_path() -> PathBuf {
         Some(p) => PathBuf::from(p).with_file_name("known_servers.json"),
         None => data_dir().join("known_servers.json"),
     }
+}
+
+pub fn server_catalogues_path() -> PathBuf {
+    match std::env::var_os("FFXI_CONFIG") {
+        Some(p) => PathBuf::from(p).with_file_name("server_catalogues.json"),
+        None => data_dir().join("server_catalogues.json"),
+    }
+}
+
+pub fn server_catalogue_key_search(ip: std::net::Ipv4Addr, port: u16) -> String {
+    format!("{ip}-{port}")
+}
+
+pub fn server_catalogue_key_login(host: &str, auth_port: u16) -> String {
+    format!("{}-{auth_port}", host.trim().to_ascii_lowercase())
+}
+
+pub fn active_server_keys(cfg: &Config, search: Option<(std::net::Ipv4Addr, u16)>) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some((ip, port)) = search {
+        keys.push(server_catalogue_key_search(ip, port));
+    }
+    let login = server_catalogue_key_login(&cfg.server, cfg.auth_port);
+    if keys.first().is_some_and(|s| *s != login) {
+        keys.push(login);
+    } else if search.is_none() && !cfg.server.trim().is_empty() {
+        keys.push(login);
+    }
+    keys
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerCatalogueEntry {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mods: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dats: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerCatalogues {
+    #[serde(default = "server_catalogues_format")]
+    format: u32,
+    #[serde(default)]
+    servers: std::collections::BTreeMap<String, ServerCatalogueEntry>,
+}
+
+fn server_catalogues_format() -> u32 {
+    1
+}
+
+impl ServerCatalogues {
+    pub fn load() -> Self {
+        let path = server_catalogues_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(e) => {
+                log::warn!("server catalogues: {}: {e}", path.display());
+                return Self::default();
+            }
+        };
+        serde_json::from_str(&text).unwrap_or_else(|e| {
+            log::warn!("server catalogues: {} does not read ({e}); ignored", path.display());
+            Self::default()
+        })
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = server_catalogues_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        let mut f = std::fs::File::create(&tmp)?;
+        use std::io::Write;
+        f.write_all(serde_json::to_string_pretty(self)?.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    pub fn get(&self, key: &str) -> Option<&ServerCatalogueEntry> {
+        self.servers.get(key)
+    }
+
+    pub fn set(&mut self, key: &str, entry: ServerCatalogueEntry) {
+        if entry.repo.is_empty() && entry.mods.is_none() && entry.dats.is_none() {
+            self.servers.remove(key);
+        } else {
+            self.servers.insert(key.to_string(), entry);
+        }
+    }
+
+    pub fn clear(&mut self, key: &str) {
+        self.servers.remove(key);
+    }
+
+    pub fn list(&self) -> impl Iterator<Item = (&String, &ServerCatalogueEntry)> {
+        self.servers.iter()
+    }
+
+    pub fn url_for(&self, keys: &[String], list_file: &str) -> Option<String> {
+        for key in keys {
+            let Some(e) = self.servers.get(key) else { continue };
+            let raw = if list_file == "mods.json" {
+                e.mods.clone().or_else(|| (!e.repo.is_empty()).then(|| e.repo.clone()))
+            } else {
+                e.dats.clone().or_else(|| (!e.repo.is_empty()).then(|| e.repo.clone()))
+            };
+            let Some(v) = raw.filter(|s| !s.is_empty()) else { continue };
+            if v.starts_with("http") {
+                return Some(v);
+            }
+            if let Some(u) = expand_server_catalogue(&v, list_file) {
+                return Some(u);
+            }
+            if v.starts_with('/') || v.contains(std::path::MAIN_SEPARATOR) {
+                return Some(v);
+            }
+        }
+        None
+    }
+}
+
+pub fn expand_server_catalogue(repo: &str, list_file: &str) -> Option<String> {
+    let mut s = repo.trim().trim_end_matches('/').trim_end_matches(".git").to_string();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(rest) = s.strip_prefix("https://raw.githubusercontent.com/") {
+        let base = rest.trim_end_matches('/');
+        if base.ends_with("/master") {
+            return Some(format!("https://raw.githubusercontent.com/{base}/catalogue/{list_file}"));
+        }
+        return Some(format!("https://raw.githubusercontent.com/{base}/master/catalogue/{list_file}"));
+    }
+    if let Some(rest) = s.strip_prefix("https://github.com/") {
+        s = rest.to_string();
+    }
+    if s.contains("://") {
+        return None;
+    }
+    if s.starts_with('/') || (cfg!(windows) && s.contains(':')) {
+        return Some(PathBuf::from(s).join("catalogue").join(list_file).to_string_lossy().into_owned());
+    }
+    if s.contains('/') && !s.starts_with('/') {
+        return Some(format!("https://raw.githubusercontent.com/{s}/master/catalogue/{list_file}"));
+        // `fetch_http_text` tries `main` when `master` 404s.
+    }
+    None
 }
 
 /// The change notes an update left for the restarted client (client/notes.rs): in the data dir, or beside an
@@ -220,12 +413,31 @@ pub struct Config {
     /// Colour grading of the 3D scene: 0 off (retail), 1 Vivid, 2 Warm, 3 Cool, 4 Film (render/scale.rs). Not a
     /// retail option.
     pub grading: u32,
+    /// The scene's temporal upscaler (render/upscale): 0 off (the scaling pass alone), 1 AMD FSR 3.1, 2 an external
+    /// engine fed the same inputs (the neural pass, through the raw Vulkan handles). Not a retail option.
+    pub upscaler: u32,
+    /// The upscaler's quality mode, the output-to-render ratio: 0 Native AA (1.0), 1 Quality (1.5), 2 Balanced (1.7),
+    /// 3 Performance (2.0), 4 Ultra Performance (3.0).
+    pub upscale_quality: u32,
+    /// FSR's RCAS sharpening, 0 (off) .. 100.
+    pub upscale_sharpness: u32,
+    /// The upscaler's input shown in place of the scene: 0 none, 1 motion vectors, 2 depth, 3 reactive mask,
+    /// 4 transparency and composition mask. Set by /updebug for the session, never saved.
+    #[serde(skip)]
+    pub upscale_debug: u32,
+    /// Neural rendering by the engine library (vana_nr_dispatch) on the render-size colour before the upscale, with
+    /// any Upscaling, Off included. Not a retail option.
+    pub neural: bool,
     /// How far scenery, actors and effects draw, in percent of retail's distance (the zone's, scaled by the
     /// Clipping setting); 0 = no limit. Not a retail option.
     pub draw_distance: u32,
     /// Milliseconds between the datagrams sent to a private server's zone server (50..400; 400 is the game's, which a
     /// PlayOnline sign-in always keeps). The server answers each one, so its updates come sooner. Not a retail option.
     pub send_interval: u32,
+    /// Movement Rate: the retail frames a second our own character moves in, 30 (the game's, two ticks a frame) or 60
+    /// (one tick a frame, as retail plays with an fps add-on): the drawn place and turn ease once per frame either way.
+    /// Not a retail option.
+    pub move_rate: u32,
     /// Party and alliance rows show TP (retail config 0xae bit 0, default off; ours on, as the add-ons do).
     pub party_tp: bool,
     /// Per-window opacity the player set (no row for it yet), by window: a modern panel's id, a mod's window
@@ -238,6 +450,9 @@ pub struct Config {
     /// Not retail (Settings' Light Shading Smooth): the scenery's point lights per pixel with a soft edge, in place of
     /// retail's per-vertex lights with a hard cut at the range.
     pub smooth_lights: bool,
+    /// Not retail (Settings' Material Maps): normal / roughness / metal maps from the material pack (material.rs); 0
+    /// off, 1..3 Low / Medium / High, their strength.
+    pub material_maps: u32,
     /// Character shadows: 0 retail's (blob / silhouette), 1 real (a shadow map from the sun, render/sunshadow.rs,
     /// retail's where there is no sun). Not a retail option.
     pub actor_shadows: u32,
@@ -249,6 +464,10 @@ pub struct Config {
     /// on and only to a private server. No Settings row: only a server with its GM extension can use it, so it is set
     /// in config.json by hand.
     pub gm_window: bool,
+    /// The client language PlayOnline would hand the game (retail DAT_10457bd8 +8, dat::lang): "ja", "en", "de" or
+    /// "fr". Only the auto-translate dictionary (its file, word keys and compares) and German's quotation marks follow
+    /// it so far; every other text of the client stays English. No Settings row; set in config.json by hand.
+    pub language: String,
     /// The version whose change notes were last shown (client/notes.rs): a newer client shows the notes since. A
     /// config from before the notes has none, so its first newer build shows that build's.
     #[serde(default)]
@@ -293,7 +512,8 @@ pub struct Config {
     pub monitor: String,
     /// The graphics adapter by name (empty = the high-performance one); read at start-up. Not retail.
     pub gpu: String,
-    /// Set once a software adapter (WARP, llvmpipe) was first seen and the background was halved for it. Not retail.
+    /// Set by builds that halved the background the first time a software adapter (WARP, llvmpipe) was seen; no
+    /// longer read (low_spec_defaults runs on a first start only), kept so those configs load. Not retail.
     pub software_gpu_seen: bool,
     /// No config file was there to load: the UI sizes are picked from the screen once its window opens
     /// (client/screen.rs).
@@ -344,6 +564,15 @@ pub struct Config {
     pub gamepad_padsin: String,
     /// padexsin000, the map used while slot 34 is held; empty = gamepad::DEFAULT_PADEXSIN.
     pub gamepad_padexsin: String,
+    /// padguid000: the controller that plays, its DirectInput instance GUID as FFXiPadConfig writes it
+    /// ("{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"); empty = retail's padguid000, else the first controller.
+    pub gamepad_padguid: String,
+    /// Read an XInput controller through XInput (padmode000's [5], "Use XInput"); unset: retail's padmode000, else on.
+    pub gamepad_xinput: Option<bool>,
+    /// A DirectInput controller's sliders take axis codes 7 and 8 (padmode000's [2]); unset as gamepad_xinput.
+    pub gamepad_sliders: Option<bool>,
+    /// A DirectInput controller's hat switch takes axis codes 9 and 10 (padmode000's [3]); unset as gamepad_xinput.
+    pub gamepad_hat: Option<bool>,
     /// LAN voice chat (ours, hidden: Ctrl+Alt+Shift+V).
     pub voice: crate::voice::Settings,
     /// Fields a newer client wrote, kept and saved back as they are: an older client drops nothing it doesn't know.
@@ -556,7 +785,7 @@ pub const FRAME_LIMITS: [u32; 14] = [30, 60, 75, 90, 100, 120, 144, 165, 180, 20
 impl Default for Config {
     fn default() -> Self {
         Self {
-            game_dir: data_dir().join("game"),
+            game_dir: default_game_dir(),
             installed: false,
             server: "127.0.0.1".into(),
             username: String::new(),
@@ -577,14 +806,22 @@ impl Default for Config {
             anisotropy: 16,
             antialias: 0,
             grading: 0,
+            upscaler: 0,
+            upscale_quality: 1,
+            upscale_sharpness: 50,
+            upscale_debug: 0,
+            neural: false,
             draw_distance: 0,
             send_interval: 400,
+            move_rate: crate::client::ground::MOVE_RATE_GAME,
             party_tp: true,
             window_opacity: Default::default(),
             gm_window: false,
+            language: "en".into(),
             notes_seen: env!("CARGO_PKG_VERSION").into(),
             lamp_lights: true,
             smooth_lights: false,
+            material_maps: 0,
             actor_shadows: 0,
             shadow_map: 2048,
             ssao: false,
@@ -624,6 +861,10 @@ impl Default for Config {
             gamepad_rumble: true,
             gamepad_padsin: String::new(),
             gamepad_padexsin: String::new(),
+            gamepad_padguid: String::new(),
+            gamepad_xinput: None,
+            gamepad_sliders: None,
+            gamepad_hat: None,
             voice: Default::default(),
             unknown: Default::default(),
             tool: Default::default(),
@@ -669,7 +910,16 @@ impl Config {
         }
         c.modern_modes.split_timers();
         c.follow_applied_version();
+        // Movement Rate has two values; a hand-edited other one runs at the game's and is saved as it.
+        if c.move_rate != crate::client::ground::MOVE_RATE_TICK {
+            c.move_rate = crate::client::ground::MOVE_RATE_GAME;
+        }
         c
+    }
+
+    /// `language` as the client's (an unknown value is English).
+    pub fn client_language(&self) -> crate::dat::items::Lang {
+        crate::dat::items::Lang::parse(&self.language).unwrap_or(crate::dat::items::Lang::En)
     }
 
     /// The lobby version follows the game files, as retail's does: a patch applied here (crate::patch's stamp file)
@@ -790,6 +1040,56 @@ impl Config {
         }
     }
 
+    /// The first start (no config file yet, so every setting is at its default) on a low-spec GPU
+    /// (render::GpuClass): cheaper values, the changes as log lines. `window`: the window's size; `monitor`: its
+    /// screen's, when known.
+    /// - bump mapping 0017 off: FFXiMain's own default; per-pixel lighting is the costliest fill on these GPUs.
+    /// - anisotropy 1 (retail samples without it). The frame limit keeps its default (300).
+    /// - Draw Distance Retail (100) rather than Unlimited.
+    /// - the background (0003 / 0004): half the window on a software rasterizer, three quarters on a GPU with a
+    ///   window over 960 wide; the UI stays at the window's size.
+    /// - a window larger than its screen (a 640x480 or 720x720 handheld) goes borderless at the screen's size.
+    pub fn low_spec_defaults(
+        &mut self,
+        class: crate::render::GpuClass,
+        window: [u32; 2],
+        monitor: Option<[u32; 2]>,
+    ) -> Vec<String> {
+        use crate::render::GpuClass;
+        let mut out = Vec::new();
+        if class == GpuClass::Capable {
+            return out;
+        }
+        self.set_tool("0017", 0);
+        self.anisotropy = 1;
+        self.draw_distance = 100;
+        out.extend(["bump mapping off", "anisotropic filtering 1x", "draw distance Retail"].map(String::from));
+        let mut window = window;
+        // Already borderless: the scene's size is the screen's.
+        if let Some(m) = monitor.filter(|_| self.window_mode() == 3) {
+            window = m;
+        }
+        if let Some([mw, mh]) = monitor
+            && (window[0] > mw || window[1] > mh)
+            && self.window_mode() != 3
+        {
+            self.set_tool("0034", 3);
+            window = [mw, mh];
+            out.push(format!("borderless at the screen's {mw}x{mh}"));
+        }
+        let (num, den) = match class {
+            GpuClass::Software => (1, 2),
+            _ if window[0] > 960 => (3, 4),
+            _ => (1, 1),
+        };
+        if num != den {
+            self.set_tool("0003", (window[0] * num / den).max(320));
+            self.set_tool("0004", (window[1] * num / den).max(240));
+            out.push(format!("background {}x{}", self.tool("0003"), self.tool("0004")));
+        }
+        out
+    }
+
     /// Window size (0001 / 0002).
     pub fn window_size(&self) -> [u32; 2] {
         [self.tool("0001"), self.tool("0002")].map(|v| v.clamp(320, 16384))
@@ -831,6 +1131,35 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A capable GPU keeps every default; a low-spec one takes the cheaper values, a software rasterizer half the
+    /// window, and a handheld screen smaller than the window goes borderless at its size.
+    #[test]
+    fn low_spec_defaults_on_first_start() {
+        use crate::render::GpuClass;
+        let mut c = Config::default();
+        assert!(c.low_spec_defaults(GpuClass::Capable, [1280, 800], Some([1920, 1080])).is_empty());
+        assert_eq!(c.tool, Config::default().tool);
+
+        let mut c = Config::default();
+        c.low_spec_defaults(GpuClass::LowSpec, [1280, 800], Some([1920, 1080]));
+        assert_eq!((c.tool("0017"), c.anisotropy, c.frame_limit, c.draw_distance), (0, 1, 300, 100));
+        assert_eq!((c.tool("0003"), c.tool("0004"), c.window_mode()), (960, 600, 1));
+
+        let mut c = Config::default();
+        c.low_spec_defaults(GpuClass::LowSpec, [1280, 800], Some([640, 480]));
+        assert_eq!((c.window_mode(), c.tool("0003"), c.tool("0004")), (3, 0, 0));
+
+        let mut c = Config::default();
+        c.low_spec_defaults(GpuClass::Software, [1280, 800], None);
+        assert_eq!((c.tool("0003"), c.tool("0004")), (640, 400));
+
+        // Borderless already on a 720x720 screen: the background is worked out from the screen, not the saved window.
+        let mut c = Config::default();
+        c.set_tool("0034", 3);
+        c.low_spec_defaults(GpuClass::LowSpec, [1280, 800], Some([720, 720]));
+        assert_eq!((c.tool("0003"), c.tool("0004")), (0, 0));
+    }
 
     /// 2026-11-16: Per Character turned off on Nine's RDM (on there, off everywhere else) left the mod off, the new
     /// "RDM" key never switched. Now the new key takes the state it had; other characters and jobs keep theirs.
@@ -969,6 +1298,29 @@ mod tests {
     fn regime_moved_with_a_config_copy() {
         assert_eq!(super::regime_moved(false), None);
         assert_eq!(super::regime_moved(true), Some(super::data_dir().join("regime")));
+    }
+
+    #[test]
+    fn expand_github_owner_repo_to_raw_url() {
+        let u = super::expand_server_catalogue("arusiasotto/vana-server-catalogue-template", "mods.json").unwrap();
+        assert_eq!(
+            u,
+            "https://raw.githubusercontent.com/arusiasotto/vana-server-catalogue-template/master/catalogue/mods.json"
+        );
+    }
+
+    #[test]
+    fn server_catalogue_url_for_repo_not_local_path() {
+        let mut store = super::ServerCatalogues::default();
+        store.set(
+            "login:example:54030",
+            super::ServerCatalogueEntry {
+                repo: "arusiasotto/vana-server-catalogue-template".into(),
+                ..Default::default()
+            },
+        );
+        let url = store.url_for(&["login:example:54030".into()], "mods.json").unwrap();
+        assert!(url.starts_with("https://raw.githubusercontent.com/"));
     }
 
     #[test]

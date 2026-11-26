@@ -292,7 +292,7 @@ pub fn pointer(w: &mut World, gu: &GameUi, pt: (f32, f32), moved: bool, clicked:
         Some(l) if !p.over => {
             // FUN_10221cd0: over the page arrows the list is disabled (no hand, no list keys); the click is Left /
             // Right through the 0xa8 test, so with Ctrl / Alt held it pages the disabled list, i.e. does nothing.
-            if let (Some(a), _) = child_under(w, PAGES, pt, 9..=10) {
+            if let (Some(a), _) = child_under(w, PAGES, pt, 9..=10, super::winhits::parts(gu, PAGES)) {
                 // The click is Enter on child 9 / 10: the generic layer's SE 0002 first (guide01's open clears only
                 // the move sound, window +0x85), then FUN_10235980 re-sends it as Left / Right (SE 0001).
                 if clicked {
