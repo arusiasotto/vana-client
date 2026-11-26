@@ -201,7 +201,10 @@ impl App {
         if self.flyover.is_none() && self.flyover_state == LoadState::Failed {
             self.flyover_state = LoadState::Idle;
         }
-        if self.index_warm == LoadState::Idle && self.cfg.ffxi_dir().join("VTABLE.DAT").is_file() {
+        if self.index_warm == LoadState::Idle
+            && self.cfg.ffxi_dir().join("VTABLE.DAT").is_file()
+            && !super::firstrun::needed(&self.cfg.ffxi_dir(), self.cfg.installed)
+        {
             self.start_index_warm();
         }
     }

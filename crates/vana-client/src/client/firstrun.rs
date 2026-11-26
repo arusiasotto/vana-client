@@ -32,7 +32,29 @@ pub fn incomplete(ffxi_dir: &Path) -> bool {
     if !ffxi_dir.join("VTABLE.DAT").is_file() {
         return true;
     }
-    ffxi_dir.parent().is_some_and(|g| g.join(MARKER).is_file())
+    if !ffxi_dir.join("FTABLE.DAT").is_file() || !crate::dat::ffximain(ffxi_dir).is_file() {
+        return true;
+    }
+    ffxi_dir.parent().is_some_and(|g| {
+        g.join(MARKER).is_file() || g.join(".staging").is_dir() || g.join(".download").join(volume(1)).is_file()
+    })
+}
+
+/// On Android, `installed` lives in app storage while game files stay on disk — clear a stale `installed` when setup
+/// still needs to run.
+#[cfg(target_os = "android")]
+pub fn sync_config(cfg: &mut crate::config::Config) {
+    if !needed(&cfg.ffxi_dir(), cfg.installed) {
+        return;
+    }
+    if !cfg.installed {
+        return;
+    }
+    log::info!("game install at {} is incomplete; opening first-start", cfg.ffxi_dir().display());
+    cfg.installed = false;
+    if let Err(e) = cfg.save() {
+        log::warn!("saving the config: {e:#}");
+    }
 }
 
 /// Whether the client should open the first-start window before the title screen.
@@ -401,11 +423,17 @@ mod tests {
         let ffxi = base.join("FINAL FANTASY XI");
         std::fs::create_dir_all(&ffxi).unwrap();
         std::fs::write(ffxi.join("VTABLE.DAT"), b"").unwrap();
+        assert!(incomplete(&ffxi));
         assert!(needed(&ffxi, false));
         #[cfg(not(target_os = "android"))]
         assert!(!needed(&ffxi, false));
+        std::fs::write(ffxi.join("FTABLE.DAT"), &[0u8; 2]).unwrap();
+        std::fs::write(ffxi.join("FFXiMain.dll"), b"").unwrap();
+        assert!(!incomplete(&ffxi));
         #[cfg(target_os = "android")]
         assert!(!needed(&ffxi, true));
+        #[cfg(target_os = "android")]
+        assert!(needed(&ffxi, false));
         std::fs::remove_dir_all(&base).unwrap();
     }
 

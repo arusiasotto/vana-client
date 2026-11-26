@@ -9635,7 +9635,10 @@ impl App {
             music_created: false,
         };
         #[cfg(target_os = "android")]
-        if app.cfg.ffxi_dir().join("VTABLE.DAT").is_file() && crate::android_fs::has_all_files_access() {
+        if app.cfg.ffxi_dir().join("VTABLE.DAT").is_file()
+            && crate::android_fs::has_all_files_access()
+            && !firstrun::needed(&app.cfg.ffxi_dir(), app.cfg.installed)
+        {
             app.start_index_warm();
         }
         app
@@ -16136,6 +16139,25 @@ impl App {
         }
         if self.game_ui.is_none() {
             if self.game_ui_state == LoadState::Failed {
+                #[cfg(target_os = "android")]
+                if self.first_run.is_none() && firstrun::needed(&self.cfg.ffxi_dir(), self.cfg.installed) {
+                    log::warn!("lobby UI failed; opening first-start (install may be incomplete)");
+                    if self.cfg.installed {
+                        self.cfg.installed = false;
+                        let _ = self.cfg.save();
+                    }
+                    self.index = None;
+                    self.index_warm = LoadState::Idle;
+                    self.game_ui_state = LoadState::Idle;
+                    self.flyover_state = LoadState::Idle;
+                    self.flyover = None;
+                    (self.opening, self.movie) = (None, None);
+                    self.first_run = Some(firstrun::FirstRun::new(self.cfg.game_dir.clone()));
+                    self.window_dirty = true;
+                    self.scene_loads();
+                    self.ui_drawn = true;
+                    return;
+                }
                 egui::Area::new(egui::Id::unique("error")).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
                     ctx,
                     |ui| {
@@ -18986,6 +19008,13 @@ impl App {
         // Nothing is shown until the title can draw.
         if !self.shown {
             if !self.title_ready() {
+                #[cfg(target_os = "android")]
+                if self.game_ui_state == LoadState::Failed && self.first_run.is_none() {
+                    log::warn!(
+                        "title blocked: lobby UI failed to load (game files at {} may be incomplete)",
+                        self.cfg.ffxi_dir().display()
+                    );
+                }
                 self.next_frame = Some(Instant::now() + std::time::Duration::from_millis(16));
                 return false;
             }
@@ -22783,13 +22812,15 @@ fn minus_pressed(events: &[egui::Event]) -> bool {
     events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Minus, pressed: true, .. }))
 }
 
-pub fn run(cfg: Config, drive: Drive) -> Result<()> {
+pub fn run(mut cfg: Config, drive: Drive) -> Result<()> {
     if desktop::supported()
         && let Err(e) = desktop::settle()
     {
         log::warn!("installing the client copy: {e:#}");
     }
     crate::patch::adopt_old_ffximain(&cfg.ffxi_dir());
+    #[cfg(target_os = "android")]
+    firstrun::sync_config(&mut cfg);
     #[cfg(not(target_os = "android"))]
     let event_loop = EventLoop::new()?;
     #[cfg(target_os = "android")]
