@@ -16,6 +16,12 @@ The first start has two steps:
 
 **Config → Game data** on the title screen changes the folder later. Config, mods, logs and caches stay in app storage.
 
+### Clear app data
+
+Android **Settings → Apps → vana-client → Storage → Clear data** (or **Clear storage**) removes everything in **app storage** only: `config.json`, saved logins, mods under the data dir, logs and caches. It does **not** delete game files under shared storage (for example `/sdcard/Game/FFXI` or a path you chose on an SD card).
+
+After clear data the client has no config (`installed` is false again) and shows the **first-start** screen even when `VTABLE.DAT` is still on disk. Use **Existing install** to point at that folder and skip reinstalling. Installer archives in **Download** are also left on the device unless you removed them yourself.
+
 ## Mods, addons, and Download
 
 **Settings → Mods** scans **`/storage/emulated/0/Download`** (and subfolders) for zip/7z/rar packs and opens **Install from File** there. That needs **All files access** (same as playing in zones), or the folder stays empty in the app.

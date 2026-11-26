@@ -27,12 +27,28 @@ pub const WINDOW: [u32; 2] = [760, 540];
 /// Left in the game folder while the first start runs: one stopped part-way resumes in this window.
 const MARKER: &str = ".vana-installing";
 
-/// No game files where the config says they are, or a first start that did not finish.
-pub fn needed(ffxi_dir: &Path) -> bool {
+/// The install at `ffxi_dir` is missing game files or was stopped part-way.
+pub fn incomplete(ffxi_dir: &Path) -> bool {
     if !ffxi_dir.join("VTABLE.DAT").is_file() {
         return true;
     }
     ffxi_dir.parent().is_some_and(|g| g.join(MARKER).is_file())
+}
+
+/// Whether the client should open the first-start window before the title screen.
+///
+/// On Android, game files live on shared storage and survive **Clear data**; only app storage (including
+/// `config.json` and `installed`) is wiped. Until setup has finished (`installed`), first-start runs even when
+/// `VTABLE.DAT` is already on disk (the user can pick **Existing install** or reinstall).
+pub fn needed(ffxi_dir: &Path, installed: bool) -> bool {
+    if incomplete(ffxi_dir) {
+        return true;
+    }
+    #[cfg(target_os = "android")]
+    if !installed {
+        return true;
+    }
+    false
 }
 
 /// The game folder (the one that holds `FINAL FANTASY XI`) for an install picked in the window: the
@@ -51,7 +67,7 @@ pub fn existing(picked: &Path) -> Result<PathBuf> {
             picked.display()
         );
     };
-    if needed(&game_dir.join("FINAL FANTASY XI")) {
+    if incomplete(&game_dir.join("FINAL FANTASY XI")) {
         anyhow::bail!(
             "The install in {} did not finish: choose Download and install with that folder to resume it.",
             game_dir.display()
@@ -378,6 +394,20 @@ pub use android::FirstRun;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn needed_follows_installed_on_android() {
+        let base = std::env::temp_dir().join(format!("vana-needed-{}", std::process::id()));
+        let ffxi = base.join("FINAL FANTASY XI");
+        std::fs::create_dir_all(&ffxi).unwrap();
+        std::fs::write(ffxi.join("VTABLE.DAT"), b"").unwrap();
+        assert!(needed(&ffxi, false));
+        #[cfg(not(target_os = "android"))]
+        assert!(!needed(&ffxi, false));
+        #[cfg(target_os = "android")]
+        assert!(!needed(&ffxi, true));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     fn existing_finds_the_game_folder_from_any_level() {

@@ -18430,7 +18430,7 @@ impl App {
     /// Parses the lobby DATs and font on a worker thread.
     fn load_game_ui(&mut self) {
         self.game_ui_state = LoadState::Loading;
-        if firstrun::needed(&self.cfg.ffxi_dir()) {
+        if firstrun::needed(&self.cfg.ffxi_dir(), self.cfg.installed) {
             // scene_loads runs every frame while the UI is idle. Replacing the window drops the button's result.
             if self.first_run.is_none() {
                 self.first_run = Some(firstrun::FirstRun::new(self.cfg.game_dir.clone()));
@@ -22035,7 +22035,7 @@ impl ApplicationHandler for App {
         // don't ask for focus and say so in the title, so they never take the user's keyboard.
         let title = if self.drive.driven() { "FINAL FANTASY XI [test]" } else { "FINAL FANTASY XI" };
         // No game files yet: the first-start window is a fixed size, whatever the config says.
-        let bootstrap = firstrun::needed(&self.cfg.ffxi_dir());
+        let bootstrap = firstrun::needed(&self.cfg.ffxi_dir(), self.cfg.installed);
         let [ww, wh] = if bootstrap { firstrun::WINDOW } else { self.cfg.window_size() };
         // Test runs are windowed, unless their config puts them borderless on a named monitor (mode 3), which keeps
         // them off the screen the user works on.
