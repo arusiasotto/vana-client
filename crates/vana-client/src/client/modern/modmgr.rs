@@ -960,9 +960,10 @@ fn get_headers(mm: &ModMgr) -> usize {
 fn save_catalogue_url(w: &mut World) {
     let Some(mm) = w.modmgr.as_mut() else { return };
     let keys = mm.s.catalogue_keys.clone();
+    let login = mm.s.catalogue_login_key.clone();
     let text = mm.catalogue_url.clone();
     mm.catalogue_typing = false;
-    let Some(keys) = super::super::catalogue_cfg::save_repo(&keys, &text) else {
+    let Some(keys) = super::super::catalogue_cfg::save_repo(&login, &keys, &text) else {
         return sound(w, Se::Error);
     };
     if let Some(m) = mm.s.mods_mut() {

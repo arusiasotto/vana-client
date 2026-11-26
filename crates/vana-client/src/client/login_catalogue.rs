@@ -11,6 +11,7 @@ const HINT: &str = "owner/repo or GitHub URL";
 const LINE: f32 = 16.0;
 
 pub struct LoginCatalogue {
+    login_key: String,
     keys: Vec<String>,
     pub text: String,
     pub focus: usize,
@@ -23,13 +24,13 @@ pub enum Act {
 }
 
 impl LoginCatalogue {
-    pub fn new(keys: Vec<String>) -> Self {
+    pub fn new(login_key: String, keys: Vec<String>) -> Self {
         let text = catalogue_cfg::repo_for_keys(&keys);
-        Self { keys, text, focus: 0 }
+        Self { login_key, keys, text, focus: 0 }
     }
 
     pub fn save(&self) -> Option<Vec<String>> {
-        catalogue_cfg::save_repo(&self.keys, &self.text)
+        catalogue_cfg::save_repo(&self.login_key, &self.keys, &self.text)
     }
 
     pub fn clear(&self) -> Option<Vec<String>> {

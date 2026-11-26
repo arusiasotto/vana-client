@@ -15,37 +15,34 @@ pub fn repo_for_keys(keys: &[String]) -> String {
     String::new()
 }
 
-/// Login host-port plus search IP-port keys explicitly paired with this login (not every `rest_models` server).
+/// Login host-port row for this config (hostname or IP + auth port).
+pub fn login_key(cfg: &config::Config) -> String {
+    config::server_catalogue_key_login(&cfg.server, cfg.auth_port)
+}
+
+/// Keys for login overlay / lobby settings: login row plus search keys paired to it (and same-IP lobby guess).
 pub fn catalogue_keys_for_cfg(cfg: &config::Config) -> Vec<String> {
-    let login = config::server_catalogue_key_login(&cfg.server, cfg.auth_port);
-    let mut keys = vec![login.clone()];
+    let login = login_key(cfg);
+    let search_guess = cfg.server.trim().parse::<std::net::Ipv4Addr>().ok().map(|ip| (ip, cfg.auth_port));
+    let mut keys = config::active_server_keys(cfg, search_guess);
+    if !keys.contains(&login) {
+        keys.push(login.clone());
+    }
     let store = ServerCatalogues::load();
     for (k, e) in store.list() {
-        if is_search_key(k) && !keys.contains(k) && e.paired_login == login {
+        if k != &login && !keys.contains(k) && e.paired_login == login {
             keys.push(k.clone());
         }
     }
     keys
 }
 
-fn is_search_key(key: &str) -> bool {
-    let Some((host, port)) = key.rsplit_once('-') else {
-        return false;
-    };
-    host.parse::<std::net::Ipv4Addr>().is_ok() && port.parse::<u16>().is_ok()
-}
-
-fn login_key_in(keys: &[String]) -> Option<&str> {
-    keys.iter().find(|k| !is_search_key(k)).map(String::as_str)
-}
-
-/// Remember which login row a search key belongs to (Get mods save, lobby save, or after login).
-pub fn pair_search_to_login(keys: &[String]) {
-    let Some(login) = login_key_in(keys) else { return };
+/// Remember which login row each other key in `keys` belongs to (`active_server_keys` puts login last).
+pub fn pair_search_to_login(login: &str, keys: &[String]) {
     let mut store = ServerCatalogues::load();
     let mut dirty = false;
     for key in keys {
-        if !is_search_key(key) {
+        if key == login {
             continue;
         }
         let mut entry = store.get(key).cloned().unwrap_or_default();
@@ -74,8 +71,9 @@ pub fn clear_repo(keys: &[String]) -> Option<Vec<String>> {
     Some(keys.to_vec())
 }
 
-/// Stores `text` as the catalogue repo for `keys` (clears when empty); returns keys for refetch.
-pub fn save_repo(keys: &[String], text: &str) -> Option<Vec<String>> {
+/// Stores `text` as the catalogue repo for `keys` (clears when empty). `login` is the login host-port row (not inferred
+/// from key shape — IP servers use the same shape for search and login).
+pub fn save_repo(login: &str, keys: &[String], text: &str) -> Option<Vec<String>> {
     let trimmed = text.trim();
     let repo = normalize_repo(text);
     let mut store = ServerCatalogues::load();
@@ -91,9 +89,7 @@ pub fn save_repo(keys: &[String], text: &str) -> Option<Vec<String>> {
         entry.repo = repo.clone();
         for key in keys {
             let mut e = entry.clone();
-            if is_search_key(key)
-                && let Some(login) = login_key_in(keys)
-            {
+            if key != login {
                 e.paired_login = login.to_string();
             }
             store.set(key, e);
@@ -103,7 +99,7 @@ pub fn save_repo(keys: &[String], text: &str) -> Option<Vec<String>> {
         log::warn!("server catalogues: {e:#}");
         return None;
     }
-    pair_search_to_login(keys);
+    pair_search_to_login(login, keys);
     Some(keys.to_vec())
 }
 
@@ -145,6 +141,15 @@ pub fn key_from_host_port(host: &str, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ip_server_lobby_keys_include_search_shape() {
+        let mut cfg = config::Config::default();
+        cfg.server = "192.168.1.10".into();
+        cfg.auth_port = 54231;
+        let keys = catalogue_keys_for_cfg(&cfg);
+        assert!(keys.contains(&"192.168.1.10-54231".to_string()));
+    }
 
     #[test]
     fn normalize_github_url() {

@@ -944,6 +944,8 @@ pub struct SettingsUi {
     /// Mods' settings shown on our Extras tabs: (mod, row).
     tab_rows: Vec<(String, ModRow)>,
     pub catalogue_keys: Vec<String>,
+    /// Login host-port row for `catalogue_keys` (hostname or IP); not inferred from key shape.
+    pub catalogue_login_key: String,
 }
 
 /// What a row's controls are.
@@ -990,6 +992,7 @@ impl SettingsUi {
             m_dat_tab: 0,
             lua_info: crate::modpack::lua_info(),
             catalogue_keys: super::catalogue_cfg::catalogue_keys_for_cfg(c),
+            catalogue_login_key: super::catalogue_cfg::login_key(c),
         };
         s.col = s.marked_col();
         // Not in tests: it loads the engine in the data folder.

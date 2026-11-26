@@ -10668,7 +10668,7 @@ impl App {
                             search_addr: login.search,
                             catalogue_keys: {
                                 let keys = crate::config::active_server_keys(&self.cfg, Some(login.search));
-                                catalogue_cfg::pair_search_to_login(&keys);
+                                catalogue_cfg::pair_search_to_login(&catalogue_cfg::login_key(&self.cfg), &keys);
                                 keys
                             },
                             searches: Vec::new(),
@@ -16543,8 +16543,9 @@ impl App {
                             self.twofa = Some(twofa::TwoFa::new().folders(own, &self.cfg.game_dir));
                         }
                         Some(LoginChoice::Catalogue) if !is_playonline(&self.cfg.server) => {
+                            let login = catalogue_cfg::login_key(&self.cfg);
                             let keys = catalogue_cfg::catalogue_keys_for_cfg(&self.cfg);
-                            self.login_catalogue = Some(login_catalogue::LoginCatalogue::new(keys));
+                            self.login_catalogue = Some(login_catalogue::LoginCatalogue::new(login, keys));
                         }
                         Some(LoginChoice::Update) => {
                             if let Some(s) = self.updates.clone() {
@@ -17793,7 +17794,8 @@ impl App {
                             s.in_game = true;
                             s.scope_at = Some(uiconf::at(world));
                             s.catalogue_keys = crate::config::active_server_keys(&self.cfg, Some(world.search_addr));
-                            catalogue_cfg::pair_search_to_login(&s.catalogue_keys);
+                            s.catalogue_login_key = catalogue_cfg::login_key(&self.cfg);
+                            catalogue_cfg::pair_search_to_login(&s.catalogue_login_key, &s.catalogue_keys);
                             world.modmgr = Some(modern::ModMgr::new(s, world.lua.settings_pages(&self.cfg.mods), id));
                         }
                     }
