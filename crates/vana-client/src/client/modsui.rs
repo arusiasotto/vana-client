@@ -27,6 +27,9 @@ pub struct Mods {
     dat_list: Option<Receiver<anyhow::Result<Vec<(Entry, Option<bool>)>>>>,
     server_list: Option<Receiver<anyhow::Result<Vec<(Entry, Option<bool>)>>>>,
     server_dat_list: Option<Receiver<anyhow::Result<Vec<(Entry, Option<bool>)>>>>,
+    /// Server list results waiting until the standard catalogue ids are known (fail closed).
+    pending_server_mods: Option<anyhow::Result<Vec<(Entry, Option<bool>)>>>,
+    pending_server_dats: Option<anyhow::Result<Vec<(Entry, Option<bool>)>>>,
     /// Why the standard mods' list, or the DAT packs', could not be read.
     pub list_error: Option<String>,
     pub dat_error: Option<String>,
@@ -91,20 +94,6 @@ fn statuses(
         .collect()
 }
 
-fn standard_ids_for_server_filter() -> std::collections::HashSet<String> {
-    catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Mods, &[])
-        .unwrap_or_default()
-        .into_iter()
-        .map(|e| e.id)
-        .chain(
-            catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Dats, &[])
-                .unwrap_or_default()
-                .into_iter()
-                .map(|e| e.id),
-        )
-        .collect()
-}
-
 /// "1.2 GB", "340 KB".
 fn bytes(n: u64) -> String {
     match n {
@@ -139,18 +128,16 @@ impl Mods {
         let sk = server_keys.clone();
         let (sltx, slrx) = channel();
         std::thread::spawn(move || {
-            let hide = standard_ids_for_server_filter();
             let _ = sltx.send(
                 catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Mods, &sk)
-                    .map(|v| statuses(v, catalogue::Source::Server, Some(&hide))),
+                    .map(|v| statuses(v, catalogue::Source::Server, None)),
             );
         });
         let (sdtx, sdrx) = channel();
         std::thread::spawn(move || {
-            let hide = standard_ids_for_server_filter();
             let _ = sdtx.send(
                 catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Dats, &keys)
-                    .map(|v| statuses(v, catalogue::Source::Server, Some(&hide))),
+                    .map(|v| statuses(v, catalogue::Source::Server, None)),
             );
         });
         Self {
@@ -163,6 +150,8 @@ impl Mods {
             dat_list: Some(drx),
             server_list: Some(slrx),
             server_dat_list: Some(sdrx),
+            pending_server_mods: None,
+            pending_server_dats: None,
             list_error: None,
             dat_error: None,
             server_list_error: None,
@@ -189,6 +178,8 @@ impl Mods {
             dat_list: None,
             server_list: None,
             server_dat_list: None,
+            pending_server_mods: None,
+            pending_server_dats: None,
             list_error: None,
             dat_error: None,
             server_list_error: None,
@@ -211,21 +202,21 @@ impl Mods {
         for list in [catalogue::List::Mods, catalogue::List::Dats] {
             catalogue::clear_cache(catalogue::Source::Server, list, &keys);
         }
+        self.pending_server_mods = None;
+        self.pending_server_dats = None;
         let sk = keys.clone();
         let (ltx, lrx) = channel();
         std::thread::spawn(move || {
-            let hide = standard_ids_for_server_filter();
             let _ = ltx.send(
                 catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Mods, &sk)
-                    .map(|v| statuses(v, catalogue::Source::Server, Some(&hide))),
+                    .map(|v| statuses(v, catalogue::Source::Server, None)),
             );
         });
         let (dtx, drx) = channel();
         std::thread::spawn(move || {
-            let hide = standard_ids_for_server_filter();
             let _ = dtx.send(
                 catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Dats, &keys)
-                    .map(|v| statuses(v, catalogue::Source::Server, Some(&hide))),
+                    .map(|v| statuses(v, catalogue::Source::Server, None)),
             );
         });
         self.server_list = Some(lrx);
@@ -245,6 +236,52 @@ impl Mods {
         }
     }
 
+    /// Standard mod/DAT ids for hiding colliding server rows; None while the standard lists load; fail closed on error.
+    fn standard_hide_ids(&self) -> Option<Option<std::collections::HashSet<String>>> {
+        if self.list.is_some() || self.dat_list.is_some() {
+            return None;
+        }
+        if self.list_error.is_some() || self.dat_error.is_some() {
+            return Some(None);
+        }
+        Some(Some(self.entries.iter().map(|(e, _)| e.id.clone()).collect()))
+    }
+
+    /// Server catalogue is additive: drop any row whose id is already on the standard (lenonk) list.
+    fn filter_server_rows(&self, rows: Vec<(Entry, Option<bool>)>) -> Vec<(Entry, Option<bool>)> {
+        let Some(hide) = self.standard_hide_ids().flatten() else {
+            return Vec::new();
+        };
+        rows.into_iter().filter(|(e, _)| !hide.contains(&e.id)).collect()
+    }
+
+    fn ingest_server_list(&mut self, l: anyhow::Result<Vec<(Entry, Option<bool>)>>, dats: bool) {
+        if self.standard_hide_ids().is_none() {
+            if dats {
+                self.pending_server_dats = Some(l);
+            } else {
+                self.pending_server_mods = Some(l);
+            }
+            return;
+        }
+        let l = l.map(|rows| self.filter_server_rows(rows));
+        self.take_server_list(l, dats);
+    }
+
+    fn flush_pending_server(&mut self) {
+        if self.standard_hide_ids().is_none() {
+            return;
+        }
+        if let Some(l) = self.pending_server_mods.take() {
+            let l = l.map(|rows| self.filter_server_rows(rows));
+            self.take_server_list(l, false);
+        }
+        if let Some(l) = self.pending_server_dats.take() {
+            let l = l.map(|rows| self.filter_server_rows(rows));
+            self.take_server_list(l, true);
+        }
+    }
+
     /// A list come in: its entries kept (the DAT packs' first), or why it could not be read.
     fn take_list(&mut self, l: anyhow::Result<Vec<(Entry, Option<bool>)>>, dats: bool) {
         match l {
@@ -258,6 +295,7 @@ impl Mods {
                 *(if dats { &mut self.dat_error } else { &mut self.list_error }) = Some(format!("{e:#}"));
             }
         }
+        self.flush_pending_server();
     }
 
     fn take_server_list(&mut self, l: anyhow::Result<Vec<(Entry, Option<bool>)>>, dats: bool) {
@@ -512,11 +550,11 @@ impl Mods {
         }
         if let Some(Ok(l)) = self.server_list.as_ref().map(|r| r.try_recv()) {
             self.server_list = None;
-            self.take_server_list(l, false);
+            self.ingest_server_list(l, false);
         }
         if let Some(Ok(l)) = self.server_dat_list.as_ref().map(|r| r.try_recv()) {
             self.server_dat_list = None;
-            self.take_server_list(l, true);
+            self.ingest_server_list(l, true);
         }
         let Some((_, _, rx)) = &self.installing else { return false };
         let Ok(res) = rx.try_recv() else { return false };

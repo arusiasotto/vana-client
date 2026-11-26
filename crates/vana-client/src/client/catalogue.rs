@@ -363,6 +363,20 @@ fn fetch_files(e: &Entry, work: &Path, progress: &AtomicU32) -> Result<()> {
     Ok(())
 }
 
+/// Server catalogue entries must name the same mod as mod.toml (otherwise grants keyed by manifest id could apply to
+/// the wrong folder).
+fn require_manifest_id(work: &Path, catalogue_id: &str, source: Source) -> Result<()> {
+    if source != Source::Server || !work.join("mod.toml").is_file() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(work.join("mod.toml"))?;
+    let (manifest_id, _) = modpack::lua_manifest(&text, catalogue_id)?;
+    if manifest_id != catalogue_id {
+        bail!("catalogue lists {catalogue_id} but mod.toml names {manifest_id}; not installed");
+    }
+    Ok(())
+}
+
 /// Downloads, checks and unpacks an entry's archives (or puts its files) into `root/<id>` (an older copy replaced).
 /// `progress` counts per mille: each archive's download is four fifths of its share, its unpacking the rest. Standard
 /// catalogue Lua mods are given the permissions they ask for at install; server mods are not (prompt on first load).
@@ -372,6 +386,10 @@ pub fn install(e: &Entry, root: &Path, progress: &AtomicU32, source: Source) -> 
         std::fs::create_dir_all(root)?;
         let work = modpack::work_dir(root, &e.id)?;
         if let Err(err) = fetch_files(e, &work, progress) {
+            let _ = std::fs::remove_dir_all(&work);
+            return Err(err);
+        }
+        if let Err(err) = require_manifest_id(&work, &e.id, source) {
             let _ = std::fs::remove_dir_all(&work);
             return Err(err);
         }
@@ -426,8 +444,15 @@ pub fn install(e: &Entry, root: &Path, progress: &AtomicU32, source: Source) -> 
         let _ = std::fs::remove_dir_all(&work);
         return Err(err);
     }
+    if let Err(err) = require_manifest_id(&work, &e.id, source) {
+        let _ = std::fs::remove_dir_all(&work);
+        return Err(err);
+    }
     write_mark(&work, &e.version, source)?;
     modpack::place(&work, &root.join(&e.id))?;
+    if source == Source::Standard {
+        super::lua::grant_manifest(&root.join(&e.id));
+    }
     progress.store(1000, Ordering::Relaxed);
     log::info!("mods: installed {} {} from the {:?}", e.id, e.version, source);
     Ok(e.id.clone())

@@ -15,39 +15,49 @@ pub fn repo_for_keys(keys: &[String]) -> String {
     String::new()
 }
 
+/// Search and login keys for the current server config: login host-port plus any search IP-port keys already tied to
+/// that server (prior sessions in `rest_models`, or catalogue entries that match the login row).
+pub fn catalogue_keys_for_cfg(cfg: &config::Config) -> Vec<String> {
+    let mut keys = config::active_server_keys(cfg, None);
+    let login = config::server_catalogue_key_login(&cfg.server, cfg.auth_port);
+    for k in cfg.rest_models.keys() {
+        if is_search_key(k) && !keys.contains(k) {
+            keys.push(k.clone());
+        }
+    }
+    let store = ServerCatalogues::load();
+    if let Some(login_e) = store.get(&login) {
+        for (k, e) in store.list() {
+            if is_search_key(k) && !keys.contains(k) && entry_matches(login_e, e) {
+                keys.push(k.clone());
+            }
+        }
+    }
+    keys
+}
+
+fn is_search_key(key: &str) -> bool {
+    let Some((host, port)) = key.rsplit_once('-') else {
+        return false;
+    };
+    host.parse::<std::net::Ipv4Addr>().is_ok() && port.parse::<u16>().is_ok()
+}
+
 fn entry_matches(a: &config::ServerCatalogueEntry, b: &config::ServerCatalogueEntry) -> bool {
     a.repo == b.repo && a.mods == b.mods && a.dats == b.dats
 }
 
-/// Clears the saved catalogue repo for `keys` and any other stored key with the same entry (e.g. search + login); returns
-/// keys touched for refetch on success.
+/// Clears the saved catalogue repo for `keys` only (search + login for this server); returns keys touched for refetch.
 pub fn clear_repo(keys: &[String]) -> Option<Vec<String>> {
     let mut store = ServerCatalogues::load();
-    let mut touched: Vec<String> = Vec::new();
     for key in keys {
-        let snapshot = store.get(key).cloned();
         store.clear(key);
-        if !touched.iter().any(|k| k == key) {
-            touched.push(key.clone());
-        }
-        let Some(entry) = snapshot else { continue };
-        let also: Vec<String> = store
-            .list()
-            .filter(|(k, e)| !keys.contains(k) && entry_matches(&entry, e))
-            .map(|(k, _)| k.clone())
-            .collect();
-        for k in also {
-            store.clear(&k);
-            if !touched.iter().any(|t| t == &k) {
-                touched.push(k);
-            }
-        }
     }
     if let Err(e) = store.save() {
         log::warn!("server catalogues: {e:#}");
         return None;
     }
-    Some(touched)
+    Some(keys.to_vec())
 }
 
 /// Stores `text` as the catalogue repo for `keys` (clears when empty); returns keys for refetch.
@@ -63,12 +73,11 @@ pub fn save_repo(keys: &[String], text: &str) -> Option<Vec<String>> {
             store.clear(key);
         }
     } else {
+        let mut entry = keys.iter().find_map(|key| store.get(key).cloned()).unwrap_or_default();
+        entry.repo = repo.clone();
         for key in keys {
-            let mut entry = store.get(key).cloned().unwrap_or_default();
-            entry.repo = repo.clone();
-            store.set(key, entry);
+            store.set(key, entry.clone());
         }
-        copy_login_to_search(&mut store, keys);
     }
     if let Err(e) = store.save() {
         log::warn!("server catalogues: {e:#}");
@@ -96,23 +105,6 @@ pub fn normalize_repo(text: &str) -> String {
         return s;
     }
     String::new()
-}
-
-/// On first login success: copy login-key entry to search key when missing.
-fn copy_login_to_search(store: &mut ServerCatalogues, keys: &[String]) {
-    if keys.len() < 2 {
-        return;
-    }
-    let search = &keys[0];
-    let login = &keys[1];
-    if store.get(search).is_some() {
-        return;
-    }
-    let Some(entry) = store.get(login).cloned() else { return };
-    if entry.repo.is_empty() && entry.mods.is_none() && entry.dats.is_none() {
-        return;
-    }
-    store.set(search, entry);
 }
 
 pub fn parse_host_port(host_port: &str) -> Option<(String, u16)> {

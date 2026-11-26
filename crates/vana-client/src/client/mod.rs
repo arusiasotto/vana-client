@@ -16539,7 +16539,7 @@ impl App {
                             self.twofa = Some(twofa::TwoFa::new().folders(own, &self.cfg.game_dir));
                         }
                         Some(LoginChoice::Catalogue) if !is_playonline(&self.cfg.server) => {
-                            let keys = crate::config::active_server_keys(&self.cfg, None);
+                            let keys = catalogue_cfg::catalogue_keys_for_cfg(&self.cfg);
                             self.login_catalogue = Some(login_catalogue::LoginCatalogue::new(keys));
                         }
                         Some(LoginChoice::Update) => {

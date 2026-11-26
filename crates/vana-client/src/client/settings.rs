@@ -989,7 +989,7 @@ impl SettingsUi {
             lua_names: crate::modpack::lua_folders(),
             m_dat_tab: 0,
             lua_info: crate::modpack::lua_info(),
-            catalogue_keys: crate::config::active_server_keys(c, None),
+            catalogue_keys: super::catalogue_cfg::catalogue_keys_for_cfg(c),
         };
         s.col = s.marked_col();
         // Not in tests: it loads the engine in the data folder.
