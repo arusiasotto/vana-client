@@ -1,13 +1,13 @@
 //! NativeActivity glue: the activity handed over by `android_main`, the window that comes and goes with it, and
 //! touch and mouse input as the client's mouse.
 
+use super::Phase;
+use super::swkbd;
 use super::{App, EventLoop, LoadState, resize_surface, updater, uses_playonline};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use super::Phase;
-use super::swkbd;
 use winit::event::{ElementState, KeyEvent, MouseButton, Touch, TouchPhase, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey, NativeKeyCode, PhysicalKey};
@@ -20,10 +20,7 @@ pub(crate) const KEYCODE_BACK: u32 = 4;
 pub(crate) fn is_system_back(event: &KeyEvent) -> bool {
     match event.logical_key {
         Key::Named(NamedKey::BrowserBack | NamedKey::GoBack) => true,
-        _ => matches!(
-            event.physical_key,
-            PhysicalKey::Unidentified(NativeKeyCode::Android(KEYCODE_BACK))
-        ),
+        _ => matches!(event.physical_key, PhysicalKey::Unidentified(NativeKeyCode::Android(KEYCODE_BACK))),
     }
 }
 

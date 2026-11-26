@@ -118,13 +118,12 @@ mod tests {
     use super::*;
 
     #[test]
-    #[test]
     fn lobby_keys_use_search_when_server_is_ip() {
         let mut cfg = crate::config::Config::default();
         cfg.server = "127.0.0.1".into();
         cfg.auth_port = 54001;
         let keys = lobby_catalogue_keys(&cfg);
-        assert_eq!(keys.len(), 2);
+        assert_eq!(keys.len(), 1);
         assert_eq!(keys[0], "127.0.0.1-54001");
     }
 

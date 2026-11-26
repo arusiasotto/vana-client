@@ -40,10 +40,9 @@ fn server_cache_key(server_keys: &[String]) -> String {
 fn cache_path(source: Source, list: List, server_keys: &[String]) -> std::path::PathBuf {
     match source {
         Source::Standard => crate::config::catalogue_dir().join(source.cache_name(list)),
-        Source::Server => crate::config::catalogue_dir()
-            .join("server")
-            .join(server_cache_key(server_keys))
-            .join(list.file()),
+        Source::Server => {
+            crate::config::catalogue_dir().join("server").join(server_cache_key(server_keys)).join(list.file())
+        }
     }
 }
 

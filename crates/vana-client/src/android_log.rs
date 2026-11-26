@@ -1,7 +1,7 @@
 //! One logger on Android: logcat and an optional client log file. `env_logger::init` must not run after
 //! another logger is already installed.
 
-use android_log_sys::{__android_log_write, c_int, LogPriority};
+use android_log_sys::{__android_log_write, LogPriority, c_int};
 use anyhow::Context;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use std::ffi::CString;

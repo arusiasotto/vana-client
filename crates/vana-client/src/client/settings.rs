@@ -494,13 +494,7 @@ fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] 
             &[],
             Restart,
         ),
-        row(
-            "Background",
-            BACKGROUND_HELP,
-            Size("0003", "0004", Sizes::Background),
-            &[],
-            Now,
-        ),
+        row("Background", BACKGROUND_HELP, Size("0003", "0004", Sizes::Background), &[], Now),
         row(
             "Menu Size",
             "The size menus and text are drawn at before they are stretched to the window. Smaller numbers make menus bigger.",
@@ -865,16 +859,8 @@ fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] 
 
 /// Android's Background stops, smallest share first. 100% is stored as the window's own size so it keeps following
 /// the screen. Every other stop is that percentage of the screen, in the same shape.
-const PHONE_PERCENTS: &[(u32, &str)] = &[
-    (33, "33%"),
-    (50, "50%"),
-    (67, "67%"),
-    (75, "75%"),
-    (100, "100%"),
-    (125, "125%"),
-    (150, "150%"),
-    (200, "200%"),
-];
+const PHONE_PERCENTS: &[(u32, &str)] =
+    &[(33, "33%"), (50, "50%"), (67, "67%"), (75, "75%"), (100, "100%"), (125, "125%"), (150, "150%"), (200, "200%")];
 
 fn phone_background(window: [u32; 2]) -> Vec<([u32; 2], &'static str)> {
     let [w, h] = [window[0].max(1), window[1].max(1)];
@@ -2749,7 +2735,10 @@ mod tests {
     #[test]
     fn phone_background_is_a_share_of_the_screen() {
         let wide = phone_background([2400, 1080]);
-        assert_eq!(wide.iter().map(|s| s.1).collect::<Vec<_>>(), ["33%", "50%", "67%", "75%", "100%", "125%", "150%", "200%"]);
+        assert_eq!(
+            wide.iter().map(|s| s.1).collect::<Vec<_>>(),
+            ["33%", "50%", "67%", "75%", "100%", "125%", "150%", "200%"]
+        );
         assert_eq!(wide.iter().find(|s| s.1 == "50%").unwrap().0, [1200, 540]);
         assert_eq!(wide.iter().find(|s| s.1 == "100%").unwrap().0, [0, 0]);
         assert_eq!(wide.iter().find(|s| s.1 == "200%").unwrap().0, [4800, 2160]);

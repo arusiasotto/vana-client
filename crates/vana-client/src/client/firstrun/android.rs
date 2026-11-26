@@ -206,8 +206,9 @@ impl FirstRun {
         let (game_dir, stage, progress) = (self.game_dir.clone(), self.stage.clone(), self.progress.clone());
         std::thread::spawn(move || {
             // A panic would leave the window on its progress bar for good.
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| install(&game_dir, &archive_dir, &progress)))
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("the install stopped unexpectedly (see logcat)")));
+            let r =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| install(&game_dir, &archive_dir, &progress)))
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("the install stopped unexpectedly (see logcat)")));
             *stage.lock().unwrap() = match r {
                 Ok(stash) => Stage::CleanupOffer(stash),
                 Err(e) => {
@@ -520,11 +521,11 @@ impl FirstRun {
             }
             let n = installer_parts_in(archives);
             if n > 0 {
-                ui.label(
-                    egui::RichText::new(format!("{n}/{VOLUMES} valid"))
-                        .size(12.0)
-                        .color(if n == VOLUMES { green } else { egui::Color32::from_rgb(0xe0, 0xa0, 0x70) }),
-                );
+                ui.label(egui::RichText::new(format!("{n}/{VOLUMES} valid")).size(12.0).color(if n == VOLUMES {
+                    green
+                } else {
+                    egui::Color32::from_rgb(0xe0, 0xa0, 0x70)
+                }));
             }
         });
     }

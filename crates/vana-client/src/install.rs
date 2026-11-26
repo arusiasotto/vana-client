@@ -134,11 +134,7 @@ pub fn installer_dir_bytes(dir: &Path) -> u64 {
 pub fn stage_installer_volumes(src: &Path, stash: &Path, progress: &Progress) -> Result<()> {
     validate_installer_dir(src)?;
     std::fs::create_dir_all(stash)?;
-    let same = src
-        .canonicalize()
-        .ok()
-        .zip(stash.canonicalize().ok())
-        .is_some_and(|(a, b)| a == b);
+    let same = src.canonicalize().ok().zip(stash.canonicalize().ok()).is_some_and(|(a, b)| a == b);
     if same {
         return validate_installer_dir(stash);
     }
@@ -425,7 +421,7 @@ mod tests {
 
     #[test]
     fn rejects_stub_installer_parts() {
-        let dir = std::env::temp_dir().join(format!("vana-install-check-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vana-install-stub-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(installer_volume_name(1)), b"stub").unwrap();
         assert!(installer_volume_ok(&dir.join(installer_volume_name(1)), 1).is_err());
@@ -434,7 +430,7 @@ mod tests {
 
     #[test]
     fn accepts_sparse_fake_volumes() {
-        let dir = std::env::temp_dir().join(format!("vana-install-check-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vana-install-sparse-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for i in 1..=INSTALLER_VOLUMES {
             fake_volume(&dir.join(installer_volume_name(i)), i);

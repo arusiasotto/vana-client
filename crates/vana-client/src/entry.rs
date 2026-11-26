@@ -32,8 +32,12 @@ enum CatalogueCmd {
         #[arg(long)]
         label: Option<String>,
     },
-    Clear { host_port: String },
-    Show { host_port: String },
+    Clear {
+        host_port: String,
+    },
+    Show {
+        host_port: String,
+    },
     List,
 }
 
@@ -1455,7 +1459,13 @@ pub fn entry() -> Result<()> {
             let size = (mesh.max - mesh.min).max_element();
             let (s, c) = yaw.to_radians().sin_cos();
             let eye = centre + glam::Vec3::new(s, 0.0, c) * size * 1.6;
-            let camera = render::Camera { eye, target: centre, up: glam::Vec3::NEG_Y, fov_y: 40f32.to_radians(), ..Default::default() };
+            let camera = render::Camera {
+                eye,
+                target: centre,
+                up: glam::Vec3::NEG_Y,
+                fov_y: 40f32.to_radians(),
+                ..Default::default()
+            };
             render::character::render_png(&ch, &mesh, &camera, 600, 800, &out)?;
             println!("bounds {} .. {}; wrote {}", mesh.min, mesh.max, out.display());
             Ok(())
@@ -2677,7 +2687,8 @@ fn npc_shot(
     let size = (mesh.max - mesh.min).max_element();
     let (s, c) = yaw.to_radians().sin_cos();
     let eye = centre + glam::Vec3::new(s, 0.0, c) * size * 1.6;
-    let camera = render::Camera { eye, target: centre, up: glam::Vec3::NEG_Y, fov_y: 40f32.to_radians(), ..Default::default() };
+    let camera =
+        render::Camera { eye, target: centre, up: glam::Vec3::NEG_Y, fov_y: 40f32.to_radians(), ..Default::default() };
     render::character::render_png(&ch, &mesh, &camera, 600, 800, out)?;
     println!("bounds {} .. {}; wrote {}", mesh.min, mesh.max, out.display());
     Ok(())
@@ -2932,8 +2943,13 @@ fn flyover_shot(
                 for i in 0..if p.keys.is_empty() { 0 } else { steps.max(1) } {
                     let t = if steps <= 1 { 0.0 } else { i as f32 / (steps - 1) as f32 };
                     let k = sample(p, t);
-                    let cam =
-                        render::Camera { eye: k.eye, target: k.target, up: glam::Vec3::NEG_Y, fov_y: fov_y(k.focal), ..Default::default() };
+                    let cam = render::Camera {
+                        eye: k.eye,
+                        target: k.target,
+                        up: glam::Vec3::NEG_Y,
+                        fov_y: fov_y(k.focal),
+                        ..Default::default()
+                    };
                     frames.push((cam, out_dir.join(format!("{scheduler}_{path}_{i}.png")), lighting));
                 }
             }
