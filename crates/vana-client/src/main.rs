@@ -83,8 +83,12 @@ enum CatalogueCmd {
         #[arg(long)]
         label: Option<String>,
     },
-    Clear { host_port: String },
-    Show { host_port: String },
+    Clear {
+        host_port: String,
+    },
+    Show {
+        host_port: String,
+    },
     List,
 }
 

@@ -564,8 +564,7 @@ fn turn(w: &mut World, t: usize) {
     if t == mm.tab {
         return;
     }
-    (mm.tab, mm.field, mm.finding, mm.get_row, mm.get_sub, mm.catalogue_typing) =
-        (t, None, false, 0, 0, false);
+    (mm.tab, mm.field, mm.finding, mm.get_row, mm.get_sub, mm.catalogue_typing) = (t, None, false, 0, 0, false);
     mm.stop_editing();
     mm.s.goto_page(t != 2);
     if t == 0 {
@@ -600,10 +599,7 @@ fn key(w: &mut World, key: egui::Key, shift: bool) {
         0 => page_key(w, key, shift),
         1 => get_key(w, key, shift),
         _ => {
-            let mut cat = config::ModsCatalogue {
-                server: mm.dat_source == ListSource::Server,
-                dual: true,
-            };
+            let mut cat = config::ModsCatalogue { server: mm.dat_source == ListSource::Server, dual: true };
             if config::mods_key(&mut mm.s, key, shift, &mut cat) == ModOut::Back {
                 mm.open = false;
             }
@@ -993,16 +989,14 @@ fn clear_catalogue_url(w: &mut World) {
 fn get_stops(mm: &ModMgr) -> Vec<Stop> {
     let s = &mm.s;
     let busy = s.mods_state().is_some_and(|m| m.installing().is_some());
-    let list: Vec<bool> = s
-        .mods_state()
-        .map_or(Vec::new(), |m| {
-            let rows = if mm.get_source == ListSource::Server {
-                m.server_standard().iter().map(|(_, st)| st.is_none()).collect()
-            } else {
-                m.standard().iter().map(|(_, st)| st.is_none()).collect()
-            };
-            rows
-        });
+    let list: Vec<bool> = s.mods_state().map_or(Vec::new(), |m| {
+        let rows = if mm.get_source == ListSource::Server {
+            m.server_standard().iter().map(|(_, st)| st.is_none()).collect()
+        } else {
+            m.standard().iter().map(|(_, st)| st.is_none()).collect()
+        };
+        rows
+    });
     let headers = std::iter::once(Stop::Buttons { n: 1, off: busy as u64, pair: None });
     let server = mm.get_source == ListSource::Server;
     let add = server.then_some(Stop::Buttons { n: 3, off: busy as u64, pair: None });
@@ -1071,11 +1065,7 @@ fn get_press(w: &mut World, k: usize, b: usize) {
     mm.get_sub = b;
     let headers = get_headers(mm);
     let n = mm.s.mods_state().map_or(0, |m| {
-        if mm.get_source == ListSource::Server {
-            m.server_standard().len()
-        } else {
-            m.standard().len()
-        }
+        if mm.get_source == ListSource::Server { m.server_standard().len() } else { m.standard().len() }
     });
     if k == 0 {
         if let Some(m) = mm.s.mods_mut() {
@@ -1098,11 +1088,7 @@ fn get_press(w: &mut World, k: usize, b: usize) {
     if k < headers + n {
         let i = k - headers;
         let ok = mm.s.mods_mut().is_some_and(|m| {
-            if mm.get_source == ListSource::Server {
-                m.install_server_standard(i)
-            } else {
-                m.install_standard(i)
-            }
+            if mm.get_source == ListSource::Server { m.install_server_standard(i) } else { m.install_standard(i) }
         });
         return sound(w, if ok { Se::Select } else { Se::Error });
     }
@@ -1655,19 +1641,19 @@ fn get_mods(
                     ui.horizontal(|ui| {
                         let caret = mm.catalogue_typing.then(|| mm.catalogue_url.chars().count());
                         let field = kit::field(ui, m, &mm.catalogue_url, caret, 200.0, font.clone(), None);
-                        if ui.rect_contains_pointer(field)
-                            && ui.ctx().input(|i| i.pointer.primary_clicked())
-                        {
+                        if ui.rect_contains_pointer(field) && ui.ctx().input(|i| i.pointer.primary_clicked()) {
                             click.push(Click::CatalogueField);
                         }
                         if mm.catalogue_typing {
                             kit::ring(ui.painter(), m, field, 6.0);
                         }
-                        let b_add = Btn { cursor: row == 1 && mm.get_sub == 1, off: busy.is_some(), ..Default::default() };
+                        let b_add =
+                            Btn { cursor: row == 1 && mm.get_sub == 1, off: busy.is_some(), ..Default::default() };
                         if kit::clicked(&kit::button(ui, m, "Add", 72.0, b_add), b_add) {
                             click.push(Click::CatalogueSave);
                         }
-                        let b_clr = Btn { cursor: row == 1 && mm.get_sub == 2, off: busy.is_some(), ..Default::default() };
+                        let b_clr =
+                            Btn { cursor: row == 1 && mm.get_sub == 2, off: busy.is_some(), ..Default::default() };
                         if kit::clicked(&kit::button(ui, m, "Clear", 72.0, b_clr), b_clr) {
                             click.push(Click::CatalogueClear);
                         }
@@ -1899,10 +1885,7 @@ fn apply(w: &mut World, clicks: Vec<Click>) {
                 }
             }
             Click::Dats(act) => {
-                let mut cat = config::ModsCatalogue {
-                    server: mm.dat_source == ListSource::Server,
-                    dual: true,
-                };
+                let mut cat = config::ModsCatalogue { server: mm.dat_source == ListSource::Server, dual: true };
                 if config::mods_do(&mut mm.s, act, &mut cat) == ModOut::Back {
                     mm.open = false;
                 }
@@ -2044,10 +2027,7 @@ fn window(p: &mut Panels, mm: &mut ModMgr, sel: Option<&Sel>, replies: &[&str]) 
                                 .into();
                     }
                     _ => {
-                        let cat = config::ModsCatalogue {
-                            server: mm.dat_source == ListSource::Server,
-                            dual: true,
-                        };
+                        let cat = config::ModsCatalogue { server: mm.dat_source == ListSource::Server, dual: true };
                         ui.horizontal_top(|ui| {
                             ui.vertical(|ui| {
                                 ui.set_width(LIST_W + 16.0 + FORMS_W + 60.0);

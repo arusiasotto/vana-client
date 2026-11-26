@@ -2054,14 +2054,8 @@ pub(super) fn mods_page(
     }
     if cat.dual {
         ui.add_space(6.0);
-        if let Some(k) = kit::tab_strip(
-            ui,
-            m,
-            "dats src",
-            &CAT_SRC,
-            cat.server as usize,
-            at.is_some_and(|a| a.0 == 2),
-        ) {
+        if let Some(k) = kit::tab_strip(ui, m, "dats src", &CAT_SRC, cat.server as usize, at.is_some_and(|a| a.0 == 2))
+        {
             act.push(ModDo::DatSource(k));
         }
     }

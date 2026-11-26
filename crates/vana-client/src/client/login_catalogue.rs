@@ -68,10 +68,7 @@ fn layout(lu: &GameUi, size: [u32; 2], text: &str, f: f32) -> Lay {
     };
     push(&mut lines, &mut y, TITLE.into(), YELLOW, true);
     y += 4.0 * f;
-    for l in lu.wrap(
-        "The mods and DAT packs offered for this server are listed in that repository.",
-        cw / f,
-    ) {
+    for l in lu.wrap("The mods and DAT packs offered for this server are listed in that repository.", cw / f) {
         push(&mut lines, &mut y, l, WHITE, false);
     }
     y += 8.0 * f;
@@ -158,11 +155,7 @@ pub fn window(
     let mut act = None;
     if let Some(i) = press {
         st.focus = i;
-        sounds.push(if i == items - 1 {
-            crate::audio::Ui::Cancel
-        } else {
-            crate::audio::Ui::Select
-        });
+        sounds.push(if i == items - 1 { crate::audio::Ui::Cancel } else { crate::audio::Ui::Select });
         match i {
             FIELD => act = Some(Act::Save),
             CLEAR_BTN => act = Some(Act::Clear),
@@ -203,13 +196,15 @@ pub fn window(
     let first = 1usize;
     for (k, r) in lay.buttons.iter().enumerate() {
         let on = st.focus == first + k;
-        super::settings::button(
-            lu,
-            *r,
-            if on { 0x8080_5020 } else { 0x8080_8080 },
-        );
+        super::settings::button(lu, *r, if on { 0x8080_5020 } else { 0x8080_8080 });
         let lx = r[0] + ((r[2] - lu.label_width(names[k])) / 2.0).round();
-        lu.label(names[k], lx + if on { -1.0 } else { 0.0 }, r[1] + 1.0 + if on { -1.0 } else { 0.0 }, 0xffffffff, true);
+        lu.label(
+            names[k],
+            lx + if on { -1.0 } else { 0.0 },
+            r[1] + 1.0 + if on { -1.0 } else { 0.0 },
+            0xffffffff,
+            true,
+        );
     }
     act
 }

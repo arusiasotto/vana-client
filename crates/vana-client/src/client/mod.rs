@@ -16,6 +16,7 @@ mod friends;
 mod gm;
 mod gmtell;
 pub mod ground;
+mod login_catalogue;
 mod modern;
 mod moncustom;
 mod monstrosity;
@@ -31,7 +32,6 @@ mod regime;
 mod rest;
 mod resttick;
 mod spamfilter;
-mod login_catalogue;
 mod twofa;
 mod uiconf;
 #[cfg(windows)]
@@ -16263,14 +16263,8 @@ impl App {
                     // Server catalogue repo over the form.
                     if let Some(c) = self.login_catalogue.as_mut() {
                         let mut cv = None;
-                        let act = login_catalogue::window(
-                            lu,
-                            &input,
-                            size,
-                            c,
-                            &mut sounds,
-                            modern_ui.then_some(&mut cv),
-                        );
+                        let act =
+                            login_catalogue::window(lu, &input, size, c, &mut sounds, modern_ui.then_some(&mut cv));
                         if let Some(v) = &cv {
                             self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).twofa_window(
                                 ctx,
