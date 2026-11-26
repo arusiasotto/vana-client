@@ -127,6 +127,12 @@ enum Browse {
     InstallTo,
 }
 
+#[derive(Clone)]
+enum WipeStatus {
+    Running,
+    Finished(Result<(), String>),
+}
+
 pub struct FirstRun {
     game_dir: PathBuf,
     stage: Arc<Mutex<Stage>>,
@@ -141,6 +147,9 @@ pub struct FirstRun {
     note: String,
     /// A tap on **Remove old install files** for a custom install folder is waiting for confirmation.
     wipe_confirm: Option<PathBuf>,
+    wipe_job: Arc<Mutex<Option<WipeStatus>>>,
+    /// Install folder being wiped (for the success note).
+    wipe_active_path: Option<PathBuf>,
 }
 
 impl FirstRun {
@@ -189,7 +198,62 @@ impl FirstRun {
             browser_at: crate::client::folder_pick::storage_root(),
             note: String::new(),
             wipe_confirm: None,
+            wipe_job: Arc::new(Mutex::new(None)),
+            wipe_active_path: None,
         }
+    }
+
+    fn wipe_running(&self) -> bool {
+        matches!(&*self.wipe_job.lock().unwrap(), Some(WipeStatus::Running))
+    }
+
+    fn start_wipe(&mut self, path: PathBuf, allow_non_default: bool) {
+        if self.wipe_running() {
+            return;
+        }
+        self.note.clear();
+        self.wipe_active_path = Some(path.clone());
+        let job = self.wipe_job.clone();
+        *job.lock().unwrap() = Some(WipeStatus::Running);
+        std::thread::spawn(move || {
+            let r = wipe_install_dir(&path, allow_non_default).map_err(|e| e.to_string());
+            if r.is_ok() {
+                crate::android_fs::clear_setup_done();
+                log::info!("wiped {}", path.display());
+            }
+            *job.lock().unwrap() = Some(WipeStatus::Finished(r));
+        });
+    }
+
+    fn poll_wipe_job(&mut self) {
+        let snap = self.wipe_job.lock().unwrap().clone();
+        let Some(WipeStatus::Finished(r)) = snap else { return };
+        *self.wipe_job.lock().unwrap() = None;
+        let path = self.wipe_active_path.take();
+        match r {
+            Ok(()) => {
+                if let Some(p) = path {
+                    self.note = format!("Removed old files under {}.", short_path(&p));
+                }
+                self.wipe_confirm = None;
+                if matches!(*self.stage.lock().unwrap(), Stage::Recovery) {
+                    *self.stage.lock().unwrap() = Stage::Ask;
+                }
+            }
+            Err(e) => self.note = format!("Could not remove files: {e}"),
+        }
+    }
+
+    fn wipe_progress_ui(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(egui::RichText::new("Removing files…").size(14.0));
+        });
+        ui.label(
+            egui::RichText::new("Large installs can take a few minutes. Leave this screen open.")
+                .size(11.0)
+                .weak(),
+        );
     }
 
     /// Where the game files go (the config default, or the folder picked).
@@ -403,6 +467,7 @@ impl FirstRun {
 
     /// The window (egui: no game art exists yet).
     pub fn ui(&mut self, ctx: &egui::Context) -> Action {
+        self.poll_wipe_job();
         let failed = match &*self.stage.lock().unwrap() {
             Stage::Done => return Action::Ready,
             Stage::Failed(e) => Some(e.clone()),
@@ -413,6 +478,7 @@ impl FirstRun {
             _ => None,
         };
         let working = matches!(&*self.stage.lock().unwrap(), Stage::Working);
+        let wiping = self.wipe_running();
         let recovery = matches!(&*self.stage.lock().unwrap(), Stage::Recovery);
         let mut action = Action::None;
         let screen = ctx.content_rect();
@@ -463,7 +529,7 @@ impl FirstRun {
                         });
                 });
         });
-        ctx.request_repaint_after(std::time::Duration::from_millis(if working { 250 } else { 16 }));
+        ctx.request_repaint_after(std::time::Duration::from_millis(if working || wiping { 250 } else { 16 }));
         action
     }
 
@@ -512,16 +578,7 @@ impl FirstRun {
 
     fn recovery_wipe(&mut self, install_parent: &Path) {
         if is_default_install_dir(install_parent) {
-            match wipe_install_dir(install_parent, false) {
-                Ok(()) => {
-                    crate::android_fs::clear_setup_done();
-                    log::info!("recovery: wiped {}", install_parent.display());
-                    self.note = format!("Removed old files under {}.", short_path(install_parent));
-                    *self.stage.lock().unwrap() = Stage::Ask;
-                    self.wipe_confirm = None;
-                }
-                Err(e) => self.note = format!("Could not remove files: {e}"),
-            }
+            self.start_wipe(install_parent.to_path_buf(), false);
         } else {
             self.wipe_confirm = Some(install_parent.to_path_buf());
             self.note.clear();
@@ -529,6 +586,10 @@ impl FirstRun {
     }
 
     fn recovery_ui(&mut self, ui: &mut egui::Ui, action: &mut Action) {
+        if self.wipe_running() {
+            self.wipe_progress_ui(ui);
+            return;
+        }
         let install_parent = self.install_parent();
         let ffxi = install_parent.join("FINAL FANTASY XI");
         ui.label(egui::RichText::new("Install needs attention").size(17.0));
@@ -566,18 +627,13 @@ impl FirstRun {
                 .color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)),
             );
             ui.horizontal(|ui| {
-                if ui.button("Delete all").clicked() {
-                    match wipe_install_dir(&pending, true) {
-                        Ok(()) => {
-                            crate::android_fs::clear_setup_done();
-                            self.note = format!("Removed old files under {}.", short_path(&pending));
-                            self.wipe_confirm = None;
-                            *self.stage.lock().unwrap() = Stage::Ask;
-                        }
-                        Err(e) => self.note = format!("Could not remove files: {e}"),
-                    }
+                if ui
+                    .add_enabled(!self.wipe_running(), egui::Button::new("Delete all"))
+                    .clicked()
+                {
+                    self.start_wipe(pending.clone(), true);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.add_enabled(!self.wipe_running(), egui::Button::new("Cancel")).clicked() {
                     self.wipe_confirm = None;
                 }
             });
@@ -588,7 +644,10 @@ impl FirstRun {
         }
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.button(egui::RichText::new("Check install complete").size(15.0)).clicked() {
+            if ui
+                .add_enabled(!self.wipe_running(), egui::Button::new(egui::RichText::new("Check install complete").size(15.0)))
+                .clicked()
+            {
                 self.check_install_complete(action);
             }
             if self.wipe_confirm.is_none() {
@@ -597,11 +656,14 @@ impl FirstRun {
                 } else {
                     "Wipe install folder"
                 };
-                if ui.button(egui::RichText::new(wipe_label).size(15.0)).clicked() {
+                if ui
+                    .add_enabled(!self.wipe_running(), egui::Button::new(egui::RichText::new(wipe_label).size(15.0)))
+                    .clicked()
+                {
                     self.recovery_wipe(&install_parent);
                 }
             }
-            if ui.button("Continue to setup").clicked() {
+            if ui.add_enabled(!self.wipe_running(), egui::Button::new("Continue to setup")).clicked() {
                 *self.stage.lock().unwrap() = Stage::Ask;
                 self.note.clear();
             }
@@ -718,6 +780,11 @@ impl FirstRun {
     }
 
     fn ask_ui_wipe_install(&mut self, ui: &mut egui::Ui, install_parent: &Path) {
+        if self.wipe_running() {
+            ui.add_space(6.0);
+            self.wipe_progress_ui(ui);
+            return;
+        }
         if !install_dir_has_content(install_parent) {
             self.wipe_confirm = None;
             return;
@@ -738,32 +805,22 @@ impl FirstRun {
                 .color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)),
             );
             ui.horizontal(|ui| {
-                if ui.button("Delete all").clicked() {
-                    match wipe_install_dir(&pending, true) {
-                        Ok(()) => {
-                            crate::android_fs::clear_setup_done();
-                            self.note = format!("Removed old files under {}.", short_path(&pending));
-                            self.wipe_confirm = None;
-                        }
-                        Err(e) => self.note = format!("Could not remove files: {e}"),
-                    }
+                if ui
+                    .add_enabled(!self.wipe_running(), egui::Button::new("Delete all"))
+                    .clicked()
+                {
+                    self.start_wipe(pending.clone(), true);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.add_enabled(!self.wipe_running(), egui::Button::new("Cancel")).clicked() {
                     self.wipe_confirm = None;
                 }
             });
             return;
         }
         ui.add_space(4.0);
-        if ui.button("Remove old install files").clicked() {
+        if ui.add_enabled(!self.wipe_running(), egui::Button::new("Remove old install files")).clicked() {
             if is_default_install_dir(install_parent) {
-                match wipe_install_dir(install_parent, false) {
-                    Ok(()) => {
-                        crate::android_fs::clear_setup_done();
-                        self.note = format!("Removed old files under {}.", short_path(install_parent));
-                    }
-                    Err(e) => self.note = format!("Could not remove files: {e}"),
-                }
+                self.start_wipe(install_parent.to_path_buf(), false);
             } else {
                 self.wipe_confirm = Some(install_parent.to_path_buf());
                 self.note.clear();

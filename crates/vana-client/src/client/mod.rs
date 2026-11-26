@@ -9463,6 +9463,7 @@ impl App {
         let phase = Phase::login(&cfg);
         // Recovery / first-start must draw before the title; the opening movie blocks redraw until it finishes.
         let bootstrap = firstrun::before_title(&cfg.game_dir, &cfg.ffxi_dir(), cfg.installed);
+        let first_run_dir = cfg.game_dir.clone();
         // Config 0022 (FUN_10010d20 state 1): the opening movie before the title; in a test drive only with FFXI_OPENING.
         let opening = (!bootstrap
             && cfg.tool("0022") != 0
@@ -9617,7 +9618,7 @@ impl App {
             lobby_values: Default::default(),
             lobby_settings: None,
             updates,
-            first_run: bootstrap.then(|| firstrun::FirstRun::new(cfg.game_dir.clone())),
+            first_run: bootstrap.then(|| firstrun::FirstRun::new(first_run_dir)),
             #[cfg(target_os = "android")]
             game_data: None,
             update_ui: None,
