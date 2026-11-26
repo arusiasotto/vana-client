@@ -21,6 +21,7 @@ mod fx;
 mod gamecfg;
 mod install;
 mod itemshot;
+mod material;
 mod mpeg1;
 mod padreg;
 mod patch;

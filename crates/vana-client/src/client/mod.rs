@@ -16412,11 +16412,10 @@ impl App {
                             None => {}
                         }
                     }
-<<<<<<< HEAD
                     #[cfg(target_os = "android")]
                     if self.twofa.is_some() && self.login_error.is_none() {
                         self.lobby_ime.set(account_ime);
-=======
+                    }
                     // Server catalogue repo over the form.
                     if let Some(c) = self.login_catalogue.as_mut() {
                         let mut cv = None;
@@ -16462,7 +16461,6 @@ impl App {
                             Some(login_catalogue::Act::Close) => self.login_catalogue = None,
                             None => {}
                         }
->>>>>>> 367e8449 (feat(login): Catalogue overlay and lobby entry)
                     }
                     // The Update window over the form (client/updater.rs): before the login, so an old client can
                     // always reach it.

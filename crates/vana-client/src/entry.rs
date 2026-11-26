@@ -1455,7 +1455,7 @@ pub fn entry() -> Result<()> {
             let size = (mesh.max - mesh.min).max_element();
             let (s, c) = yaw.to_radians().sin_cos();
             let eye = centre + glam::Vec3::new(s, 0.0, c) * size * 1.6;
-            let camera = render::Camera { eye, target: centre, up: glam::Vec3::NEG_Y, fov_y: 40f32.to_radians() };
+            let camera = render::Camera { eye, target: centre, up: glam::Vec3::NEG_Y, fov_y: 40f32.to_radians(), ..Default::default() };
             render::character::render_png(&ch, &mesh, &camera, 600, 800, &out)?;
             println!("bounds {} .. {}; wrote {}", mesh.min, mesh.max, out.display());
             Ok(())
@@ -1693,7 +1693,7 @@ pub fn entry() -> Result<()> {
                 (Some(e), Some(t)) => (v3(e), v3(t), Vec3::NEG_Y),
                 _ => (centre + Vec3::new(0.0, -(hi - lo).max_element() * 0.9, 0.01), centre, Vec3::Z),
             };
-            let camera = render::Camera { eye, target, up, fov_y: 60f32.to_radians() };
+            let camera = render::Camera { eye, target, up, fov_y: 60f32.to_radians(), ..Default::default() };
             let sub_file = sub.map(|id| index.read(dat::zone::file_id(id)).map(|f| (id, f))).transpose()?;
             let sub_scene =
                 sub_file.as_ref().map(|(id, f)| dat::zone::load_scene(&keys, f).map(|s| (*id, s))).transpose()?;
@@ -2677,7 +2677,7 @@ fn npc_shot(
     let size = (mesh.max - mesh.min).max_element();
     let (s, c) = yaw.to_radians().sin_cos();
     let eye = centre + glam::Vec3::new(s, 0.0, c) * size * 1.6;
-    let camera = render::Camera { eye, target: centre, up: glam::Vec3::NEG_Y, fov_y: 40f32.to_radians() };
+    let camera = render::Camera { eye, target: centre, up: glam::Vec3::NEG_Y, fov_y: 40f32.to_radians(), ..Default::default() };
     render::character::render_png(&ch, &mesh, &camera, 600, 800, out)?;
     println!("bounds {} .. {}; wrote {}", mesh.min, mesh.max, out.display());
     Ok(())
@@ -2933,7 +2933,7 @@ fn flyover_shot(
                     let t = if steps <= 1 { 0.0 } else { i as f32 / (steps - 1) as f32 };
                     let k = sample(p, t);
                     let cam =
-                        render::Camera { eye: k.eye, target: k.target, up: glam::Vec3::NEG_Y, fov_y: fov_y(k.focal) };
+                        render::Camera { eye: k.eye, target: k.target, up: glam::Vec3::NEG_Y, fov_y: fov_y(k.focal), ..Default::default() };
                     frames.push((cam, out_dir.join(format!("{scheduler}_{path}_{i}.png")), lighting));
                 }
             }
@@ -3962,6 +3962,7 @@ fn fx_shot(
         target: (c + t) / 2.0 + Vec3::new(0.0, -1.2, 0.0),
         up: Vec3::NEG_Y,
         fov_y: 50f32.to_radians(),
+        ..Default::default()
     };
     let paths: Vec<PathBuf> = (0..frames)
         .map(|i| out.with_file_name(format!("{}_{i:02}.png", out.file_stem().unwrap().to_string_lossy())))

@@ -6,7 +6,7 @@
 use super::gamepad::Pad;
 use std::sync::Mutex;
 
-static PAD: Mutex<Pad> = Mutex::new(Pad { buttons: Vec::new(), axes: [0.0; 6] });
+static PAD: Mutex<Pad> = Mutex::new(Pad { buttons: Vec::new(), axes: [0.0; 6], di: None });
 static SEEN: Mutex<bool> = Mutex::new(false);
 /// The hat is what is holding the D-pad. Stick motion also reports hat 0,0, which must not release a D-pad that
 /// arrived as a key.
