@@ -16122,9 +16122,11 @@ impl App {
                 }
                 firstrun::Action::None => {}
             }
-            // Android: the window takes the touches (no mouse invalidation for an undrawn UI).
+            // Android: the window takes the touches (no mouse invalidation for an undrawn UI). Touch-only: no
+            // hardware or sprite cursor while the installer UI is up.
             #[cfg(target_os = "android")]
             {
+                self.mouse.visible = false;
                 self.ui_drawn = true;
             }
             return;
@@ -19442,6 +19444,12 @@ impl App {
         if self.ui_drawn {
             platform.cursor_icon =
                 if self.cfg.tool("0021") == 0 { egui::CursorIcon::None } else { egui::CursorIcon::Default };
+            #[cfg(target_os = "android")]
+            if self.first_run.is_some() {
+                platform.cursor_icon = egui::CursorIcon::None;
+                gfx.window.set_cursor_visible(false);
+                self.mouse.invalidate();
+            }
         } else {
             self.mouse.invalidate();
         }
@@ -22348,6 +22356,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.redraw();
                 if self.ui_drawn
+                    && self.first_run.is_none()
                     && self.cfg.tool("0021") != 0
                     && let Some(gfx) = &self.gfx
                 {
@@ -22459,6 +22468,7 @@ impl ApplicationHandler for App {
                 self.pointer_moved((position.x, position.y));
                 // FUN_100016c0: window-message motion shows the cursor only past 2 px (not while a look drag holds it).
                 if self.look_grab.is_none()
+                    && self.first_run.is_none()
                     && self
                         .last_cursor
                         .is_none_or(|(x, y)| (position.x - x).abs() > 2.0 || (position.y - y).abs() > 2.0)

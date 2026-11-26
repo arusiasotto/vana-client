@@ -180,6 +180,7 @@ impl App {
         let size = gfx.window.inner_size();
         if size.width > 0 && size.height > 0 {
             resize_surface(gfx, size);
+            let _ = gfx.egui_state.on_window_event(&gfx.window, &WindowEvent::Resized(size));
         }
         gfx.window.set_visible(true);
         gfx.window.request_redraw();
@@ -235,7 +236,18 @@ impl App {
     /// A pointer move (and a button) for egui on Android. `window_event` does not call egui-winit for touch or mouse
     /// (that would duplicate each press); a move is sent before a button so a tap is not dropped.
     pub(super) fn android_egui_pointer(&mut self, physical: (f64, f64), button: Option<(MouseButton, bool)>) {
-        let ppp = self.gfx.as_ref().map_or(1.0, |g| g.egui_ctx.pixels_per_point() as f64).max(0.01);
+        let ppp = self
+            .gfx
+            .as_ref()
+            .map_or(1.0, |g| {
+                let from_ctx = g.egui_ctx.pixels_per_point() as f64;
+                if from_ctx > 0.01 {
+                    from_ctx
+                } else {
+                    g.window.scale_factor()
+                }
+            })
+            .max(0.01);
         let pos = egui::pos2((physical.0 / ppp) as f32, (physical.1 / ppp) as f32);
         self.synth_events.push(egui::Event::PointerMoved(pos));
         if let Some((button, pressed)) = button {
@@ -268,7 +280,7 @@ impl App {
     pub(super) fn android_touch(&mut self, touch: Touch) {
         let at = (touch.location.x, touch.location.y);
         self.cursor_in = true;
-        if self.look_grab.is_none() {
+        if self.look_grab.is_none() && self.first_run.is_none() {
             self.mouse.visible = true;
         }
         let over_ui = self.android_over_ui();
