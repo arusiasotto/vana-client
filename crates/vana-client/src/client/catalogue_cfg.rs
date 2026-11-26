@@ -6,7 +6,9 @@ use crate::config::{self, ServerCatalogues};
 pub fn repo_for_keys(keys: &[String]) -> String {
     let store = ServerCatalogues::load();
     for key in keys {
-        if let Some(e) = store.get(key) && !e.repo.is_empty() {
+        if let Some(e) = store.get(key)
+            && !e.repo.is_empty()
+        {
             return e.repo.clone();
         }
     }
@@ -65,7 +67,7 @@ pub fn normalize_repo(text: &str) -> String {
             return format!("{}/{}", parts[0], parts[1]);
         }
     }
-  if s.contains("://") || s.is_empty() {
+    if s.contains("://") || s.is_empty() {
         return String::new();
     }
     if s.contains('/') && !s.starts_with('/') {
