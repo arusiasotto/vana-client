@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Turns the model tools' descriptors, file lists and checksums into model_tables.hpp for engine/src/model.cpp.
+
+    gen_model_tables.py <model-tools dir> <out header, or a folder for model_tables.hpp>
+
+Each model file entry becomes one step (copy a byte range, or one of the four re-orderings) with its expected
+SHA-256. The region maps come from the vendored scripts themselves, so the two cannot disagree.
+"""
+import json
+import re
+import sys
+from pathlib import Path
+
+tools = Path(sys.argv[1]).resolve()
+sys.dont_write_bytecode = True  # nothing written into the vendored tree
+sys.path.insert(0, str(tools))
+import unpack_postblock  # noqa: E402
+import unpack_preblock  # noqa: E402
+import unpack_splitswin  # noqa: E402
+import unpack_swin_family  # noqa: E402
+import unpack_vit  # noqa: E402
+
+ALL = 0xFFFFFFFF
+REC = re.compile(r"block(\d+)\.layer(\d+)\.layer")
+
+
+def steps(descriptor, list_file, sums_file):
+    graph = json.loads((tools / descriptor).read_text())
+    layers = {(b["index"], l["index"]): l for b in graph["blocks"] for l in b["layers"]}
+    names = [l.strip() for l in (tools / list_file).read_text().splitlines() if l.strip() and not l.startswith("#")]
+    want = {}
+    for line in (tools / sums_file).read_text().splitlines():
+        if line.strip():
+            h, n = line.split(None, 1)
+            want[n.strip()] = h
+    assert set(want) == set(names), f"{sums_file} and {list_file} name different files"
+    out = []
+    for name in names:
+        top, _, rest = name.partition("/")
+        if top == "inventory":
+            assert rest.startswith("weights/") and rest.endswith(".bin"), name
+            out.append((name, rest[len("weights/"):-4], "RAW", (0, ALL), 0))
+            continue
+        m = re.match(r"(block\d+\.layer\d+\.layer)\.(\w+)\.bin$", rest)
+        assert m, name
+        record, part = m[1], m[2]
+        b, li = map(int, REC.fullmatch(record).groups())
+        layer = layers[(b, li)]
+        if top == "unpacked":
+            ci, co = layer["input_channels"], layer["output_channels"]
+            C = min(ci, co)
+            assert re.fullmatch(r"CCTinlayoutFusedSwin\dH", layer["type"]) and C <= 256 and (ci == co or max(ci, co) == 2 * C), name
+            regs = unpack_swin_family.regions(C, C // 32, ci, co)
+            total = regs[-1][2]
+            r = next(r for r in regs if r[0] == part)
+            if r[6] == "matrix":
+                out.append((name, record, "SWIN", (r[1], r[3], r[4], r[5]), total))
+            else:
+                out.append((name, record, "RAW", (r[1], r[2]), total))
+        elif top in ("unpacked-preblock", "unpacked-postblock"):
+            mod = unpack_preblock if top == "unpacked-preblock" else unpack_postblock
+            total = mod.REGIONS[-1][2]
+            r = next(r for r in mod.REGIONS if r[0] == part)
+            if r[6] == "matrix":
+                out.append((name, record, "SWIN", (r[1], r[3], r[4], r[5]), total))
+            elif part == "out_project" and top == "unpacked-postblock":
+                out.append((name, record, "OUTPROJ", (r[1],), total))
+            else:
+                out.append((name, record, "RAW", (r[1], r[2]), total))
+        elif top == "unpacked-splitswin":
+            p = next(p for p in unpack_splitswin.LAYOUT[layer["type"]] if p[0] == part)
+            _, kind, off, a, k = p
+            if kind == "matrix":
+                out.append((name, record, "SPLIT", (off, a, k), 0))
+            else:
+                out.append((name, record, "RAW", (off, off + a * (2 if kind == "fp16" else 1)), 0))
+        elif top == "unpacked-vit":
+            N, K, head, tail, split = unpack_vit.LAYOUT[layer["type"]]
+            if part == "header":
+                out.append((name, record, "RAW", (0, head), 0))
+            elif part == "skip_weight":
+                out.append((name, record, "RAW", (head + N * K, head + N * K + 2 * tail), 0))
+            elif split == 3:
+                out.append((name, record, "QKV", ("qkv".index(part),), 0))
+            else:
+                assert part == "weight", name
+                out.append((name, record, "SPLIT", (head, N, K), 0))
+        else:
+            raise SystemExit(f"unknown model file {name}")
+    return [(n, rec, op, args, total, want[n]) for n, rec, op, args, total in out]
+
+
+def table(var, rows):
+    lines = [f"inline constexpr Step {var}[] = {{"]
+    for n, rec, op, args, total, sha in rows:
+        a = list(args) + [0] * (4 - len(args))
+        digest = ", ".join(f"0x{sha[i:i + 2]}" for i in range(0, 64, 2))
+        lines.append(f'    {{"{n}", "{rec}", Op::{op}, {{{", ".join(str(x) for x in a)}}}, {total}, {{{digest}}}}},')
+    lines.append("};")
+    return "\n".join(lines)
+
+
+ht = steps("descriptor.json", "model-files.txt", "model-files.sha256")
+small = steps("descriptor-small.json", "model-files-small.txt", "model-files-small.sha256")
+dest = Path(sys.argv[2])
+(dest / "model_tables.hpp" if dest.is_dir() else dest).write_text(f"""// Generated by engine/tools/gen_model_tables.py from the model tools; do not edit.
+#pragma once
+#include <cstdint>
+namespace vana_model_tables {{
+// RAW: bytes a[0]..a[1] of the record (a[1] = ~0: to its end). SWIN: the fused Swin fragment order at a[0], [N a[1]][K a[2]],
+// a[3] tiles per head. SPLIT: the N-fastest order at a[0], [N a[1]][K a[2]]. QKV: q/k/v a[0] of a ViT QKV. OUTPROJ: at a[0].
+enum class Op : uint8_t {{ RAW, SWIN, SPLIT, QKV, OUTPROJ }};
+struct Step {{ const char* name; const char* record; Op op; uint32_t a[4]; uint32_t record_size; uint8_t sha256[32]; }};
+{table("kOriginal", ht)}
+{table("kSmall", small)}
+}}
+""")

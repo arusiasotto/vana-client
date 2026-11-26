@@ -1,0 +1,17 @@
+#version 450
+// The network's input: the linear frame exposed, display-encoded (gamma 2.2) and resampled to the network's size.
+// Written twice: `work` is changed in place by the network, `shown` keeps what it was given.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1, rgba16f) uniform writeonly image2D work;
+layout(binding = 2, rgba16f) uniform writeonly image2D shown;
+layout(push_constant) uniform P { uint w, h; float gain; } p;
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= int(p.w) || xy.y >= int(p.h)) return;
+    vec4 c = textureLod(src, (vec2(xy) + 0.5) / vec2(p.w, p.h), 0.0);
+    vec4 d = vec4(pow(clamp(c.rgb * p.gain, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
+    imageStore(work, xy, d);
+    imageStore(shown, xy, d);
+}

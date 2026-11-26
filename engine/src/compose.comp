@@ -1,0 +1,30 @@
+#version 450
+// The network's change as a per-pixel gain on the full-size frame, split into lightness and colour (after RenoDX's
+// DLSS5 resolve, via mauri870's DLSSNR-RDNA3): colour scales its share and chroma_clamp bounds it, in stops.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src;     // the frame, linear, full size
+layout(binding = 1) uniform sampler2D shown;   // what the network was shown, network size, display encoded
+layout(binding = 2) uniform sampler2D answer;  // what it gave back, network size, display encoded
+layout(binding = 3, rgba16f) uniform writeonly image2D dst;
+layout(push_constant) uniform P { uint w, h; float gain, strength, color, chroma_clamp, vivid_guard; } p;
+
+const vec3 kLuma = vec3(0.212639, 0.715169, 0.072192);
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= int(p.w) || xy.y >= int(p.h)) return;
+    vec4 c = texelFetch(src, xy, 0);
+    vec2 uv = (vec2(xy) + 0.5) / vec2(p.w, p.h);
+    vec3 s = pow(max(textureLod(shown, uv, 0.0).rgb, 0.0), vec3(2.2));
+    vec3 a = pow(max(textureLod(answer, uv, 0.0).rgb, 0.0), vec3(2.2));
+    vec3 lg = log2(max(a, 1.0 / 1024.0)) - log2(max(s, 1.0 / 1024.0));
+    float l = clamp(dot(lg, kLuma), -2.0, 2.0);
+    // the network dims saturated colour; vivid_guard holds that back in proportion to saturation
+    vec3 sd = textureLod(shown, uv, 0.0).rgb;
+    float sat = (max(sd.r, max(sd.g, sd.b)) - min(sd.r, min(sd.g, sd.b))) / max(max(sd.r, max(sd.g, sd.b)), 1e-3);
+    if (l < 0.0) l *= 1.0 - clamp(p.vivid_guard * sat * 2.0, 0.0, 1.0);
+    vec3 ch = clamp((lg - dot(lg, kLuma)) * p.color, -p.chroma_clamp, p.chroma_clamp);
+    // near black the ratio is noise: fade it out below a few codes
+    float trust = smoothstep(0.5 / 1024.0, 4.0 / 1024.0, max(s.r, max(s.g, s.b)));
+    imageStore(dst, xy, vec4(c.rgb * exp2(p.strength * trust * (l + ch)), c.a));
+}
