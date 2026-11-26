@@ -31,8 +31,13 @@ fn nearest_ratio(w: u32, h: u32) -> Option<usize> {
     })
 }
 
-/// An id's default, with 0xab's from the display.
+/// An id's default, with 0xab's from the display; on Android, 0xc9 (software keyboard) defaults on so text entry
+/// works without a physical `-` key to reach Config.
 fn default_of(d: &Def) -> u32 {
+    #[cfg(target_os = "android")]
+    if d.id == 0xc9 {
+        return 1;
+    }
     match DESKTOP_RATIO.load(Ordering::Relaxed) {
         r if d.id == 0xab && r != u32::MAX => r,
         _ => d.default,
