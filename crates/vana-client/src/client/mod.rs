@@ -16,6 +16,7 @@ mod friends;
 mod gm;
 mod gmtell;
 pub mod ground;
+mod login_catalogue;
 mod modern;
 mod moncustom;
 mod monstrosity;
@@ -46,6 +47,7 @@ mod bump;
 mod camera;
 mod carrier;
 mod catalogue;
+pub mod catalogue_cfg;
 mod cfgapply;
 mod clock;
 mod configui;
@@ -56,11 +58,21 @@ mod event;
 mod favs;
 mod firstrun;
 mod flash;
+#[cfg(target_os = "android")]
+mod folder_pick;
 mod footsteps;
+#[cfg(target_os = "android")]
+mod game_data;
 mod game_ui;
 mod gamepad;
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod gamepad_android;
+mod gamepad_dinput;
 #[cfg(target_os = "linux")]
 mod gamepad_sdl;
+#[cfg(any(windows, test))]
+mod gamepad_xinput;
 mod hudtop;
 mod input;
 mod iteminfo;
@@ -75,6 +87,7 @@ mod mapmark;
 mod modsui;
 mod myroom;
 pub mod net;
+pub mod neural;
 mod notes;
 mod padcfg;
 pub(crate) mod perf;
@@ -135,6 +148,7 @@ mod maze;
 mod merits;
 mod minimap;
 mod missions;
+mod modupdates;
 mod moogle;
 mod mousecur;
 mod party;
@@ -144,6 +158,7 @@ mod plate;
 mod post;
 mod preload;
 mod primer;
+mod ptrwarp;
 mod pupset;
 mod quests;
 mod radar;
@@ -231,6 +246,8 @@ impl Task {
             Task::NameChecked(_) => "name check",
             Task::Created(_) => "created",
             Task::TwoFa(_) => "two-factor",
+            #[cfg(target_os = "android")]
+            Task::GameDataWarm(_) => "game data",
         }
     }
 }
@@ -241,6 +258,14 @@ struct TrustReply {
     server: String,
     username: String,
     token: Option<String>,
+}
+
+/// Android: a background `read_game_data` result tagged with the folder and generation that requested it.
+#[cfg(target_os = "android")]
+struct GameDataWarmDone {
+    generation: u64,
+    dir: std::path::PathBuf,
+    result: Result<GameDataLoaded>,
 }
 
 enum Task {
@@ -298,6 +323,48 @@ enum Task {
     Furniture(Result<furniture::Loaded>),
     /// A ship's model (client/ships.rs).
     Ship(Result<ships::Loaded>),
+    /// Android: `DatIndex` and FFXiMain tables off the UI thread (client startup).
+    #[cfg(target_os = "android")]
+    GameDataWarm(GameDataWarmDone),
+}
+
+/// What `game_data()` caches after reading the install (may be built on a worker on Android).
+struct GameDataLoaded {
+    index: Arc<DatIndex>,
+    keys_table: Arc<zone::Keys>,
+    knock_table: Option<[[f32; 3]; 8]>,
+    search_words: Option<Arc<crate::dat::tables::SearchWords>>,
+    blu_data: Arc<crate::dat::blumagic::BluData>,
+    cnq_tables: Option<Arc<crate::dat::tables::CnqTables>>,
+    point_files: [Option<u32>; 6],
+    msg_files: [Option<u32>; 11],
+    ffximain: Vec<u8>,
+}
+
+fn read_game_data(ffxi_dir: &std::path::Path) -> Result<GameDataLoaded> {
+    let index = Arc::new(DatIndex::open(ffxi_dir)?);
+    let ffximain = std::fs::read(crate::dat::ffximain(ffxi_dir))?;
+    let keys_table = Arc::new(zone::Keys::from_ffximain(&ffximain)?);
+    let knock_table = crate::dat::tables::knockback(&ffximain).ok();
+    let search_words = crate::dat::tables::search_words(&ffximain).map_err(|e| log::warn!("{e:#}")).ok().map(Arc::new);
+    let blu_desc = crate::dat::msg::current_slot_file(&ffximain, 1, 0x1a);
+    let blu_data = Arc::new(crate::dat::blumagic::BluData::load(&index, blu_desc));
+    let cnq_tables = crate::dat::tables::conquest(&ffximain).map_err(|e| log::warn!("{e:#}")).ok().map(Arc::new);
+    let point_files = [0x1d, 0x1e, 0x1f, 0x20, 0x21, maze::TEXT_SLOT]
+        .map(|slot| crate::dat::msg::current_slot_file(&ffximain, 1, slot));
+    let msg_files = [0, 0, 0x63, 0x64, 0x65, 0x66, 0x68, 0x69, 0, 0, 0x6a]
+        .map(|slot| (slot != 0).then(|| crate::dat::msg::current_slot_file(&ffximain, 1, slot)).flatten());
+    Ok(GameDataLoaded {
+        index,
+        keys_table,
+        knock_table,
+        search_words,
+        blu_data,
+        cnq_tables,
+        point_files,
+        msg_files,
+        ffximain,
+    })
 }
 
 /// A pick read-back key: bit 63, the actor, a bone or 0x8000 | attach point.
@@ -592,6 +659,9 @@ struct Entity {
     /// Smoothed movement ratio (FUN_100c68f0) and the position drawn last frame.
     ratio: f32,
     last_pos: Vec3,
+    /// FUN_100c63d0's drawn place (+0x5fc): eased 0.125 a tick toward `pos` (the collision place, +0x5c4); None while
+    /// it is snapped to `pos`.
+    drawn: Option<Vec3>,
     /// Who claimed it (0 = nobody), and whether it is a monster.
     claim: u32,
     mob: bool,
@@ -742,8 +812,17 @@ struct Entity {
 }
 
 impl Entity {
+    /// `flags` bit 1 (+0x120 bit 14, HideFlag) and bit 2 (+0x120 bit 18, SleepFlag).
+    const HIDE: u8 = 2;
+    const SLEEP: u8 = 4;
+
+    /// Hidden or asleep by the server (+0x120 & 0x44000): not targetable, off the radar, marked for unloading.
+    fn server_hidden(&self) -> bool {
+        self.flags & (Self::HIDE | Self::SLEEP) != 0
+    }
+
     fn targetable(&self) -> bool {
-        self.flags & 6 == 0
+        !self.server_hidden()
     }
 
     /// FUN_10087dc0: an event's MonStat (ops 0x95 / 0x96) over the 0x00E one.
@@ -870,6 +949,9 @@ pub(crate) struct LoginField<'a> {
 /// The most rows a combo field's list shows.
 const COMBO_ROWS: usize = 8;
 
+/// The Anisotropy setting's cap: mobile GPUs pay a lot for 16x.
+const MAX_ANISOTROPY: u16 = if cfg!(target_os = "android") { 4 } else { 16 };
+
 /// The server key of PlayOnline logins (Server Type PlayOnline): they sign in through net/pol.
 pub(crate) fn is_playonline(server: &str) -> bool {
     server.trim().eq_ignore_ascii_case(PLAYONLINE)
@@ -900,10 +982,39 @@ pub struct LoginView {
     pub buttons: Vec<([f32; 4], &'static str, bool)>,
     /// Two-factor (the focus after Exit), left of the box; none for PlayOnline.
     pub twofa: Option<([f32; 4], &'static str, bool)>,
+    /// Server catalogue repo (n + 7); none for PlayOnline.
+    pub catalogue: Option<([f32; 4], &'static str)>,
     /// Update (the focus after Two-factor), at the box's row's right end; only while something is out of date.
     pub update: Option<([f32; 4], &'static str)>,
     pub focus: usize,
     pub busy: bool,
+}
+
+#[cfg(target_os = "android")]
+pub(crate) struct LobbyIme {
+    rect: [f32; 4],
+    password: bool,
+    retap: bool,
+}
+
+#[cfg(target_os = "android")]
+pub(crate) struct LobbyImeHint {
+    pub rect: egui::Rect,
+    pub retap: bool,
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn lobby_ime_from_hint(h: LobbyImeHint, ppp: f32, ui_k: (f32, f32)) -> LobbyIme {
+    LobbyIme {
+        rect: [
+            h.rect.min.x * ppp * ui_k.0,
+            h.rect.min.y * ppp * ui_k.1,
+            h.rect.width() * ppp * ui_k.0,
+            h.rect.height() * ppp * ui_k.1,
+        ],
+        password: false,
+        retap: h.retap,
+    }
 }
 
 /// The tail of `text` that fits in `max` pixels, so the caret end stays visible.
@@ -924,6 +1035,7 @@ enum LoginChoice {
     Create,
     Exit,
     TwoFa,
+    Catalogue,
     Update,
     Picked(usize),
     Forget(usize, usize),
@@ -990,6 +1102,7 @@ fn login_window(
     sounds: &mut Vec<crate::audio::Ui>,
     modern: Option<&mut Option<LoginView>>,
     monitor_scale: f32,
+    #[cfg(target_os = "android")] ime: &mut Option<LobbyIme>,
 ) -> Option<LoginChoice> {
     const CHOICES: [LoginChoice; 3] = [LoginChoice::LogIn, LoginChoice::Create, LoginChoice::Exit];
     let n = fields.len();
@@ -998,8 +1111,9 @@ fn login_window(
     let twofa = n + 4;
     let upd = n + 5;
     let trust_at = n + 6;
+    let cat = n + 7;
     let trusting = trust.is_some();
-    if (*focus == upd && !update) || (*focus == trust_at && !trusting) {
+    if (*focus == upd && !update) || (*focus == trust_at && !trusting) || (*focus == cat && playonline) {
         *focus = check;
     }
     let was = *focus;
@@ -1008,6 +1122,7 @@ fn login_window(
         .chain(trusting.then_some(trust_at))
         .chain(n..first + 3)
         .chain((!playonline).then_some(twofa))
+        .chain((!playonline).then_some(cat))
         .chain(update.then_some(upd))
         .collect();
     let (sw, sh) = (size[0] as f32, size[1] as f32);
@@ -1057,12 +1172,16 @@ fn login_window(
     let enabled = [filled, filled && !playonline, true];
     // Two-factor (also needing them) under the labels, on the box's row.
     const TF: &str = "Account";
+    const CAT: &str = "Catalogue";
     let tf_rect = (!playonline)
         .then(|| [wx + 16.0 * f, row(check) + 1.0 * f, ((lu.label_width(TF) + 14.0).max(88.0) * f).round(), 16.0 * f]);
-    // Update at the row's other end, under the fields' right edge.
+    // Catalogue on the right of the Remember-password row (Update sits further right when shown).
+    let cat_w = (!playonline).then(|| ((lu.label_width(CAT) + 14.0).max(88.0) * f).round());
+    let cat_rect = cat_w.map(|w| [wx + ww - 16.0 * f - w, row(check) + 1.0 * f, w, 16.0 * f]);
     let upd_rect = update.then(|| {
         let w = (upd_w * f).round();
-        [wx + ww - 16.0 * f - w, row(check) + 1.0 * f, w, 16.0 * f]
+        let x = cat_rect.map_or(wx + ww - 16.0 * f - w, |c| c[0] - 8.0 * f - w);
+        [x, row(check) + 1.0 * f, w, 16.0 * f]
     });
     // A combo field: its arrow at the right end, its list under it.
     let arrow_rect = |i: usize| {
@@ -1122,7 +1241,7 @@ fn login_window(
             *focus = trust_at;
         }
     }
-    for (i, r) in [(twofa, tf_rect), (upd, upd_rect)] {
+    for (i, r) in [(twofa, tf_rect), (cat, cat_rect), (upd, upd_rect)] {
         if let Some(r) = r
             && input.pointer.is_some_and(|p| inside(&r, p))
         {
@@ -1162,6 +1281,11 @@ fn login_window(
             *focus = twofa;
             chosen = filled.then_some(LoginChoice::TwoFa);
             sounds.push(if filled { crate::audio::Ui::Select } else { crate::audio::Ui::Error });
+        }
+        if cat_rect.is_some_and(|r| inside(&r, p)) {
+            *focus = cat;
+            chosen = Some(LoginChoice::Catalogue);
+            sounds.push(crate::audio::Ui::Select);
         }
         if upd_rect.is_some_and(|r| inside(&r, p)) {
             *focus = upd;
@@ -1256,6 +1380,9 @@ fn login_window(
                 egui::Key::ArrowLeft if *focus == check && !playonline => *focus = twofa,
                 egui::Key::ArrowRight if *focus == twofa => *focus = check,
                 egui::Key::ArrowRight if *focus == check && update => *focus = upd,
+                egui::Key::ArrowRight if *focus == check && !update && !playonline => *focus = cat,
+                egui::Key::ArrowRight if *focus == upd => *focus = cat,
+                egui::Key::ArrowLeft if *focus == cat => *focus = if update { upd } else { check },
                 egui::Key::ArrowLeft if *focus == upd => *focus = check,
                 egui::Key::ArrowLeft if (first + 1..=first + 2).contains(&*focus) => *focus -= 1,
                 egui::Key::ArrowRight if (first..first + 2).contains(&*focus) => *focus += 1,
@@ -1276,8 +1403,16 @@ fn login_window(
                     chosen = Some(LoginChoice::Update);
                     sounds.push(crate::audio::Ui::Select);
                 }
-                egui::Key::Enter => {
-                    let k = focus.saturating_sub(first);
+                egui::Key::Enter if *focus == cat => {
+                    chosen = Some(LoginChoice::Catalogue);
+                    sounds.push(crate::audio::Ui::Select);
+                }
+                egui::Key::Enter if *focus < first => {
+                    chosen = enabled[0].then_some(LoginChoice::LogIn);
+                    sounds.push(if enabled[0] { crate::audio::Ui::Select } else { crate::audio::Ui::Error });
+                }
+                egui::Key::Enter if *focus >= first && *focus < first + 3 => {
+                    let k = *focus - first;
                     chosen = enabled[k].then_some(CHOICES[k]);
                     sounds.push(if enabled[k] { crate::audio::Ui::Select } else { crate::audio::Ui::Error });
                 }
@@ -1316,7 +1451,15 @@ fn login_window(
     } else if *focus == trust_at {
         "With two-factor sign-in: log in once with the code, then this computer needs none until the server stops \
          trusting it."
-    } else if *focus >= first && !(if *focus == twofa { filled } else { enabled[*focus - first] }) {
+    } else if *focus == cat {
+        "Set the GitHub repository for this server's mod and DAT catalogue."
+    } else if *focus == twofa && !filled {
+        if playonline {
+            "Enter the PlayOnline ID and password and the Square Enix ID and password first."
+        } else {
+            "Enter the server, account name and password first."
+        }
+    } else if *focus >= first && *focus < first + 3 && !enabled[*focus - first] {
         if playonline {
             "Enter the PlayOnline ID and password and the Square Enix ID and password first."
         } else {
@@ -1336,6 +1479,14 @@ fn login_window(
             _ => "Enter your account information to log in.",
         }
     };
+    #[cfg(target_os = "android")]
+    {
+        *ime = (!busy && *focus < n && !fields[*focus].read_only).then(|| LobbyIme {
+            rect: field_rect(*focus),
+            password: fields[*focus].secret,
+            retap: input.clicked && input.pointer.is_some_and(|p| inside(&field_rect(*focus), p)),
+        });
+    }
     let slots = lu.title_with(sw, sh, None, 0, [true; 5], 0, None, true, modern.is_some());
     let help_colour = if help_over.is_some() || busy || status.is_empty() { WHITE } else { YELLOW };
     let shown = |x: &LoginField| if x.secret { "*".repeat(x.text.chars().count()) } else { x.text.clone() };
@@ -1364,6 +1515,7 @@ fn login_window(
             trust: trust.as_deref().map(|t| (trust_rect, TRUST, *t)),
             buttons: (0..3).map(|k| (arects[k], ACTIONS[k], enabled[k])).collect(),
             twofa: tf_rect.map(|r| (r, TF, filled)),
+            catalogue: cat_rect.map(|r| (r, CAT)),
             update: upd_rect.map(|r| (r, UPD)),
             focus: *focus,
             busy,
@@ -1408,6 +1560,7 @@ fn login_window(
         .enumerate()
         .map(|(k, ((r, a), e))| (first + k, *r, a, e))
         .chain(tf_rect.map(|r| (twofa, r, TF, filled)))
+        .chain(cat_rect.map(|r| (cat, r, CAT, true)))
         .chain(upd_rect.map(|r| (upd, r, UPD, true)));
     for (i, r, name, on_ok) in all {
         let on = *focus == i && !busy;
@@ -1440,6 +1593,18 @@ fn login_window(
         lu.cursor(hx, hy);
     }
     if busy { None } else { chosen }
+}
+
+/// The Ctrl / Alt shortcuts' test (FUN_101ae010 in 30261006_0): no event hold, no sub-target prompt, alive, no Num+
+/// focus (log or status icons), not in layout mode; set 4 (E, I, C, M, J, W, B) also no window with flag 0x20000.
+fn shortcut_ok(w: &World, set4: bool) -> bool {
+    !event::active(w)
+        && !w.dead()
+        && !target::sub_up(w)
+        && !w.log_active
+        && w.log_focus != 2
+        && w.layout.is_none()
+        && !(set4 && w.main_open)
 }
 
 /// A line from a menu or key (text command mode 0).
@@ -1861,6 +2026,8 @@ fn push_chat_line(world: &mut World, line: String, mode: u8, kind: u8, gm: bool,
     }
     let (colour, line, indent) = match world.battle.clone() {
         Some(bt) => {
+            // German's quotation marks (FUN_10129090) are drawn by the log window (logwin::wrap_line); the line keeps
+            // the quotes as typed for the mods, copying and search.
             let line = expand_phrases(world, &line);
             (bt.colour_in(mode, &world.game), line, bt.indents(mode))
         }
@@ -1903,7 +2070,7 @@ fn draw_choice(
     for (k, (row, opt)) in rows.iter().zip(options.iter().skip(scroll)).enumerate() {
         gu.text(opt, qx + row[0] + 4.0, qy + row[1], 0, WHITE);
         if scroll + k == cursor {
-            gu.cursor(qx + row[0], qy + row[1]);
+            gu.cursor_on(name, k as u16 + 1, qx + row[0], qy + row[1], [qx + row[0], qy + row[1], row[2], row[3]]);
         }
     }
     let r = gu.window_rect(name, sw, sh)?;
@@ -2164,6 +2331,7 @@ fn self_entity(w: &World) -> Entity {
         motion: w.my_motion,
         ratio: 0.0,
         last_pos: w.pos,
+        drawn: None,
         claim: 0,
         mob: false,
         index: w.my_index,
@@ -2530,7 +2698,8 @@ fn anchor_point(world: &World, id: u32, which: usize) -> Option<Vec3> {
     let (pos, status) = if id == world.my_id {
         (drawn_pos(world), world.my_motion.status)
     } else {
-        world.entities.get(&id).map(|e| (e.pos, e.motion.status))?
+        // Actors not ours: the drawn place too (+0x678 follows +0x5fc), not the collision place it trails.
+        world.entities.get(&id).map(|e| (e.drawn.unwrap_or(e.pos), e.motion.status))?
     };
     let pos = event::pose(world, id).map_or(pos, |p| p.pos);
     // The drawn position (+0x678) has the mount offset; `coff` keeps the riding status.
@@ -2889,7 +3058,7 @@ fn world_hud(
             }
             egui::Event::Copy if world.log_selection.is_some() => world.copied = world.log_selection.clone(),
             egui::Event::Copy if world.typing => {}
-            egui::Event::Copy if !event::active(world) => check_target(world),
+            egui::Event::Copy if shortcut_ok(world, true) => check_target(world),
             egui::Event::Cut if world.typing && fep::selection(world).is_some() => {
                 world.copied = fep::selected_text(world);
                 fep::delete_selection(world);
@@ -3073,7 +3242,9 @@ fn world_hud(
                     world.log_active = false;
                 }
                 egui::Key::Escape if world.log_active => world.log_active = false,
-                egui::Key::A if modifiers.ctrl || modifiers.alt => send_chat(world, "/attack".into()),
+                egui::Key::A if (modifiers.ctrl || modifiers.alt) && shortcut_ok(world, false) => {
+                    send_chat(world, "/attack".into())
+                }
                 // The palette (FUN_101a3960): Left / Right move the cursor (wrapping), Down / Up the next / previous set,
                 // Enter runs the cell and closes, Escape closes. Other keys pass (Ctrl / Alt + M opens magic).
                 egui::Key::ArrowLeft
@@ -3137,10 +3308,7 @@ fn world_hud(
                 // Ctrl / Alt + M, J, W, B (key functions 0x41, 0x7f, 0x80, 0x9f): magic in list mode without trusts, job
                 // abilities, weapon skills, pet commands; in the field, alive, no prompt.
                 egui::Key::M | egui::Key::J | egui::Key::W | egui::Key::B
-                    if (modifiers.ctrl || modifiers.alt)
-                        && !event::active(world)
-                        && !world.dead()
-                        && !target::sub_up(world) =>
+                    if (modifiers.ctrl || modifiers.alt) && shortcut_ok(world, true) =>
                 {
                     match key {
                         egui::Key::M => magic::open_magic(world, 0, true, 0x100),
@@ -3166,14 +3334,18 @@ fn world_hud(
                         magic::key(world, *key);
                     }
                 }
-                egui::Key::H if modifiers.ctrl || modifiers.alt => {
+                egui::Key::H if (modifiers.ctrl || modifiers.alt) && shortcut_ok(world, false) => {
                     world.sounds.push(crate::audio::Ui::Select as u32);
                     send_chat(world, "/heal".into());
                 }
-                egui::Key::C if modifiers.ctrl || modifiers.alt => check_target(world),
+                egui::Key::C if (modifiers.ctrl || modifiers.alt) && shortcut_ok(world, true) => check_target(world),
                 // FUN_1012ec60 / FUN_101e9f10.
-                egui::Key::E if modifiers.ctrl || modifiers.alt => items::open_equipment(world),
-                egui::Key::I if modifiers.ctrl || modifiers.alt => items::open_items(world),
+                egui::Key::E if (modifiers.ctrl || modifiers.alt) && shortcut_ok(world, true) => {
+                    items::open_equipment(world)
+                }
+                egui::Key::I if (modifiers.ctrl || modifiers.alt) && shortcut_ok(world, true) => {
+                    items::open_items(world)
+                }
                 // Ours (Extras): plain T slides the Timers out or in, with no window open (Ctrl / Alt + T is /tell).
                 egui::Key::T
                     if !modifiers.ctrl
@@ -3672,7 +3844,9 @@ fn world_hud(
         }
         world.sounds.extend(s.sounds.drain(..).map(|x| x as u32));
     }
-    // Mouse on the Lua mods' windows (the modern UI's panels take egui's).
+    // Mouse on the Lua mods' windows (the modern UI's panels take egui's). The cell under the pointer is forgotten
+    // first, so a pointer gone from the window (or the client) leaves no item showing.
+    lua::clear_pointed(world);
     if !world.modern
         && let Some(p) = input.pointer
         && lua::pointer_classic(
@@ -4645,7 +4819,12 @@ fn world_hud(
         // the right (inf: retail's scroll is not traced; as the event input window).
         let at = fep::caret(world);
         let mut before = fep::pieces(world, &world.chat_input.chars().take(at).collect::<String>());
-        let after = fep::pieces(world, &world.chat_input.chars().skip(at).collect::<String>());
+        let mut after = fep::pieces(world, &world.chat_input.chars().skip(at).collect::<String>());
+        // FUN_101b9c30: German's quotation marks over the drawn line (its 0x968-byte buffer).
+        crate::dat::font::german_quotes_parts(
+            &mut before.iter_mut().chain(after.iter_mut()).map(|p| &mut p.0).collect::<Vec<_>>(),
+            0x968,
+        );
         // FUN_10190280 cuts the line to inline +0x34 = the log's text width - 86.
         let room = tw - 86.0;
         let width = |p: &[(String, bool)]| p.iter().map(|(t, _)| gu.text_width(t)).sum::<f32>();
@@ -4797,7 +4976,7 @@ fn world_hud(
             };
             gu.sprite(&lib, sprite, row[0], row[1], if k == m.sel { 0x8080_5020 } else { 0x8080_8080 });
             if k == m.sel && focused {
-                gu.cursor(row[0] - 2.0, row[1]);
+                gu.cursor_on("menu    mp_pmode", k as u16 + 1, row[0] - 2.0, row[1], *row);
             }
         }
         blockers.push(*r);
@@ -4894,6 +5073,8 @@ fn world_hud(
     if let Some(c) = event::choice(world).filter(|_| !world.modern) {
         let options: Vec<String> = c.options.iter().map(|o| o.1.clone()).collect();
         let (question, scroll, cursor) = (c.question.clone(), c.scroll, c.cursor);
+        // Each menu is a new window: one answered straight into the next takes the focus (and the pointer) again.
+        gu.renew_on("menu    query", c.serial);
         blockers.extend(draw_choice(
             gu,
             "menu    query",
@@ -4926,7 +5107,7 @@ fn world_hud(
             let (x, y) = (wx + r[0] + 20.0, wy + r[1]);
             gu.text(text, x, y, 0, *c);
             if k == m.sel {
-                gu.cursor(x - 2.0, y);
+                gu.cursor_on(myroom::WINDOW, *child as u16 + 1, x - 2.0, y, [wx + r[0], wy + r[1], r[2], r[3]]);
             }
         }
         blockers.extend(gu.window_rect(myroom::WINDOW, sw, sh));
@@ -5505,6 +5686,31 @@ pub fn downloading(gu: &mut GameUi, n: usize, sw: f32, sh: f32) {
     );
 }
 
+/// What FUN_10125b90's SetCursorPos did for a pointer put on a window's cursor child.
+enum OsWarp {
+    /// Not asked: the game's sprite cursor, a window mode other than 0 / 3, or the window not active. Only the game's
+    /// pointer moves until the mouse does (retail the same).
+    Skipped,
+    /// The Windows cursor went to this window position.
+    Moved((f64, f64)),
+    /// Asked, and the system refused (Wayland). Not retail's case: there the pointer stays with the visible arrow.
+    Refused,
+}
+
+/// FUN_10125b90's SetCursorPos for a pointer put on `at` (UI pixels, `k` UI pixels per window pixel): only when the
+/// Windows cursor is the one shown (config 0021), in full screen or borderless at the desktop size (DAT_10457c2c 0 /
+/// 3) and with the window active.
+fn os_pointer_warp(cfg: &Config, k: (f32, f32), window: &Window, at: (f32, f32)) -> OsWarp {
+    if cfg.tool("0021") == 0 || !matches!(cfg.window_mode(), 0 | 3) || !window.has_focus() {
+        return OsWarp::Skipped;
+    }
+    let phys = ((at.0 / k.0) as f64, (at.1 / k.1) as f64);
+    match window.set_cursor_position(winit::dpi::PhysicalPosition::new(phys.0, phys.1)) {
+        Ok(()) => OsWarp::Moved(phys),
+        Err(_) => OsWarp::Refused,
+    }
+}
+
 /// Logs a zone without a group 0x14 name once per zone.
 fn missing_place(zone: u16) {
     static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
@@ -5825,6 +6031,7 @@ fn place_mogdoor(w: &mut World) {
             motion: Default::default(),
             ratio: 0.0,
             last_pos: pos,
+            drawn: None,
             claim: 0,
             mob: false,
             index: myroom::DOOR_INDEX,
@@ -6563,7 +6770,6 @@ fn window_icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(buf, info.width, info.height).ok()
 }
 
-/// Where the player is drawn: between the physics steps (drawn_between_steps), or where something else just put us.
 /// The model reset's points (2019 all.c 145867..145870): arrow and plate 2, the lock look 0x80 (none: by the model
 /// kind, FUN_100d6670).
 const ANCHORS: [u8; 4] = [2, 2, 0x80, 0x80];
@@ -6576,15 +6782,19 @@ fn drawn_pos(w: &World) -> Vec3 {
     if w.pos == w.step_to { w.draw_pos } else { w.pos }
 }
 
-/// Not retail (it draws each frame's collision position): the drawn player runs through the averages of three
-/// physics steps, `t` of the way from the older one. Exact on a steady slope, one step late; it cancels the
-/// 3-step bob of running downhill (the ground move stays level, gravity catches up) and spreads step-ups.
-fn drawn_between_steps(h: &[Vec3; 4], t: f32) -> Vec3 {
-    // As offsets from the middle step, so a player standing still is drawn exactly where they stand (a plain sum / 3
-    // wobbles in the last bit, and the camera and the name plate's pixel rounding with it).
-    let a = h[1] + (h[0] - h[1] + (h[2] - h[1])) / 3.0;
-    let b = h[2] + (h[1] - h[2] + (h[3] - h[2])) / 3.0;
-    a + (b - a) * t
+/// FUN_100c8280's segment: from NOSE_FAR to NOSE_NEAR ahead, NOSE_UP in y (Y down).
+const NOSE_FAR: f32 = 1.1;
+const NOSE_NEAR: f32 = 0.8;
+const NOSE_UP: f32 = -1.0;
+
+/// FUN_100c8280 (own actor, riding, status 5 / 0x55): the segment from 1.1 to 0.8 ahead of the drawn place `d`
+/// (+0x5fc), 1 up (y -1), turned by the drawn rotation `yaw` (+0x620), is tested against the zone (FUN_10182b60); on a
+/// hit the drawn place moves by the hit less the segment's start in x and z.
+fn rider_nose(d: Vec3, yaw: f32, hit: impl Fn(Vec3, Vec3) -> Option<Vec3>) -> Vec3 {
+    let f = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+    let up = Vec3::new(0.0, NOSE_UP, 0.0);
+    let (a, b) = (d + f * NOSE_FAR + up, d + f * NOSE_NEAR + up);
+    hit(a, b).map_or(d, |h| Vec3::new(d.x + h.x - a.x, d.y, d.z + h.z - a.z))
 }
 
 /// The event input window (FUN_10206640) over the msgline rect: kinds 1..5 a group 0xb title, the text after it;
@@ -6621,6 +6831,10 @@ fn draw_event_input(gu: &mut GameUi, kind: i32, text: &str, caret: usize, sw: f3
 /// The item the info window describes now: the open list's cursor item, else a shop's, the auction's ..., else the
 /// event's; (item, extdata, container, equipped, mode, flags).
 fn item_info_source(world: &World) -> Option<(u16, Option<[u8; 24]>, Option<u8>, bool, u8, u32)> {
+    // A mod list cell under the pointer comes first: the pointer on it is the newer ask than a list's cursor.
+    if let Some((id, ext)) = lua::info_source(world) {
+        return Some((id, ext, None, false, 0, 0));
+    }
     let post_item = post::info_source(world).or_else(|| synth::info_source(world));
     Some(match (items::info_source(world), event::option_item(world)) {
         (Some((id, ext, c, _, eq, mode)), _) => (id, ext, Some(c), eq, mode, 0),
@@ -6747,6 +6961,13 @@ fn trace_move() -> bool {
     *TRACE.get_or_init(|| std::env::var_os("FFXI_TRACE_MOVE").is_some())
 }
 
+/// Debug switch (FFXI_DRAW_30HZ set): draw our model at the last retail frame's place and rotation, as retail does,
+/// instead of between the last two frames. Off by default; for comparing the two in game.
+fn draw_30hz() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("FFXI_DRAW_30HZ").is_some())
+}
+
 /// One frame of a remote actor's move: FUN_1008b680 slides from the drawn spot `pos` linearly to the goal over the
 /// remaining ticks, a goal more than 12 units from it taken at once (FUN_100911f0); then FUN_1008dfb0 stands a
 /// grounded actor on the floor under the slide and gives the goal that height (+8 and +0x28), so a goal sent on
@@ -6795,7 +7016,7 @@ fn slide_frame(
 /// FUN_100c63d0: the drawn rotation eases 0.125 a tick toward the actor's, or op 0x59's percent of 0.00125 during an
 /// event.
 fn turn_rate(a: &Actor, in_event: bool) -> f32 {
-    if in_event && a.turn_pct != 0 { (a.turn_pct as f32 * 0.00125).clamp(0.0, 1.0) } else { 0.125 }
+    if in_event && a.turn_pct != 0 { (a.turn_pct as f32 * 0.00125).clamp(0.0, 1.0) } else { DRAW_EASE }
 }
 
 /// An actor's place; a riding animal stands at its rider's (FUN_100c8ed0), a rider on a mount moves by its offset and
@@ -6949,8 +7170,9 @@ fn base_place(w: &World, id: u32, my_dir: u8) -> Option<Place> {
         });
     }
     let e = w.entities.get(&id)?;
+    // The model is posed at the drawn place (+0x5fc via +0x678, FUN_100d4560), not the collision place.
     Some(Place {
-        pos: e.pos,
+        pos: e.drawn.unwrap_or(e.pos),
         forward: Vec3::new(e.yaw.cos(), 0.0, -e.yaw.sin()),
         tilt: [0.0; 2],
         status: e.motion.status,
@@ -7001,7 +7223,7 @@ fn rig_camera(w: &World) -> Option<Camera> {
     let roll = m.x_axis.z * 60f32.to_radians();
     let focal = m.y_axis.y * 200.0;
     let up = crate::dat::title::up_of(eye, target, roll);
-    Some(Camera { eye, target, up, fov_y: crate::dat::title::fov_y(focal) })
+    Some(Camera { jitter: glam::Vec2::ZERO, eye, target, up, fov_y: crate::dat::title::fov_y(focal) })
 }
 
 fn attach_point(w: &World, places: &HashMap<u32, Place>, id: u32, k: u16) -> Option<Vec3> {
@@ -7589,6 +7811,10 @@ struct World {
     ui_hidden: bool,
     /// Key function 0x55 (Print Screen, UI hidden only): the screenshot to save this frame.
     shot_request: Option<std::path::PathBuf>,
+    /// /upcapture's request (ours), taken by the upscaler at its next frame.
+    pub(super) upscale_capture: Option<crate::render::upscale::capture::Request>,
+    /// /updebug's view (ours; u32::MAX: the next one), taken into config `upscale_debug` at the next frame.
+    pub(super) upscale_debug: Option<u32>,
     /// FUN_101d0ea0's same-second counter (the name's last letter, 'a' + n % 10) and the second it counts.
     shot_count: (u8, i8),
     /// Zone flag 0x100 (0x00A LoginState 1, 4 or 5): no grid position by the clock.
@@ -7604,6 +7830,11 @@ struct World {
     event_voices: bool,
     /// Looks set by event op 0xb6 (and the riding animals, ride.rs), for the model loader.
     event_looks: Vec<(u32, Source)>,
+    /// The actors whose model FUN_10095900 freed for an unload mark, and the look each is made from again
+    /// (event::unload_models).
+    unloaded: HashMap<u32, Option<Source>>,
+    /// This frame's unload marks (event::unload_models takes them once a frame; the hide pass reads them).
+    unload_marks: HashSet<u32>,
     /// CMoSkeletonElem models (fx MODEL_IDS): each one's place, from its element (position, rotation x / y / z).
     fx_models: HashMap<u32, (Vec3, Vec3)>,
     /// Other characters' costumes (0x00D @0x30), and the look each actor in costume would have without it.
@@ -7666,8 +7897,18 @@ struct World {
     my_index: u16,
     pos: Vec3,
     yaw: f32,
-    /// Our model's drawn facing (dir angle, radians; actor +0x61c), eased toward the heading (FUN_100c4390).
+    /// Our model's drawn facing (dir angle, radians; actor +0x61c) as drawn this frame: the actor update's turn
+    /// (`turn_rot`) while it aims, else eased toward the heading.
     my_draw_yaw: Option<f32>,
+    /// Our actor's drawn position (vt+0x1bc, +0x5fc) after the last retail frame: the actor update (FUN_100c63d0)
+    /// eases it 0.125 a tick toward the collision position (+0x5c4); the model is drawn and the camera aimed there.
+    /// None: snapped to the position (a place set from outside, FUN_100ab830).
+    turn_draw: Option<Vec3>,
+    /// `turn_draw` before the last retail frame: what is drawn moves from it to `turn_draw` over the frame.
+    draw_from: Vec3,
+    /// While the actor update turns our model toward its drawn step (free, third person, not riding): +0x61c before
+    /// and after the last retail frame, drawn between them over the frame.
+    turn_rot: Option<[f32; 2]>,
     /// Our step against the heading while it is held (actor +0x598, FUN_100a80d0): 0 none, 1 forward, 2 right, 3 back,
     /// 4 left; picks the strafe motions (motion::strafe).
     my_strafe: u8,
@@ -7880,10 +8121,9 @@ struct World {
     /// Ours (docs/lua-mods.md 4.8): a mod's run to a point (x, z, stop within): autorun steers at it as /follow does.
     run_to: Option<(f32, f32, f32)>,
     move_tier: f32,
-    /// Player physics runs in retail frames (ground::STEP_TICKS): ticks not yet stepped, the last four step
-    /// results (oldest first), the position after the last step, and where the player is drawn (drawn_pos).
+    /// Player physics runs in retail frames (ground::frame_ticks): ticks not yet stepped, the position after the
+    /// last step, and where the player is drawn (drawn_pos).
     step_ticks: f32,
-    step_hist: [Vec3; 4],
     step_to: Vec3,
     draw_pos: Vec3,
     /// Screen fade: 0 clear, 1 black. Zoning fades out, loads, then fades back in.
@@ -8027,6 +8267,9 @@ struct World {
     /// The d_msg files of language slots 0x1d..0x21 (merit, job point, gift, alter ego point and Monstrosity names) and
     /// 0x26 (the maze rune texts).
     point_files: [Option<u32>; 6],
+    /// The name tables message codes read (event::point_texts), kept while their sources stay the same so the
+    /// point, Monstrosity and grammar tables load once.
+    point_texts: std::cell::RefCell<Option<Arc<event::EventTexts>>>,
     /// FUN_100964a0's message sources by number: the files of language slots 0x63..0x66, 0x68, 0x69 and 0x6a
     /// (sources 2..7 and 10, FUN_10095430); 1 and 8 are the zone's dialogue.
     msg_files: [Option<u32>; 11],
@@ -8055,6 +8298,7 @@ struct World {
     client_version: String,
     /// The search server from the lobby's reply (+0x40 IP, +0x44 port) and the queries running on it.
     search_addr: (std::net::Ipv4Addr, u16),
+    catalogue_keys: Vec<String>,
     searches: Vec<(std::sync::mpsc::Receiver<anyhow::Result<crate::net::search::Reply>>, search::Then)>,
     /// The search results window ("menu    scresult") and scoption over it.
     search: Option<search::Results>,
@@ -8400,6 +8644,8 @@ struct World {
     /// name for its header.
     servmes: Option<servmes::Transfer>,
     servmes_armed: bool,
+    /// The login's look for mod updates (the red log line).
+    mod_updates: modupdates::Check,
     /// The Fishing Ranking's request, transfer and window (op 0xb3).
     ranking: ranking::State,
     world_name: String,
@@ -8754,7 +9000,8 @@ impl Phase {
 struct Gfx {
     window: Arc<Window>,
     gpu: Gpu,
-    surface: wgpu::Surface<'static>,
+    /// None while Android has released the native window (`ApplicationHandler::suspended`).
+    surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     depth: wgpu::TextureView,
     egui_ctx: egui::Context,
@@ -8842,6 +9089,8 @@ pub struct App {
     /// The window size the last frame drew at (the mouse pick's projection).
     window_size: [u32; 2],
     last_cursor: Option<(f64, f64)>,
+    /// The game's pointer put on a focused window's cursor child, until the mouse moves (client/ptrwarp.rs).
+    ptr_warp: Option<ptrwarp::PtrWarp>,
     last_frame: Instant,
     /// The creator's nation step backdrop.
     nation: NationShow,
@@ -8887,6 +9136,10 @@ pub struct App {
     monitors: Vec<(String, String)>,
     gpus: Vec<String>,
     index: Option<Arc<DatIndex>>,
+    #[cfg(target_os = "android")]
+    index_warm: LoadState,
+    #[cfg(target_os = "android")]
+    index_warm_gen: u64,
     /// Installed-content mask (ROM2..): title music and lobycwin's tracks (FUN_1023ae80).
     installed: u32,
     keys_table: Option<Arc<zone::Keys>>,
@@ -8970,6 +9223,8 @@ pub struct App {
     mouse: mousecur::MouseCursor,
     /// A lobby or login error (or the new account's notice) waiting in the OK window on the login screen.
     login_error: Option<String>,
+    #[cfg(target_os = "android")]
+    lobby_ime: std::cell::Cell<Option<LobbyIme>>,
     /// The backdrop behind a lobby run (lobbywin 85): ptcbgwin at the lobby entry, hnbackwi at the log-in.
     backdrop: Option<Backdrop>,
     /// A failed log-in run's popup over its backdrop; OK goes back to the title menu (FUN_10241200's -1).
@@ -8983,6 +9238,7 @@ pub struct App {
     trust_for: (String, String),
     /// The two-factor window over the login form.
     twofa: Option<twofa::TwoFa>,
+    login_catalogue: Option<login_catalogue::LoginCatalogue>,
     /// The title's Config window (lobycwin) with its values, and our settings screen over the title.
     lobby_cfg: Option<configui::ConfigUi>,
     /// The title's pressed button (menu index), when, and whether the press was taken (loby2win +0x5e / +0x1c).
@@ -8993,6 +9249,9 @@ pub struct App {
     updates: Option<updater::Shared>,
     /// No game files yet: the download window (not retail).
     first_run: Option<firstrun::FirstRun>,
+    /// Android: the title Config's Game data window (client/game_data.rs).
+    #[cfg(target_os = "android")]
+    game_data: Option<game_data::Editor>,
     update_ui: Option<updater::UpdateUi>,
     /// The Update window opened by itself for an out-of-date PlayOnline Viewer (once a run).
     viewer_asked: bool,
@@ -9007,6 +9266,9 @@ pub struct App {
     ui_k: (f32, f32),
     /// The offscreen scene target and its scaling pass (background resolution other than the window's).
     scene_scale: Option<crate::render::scale::SceneScale>,
+    /// The temporal upscaler's frame state (config `upscaler`, render/upscale), and whether the device can run it.
+    upscale: Option<crate::render::upscale::Upscale>,
+    upscale_supported: Option<bool>,
     /// The top-left debug lines (position, zone, frame timing), toggled with F12.
     debug_overlay: bool,
     perf: perf::Perf,
@@ -9099,6 +9361,86 @@ fn fixed_model(a: &Actor) -> bool {
     matches!(a.source, Some(Source::Npc(crate::dat::npc::NpcLook::Model(_))))
 }
 
+/// The actor update's aim for our drawn rotation while it is free and not riding (FUN_100c63d0, 0x100c6821..0x100c6c1f),
+/// one retail frame: `displaced` (+0x16d, the move) when the drawn step points against it (flat unit vectors, dot < 0);
+/// else the drawn step when it went 0.01 or more (across the ground when it rises, in 3D when it falls) with |x| or |z|
+/// over 0.01; else none (the heading stays).
+fn strafe_lock_aim(draw_step: Vec3, displaced: Vec3) -> Option<Vec3> {
+    let flat = |v: Vec3| {
+        let n = v.normalize_or_zero();
+        Vec3::new(n.x, 0.0, n.z)
+    };
+    let (d, s) = (flat(displaced), flat(draw_step));
+    if d.dot(s) < 0.0 { Some(d) } else { drawn_aim(draw_step, AIM_MIN) }
+}
+
+/// FUN_100c63d0 (0x100c6591) for an actor not ours over `ticks`: the drawn place `drawn` (+0x5fc, None = at `from`,
+/// last frame's collision place)
+/// eases 0.125 a tick toward the collision place `pos` (+0x5c4), or is set to it (`snap`). Returns the drawn step.
+fn ease_drawn(drawn: &mut Option<Vec3>, from: Vec3, pos: Vec3, ticks: f32, snap: bool) -> Vec3 {
+    let was = drawn.unwrap_or(from);
+    let now = if snap { pos } else { was + (pos - was) * draw_ease(ticks) };
+    *drawn = (!snap && now.distance_squared(pos) > 1e-10).then_some(now);
+    now - was
+}
+
+/// FUN_100c63d0's aim from the drawn step (+0x5fc moved this retail frame): it reaches `min` (flat, or 3D while
+/// falling) and moves over `min` in x or z. Actors not ours aim only at this (no displacement test).
+fn drawn_aim(step: Vec3, min: f32) -> Option<Vec3> {
+    let reach = if step.y >= 0.0 { step.x.hypot(step.z) } else { step.length() };
+    (reach >= min && (step.z.abs() > min || step.x.abs() > min)).then_some(step)
+}
+
+/// One retail frame (`ticks` long, ground::frame_ticks) of the actor update for our drawn place (FUN_100c63d0): the drawn position
+/// +0x5fc (`draw`, None snaps it to `from`) eases 0.125 a tick toward the collision position `to` (0x100c6591), or
+/// is set to it on a lift (`snap`: vt+0x19c, +0x5e2); the drawn rotation `yaw` (+0x61c, dir angle) eases 0.125 a tick
+/// toward strafe_lock_aim, if any (0x100c6821..0x100c6c29), against `moved` (+0x16d: FUN_100a57f0 takes it as the
+/// input's place +0xd4 less the last collided one, so the move before the walls). None: no aim this frame.
+fn strafe_lock_turn(
+    draw: &mut Option<Vec3>,
+    from: Vec3,
+    to: Vec3,
+    moved: Vec3,
+    snap: bool,
+    yaw: f32,
+    ticks: f32,
+) -> Option<f32> {
+    let was = draw.unwrap_or(from);
+    let now = if snap { to } else { was + (to - was) * draw_ease(ticks) };
+    *draw = Some(now);
+    strafe_lock_aim(now - was, moved).map(|a| ease_yaw(yaw, (-a.z).atan2(a.x), ticks))
+}
+
+/// The actor update's 0.125 a tick over one retail frame of `ticks` (its loop runs once per whole tick,
+/// FUN_10014cf0): 1 - 0.875^2 at the game's 30 frames a second.
+fn draw_ease(ticks: f32) -> f32 {
+    1.0 - (1.0 - DRAW_EASE).powf(ticks)
+}
+
+/// The share of the way the drawn place and rotation ease each tick (_DAT_1032b3bc).
+const DRAW_EASE: f32 = 0.125;
+/// A drawn step under this a retail frame aims nothing (FUN_100c63d0's 0.01 tests).
+const AIM_MIN: f32 = 0.01;
+/// A step under this a tick counts as standing for the walk / run motion (FUN_100c8930).
+const STAND_MAX: f32 = 0.01;
+
+/// A dir angle eased one retail frame of `ticks` toward `to` the short way round (+0x61c's ease, wrapped at +-pi).
+fn ease_yaw(yaw: f32, to: f32, ticks: f32) -> f32 {
+    yaw + wrap_angle(to - yaw) * draw_ease(ticks)
+}
+
+fn wrap_angle(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// FUN_100a80d0 under the strafe lock (FUN_100a6240 0x100a6e57): the quarter of the move `step` about the point a unit
+/// along the heading `yaw` (+0xe8) from the drawn position `drawn` (+0x5fc), seen from the collision position `at`
+/// (+0xd4): the heading less how far the drawn model trails. Flat: our move has no height.
+fn strafe_lock_quarter(yaw: f32, drawn: Vec3, at: Vec3, step: Vec3) -> u8 {
+    let lag = drawn - at;
+    crate::motion::strafe_dir(Vec3::new(yaw.cos() + lag.x, 0.0, -yaw.sin() + lag.z), step)
+}
+
 fn forward_from_dir(dir: u8) -> Vec3 {
     let theta = dir as f32 / 256.0 * std::f32::consts::TAU;
     Vec3::new(theta.cos(), 0.0, -theta.sin())
@@ -9111,15 +9453,21 @@ impl App {
             cfg.username = user.clone();
         }
         let frame_limit = cfg.frame_limit();
-        crate::render::ANISOTROPY.store(cfg.anisotropy.clamp(1, 16), std::sync::atomic::Ordering::Relaxed);
+        ground::set_move_rate(cfg.move_rate);
+        crate::render::ANISOTROPY.store(cfg.anisotropy.clamp(1, MAX_ANISOTROPY), std::sync::atomic::Ordering::Relaxed);
         crate::render::MIPMAPS.store(cfg.tool("0000") != 0, std::sync::atomic::Ordering::Relaxed);
         crate::render::set_uncompressed(cfg.tool("0018") >= 2);
         crate::render::MAP_COMPRESSED.store(cfg.tool("0019") == 0, std::sync::atomic::Ordering::Relaxed);
         crate::render::SHINE_WRAP.store(cfg.tool("0040") == 0, std::sync::atomic::Ordering::Relaxed);
         let (tasks_tx, tasks) = channel();
         let phase = Phase::login(&cfg);
+        // Recovery / first-start must draw before the title; the opening movie blocks redraw until it finishes.
+        let bootstrap = firstrun::before_title(&cfg.game_dir, &cfg.ffxi_dir(), cfg.installed);
+        let first_run_dir = cfg.game_dir.clone();
         // Config 0022 (FUN_10010d20 state 1): the opening movie before the title; in a test drive only with FFXI_OPENING.
-        let opening = (cfg.tool("0022") != 0 && (!drive.driven() || std::env::var_os("FFXI_OPENING").is_some()))
+        let opening = (!bootstrap
+            && cfg.tool("0022") != 0
+            && (!drive.driven() || std::env::var_os("FFXI_OPENING").is_some()))
             .then(|| opening::Opening::open(&cfg.ffxi_dir().join("mov")))
             .flatten();
         let installed = crate::dat::installed(&cfg.ffxi_dir());
@@ -9137,7 +9485,8 @@ impl App {
         let notes_check = drive_checks || std::env::var_os("FFXI_NOTES_CHECK").is_some();
         let notes_fetch = (whats_new.is_none() && notes_check && notes::due(&cfg.notes_seen))
             .then(|| notes::fetch_since(cfg.notes_seen.clone()));
-        Self {
+        #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+        let mut app = Self {
             cfg,
             applied_volumes: None,
             drive,
@@ -9156,6 +9505,8 @@ impl App {
             drag_from: None,
             stand_sent: false,
             mouse: Default::default(),
+            #[cfg(target_os = "android")]
+            lobby_ime: std::cell::Cell::new(None),
             wheel: 0.0,
             list_wheel: 0.0,
             mods: Default::default(),
@@ -9169,6 +9520,7 @@ impl App {
             swallow_click: false,
             window_size: [1, 1],
             last_cursor: None,
+            ptr_warp: None,
             last_frame: Instant::now(),
             next_frame: None,
             numpad_minus: false,
@@ -9195,6 +9547,10 @@ impl App {
             gpus: Vec::new(),
             nation: NationShow::default(),
             index: None,
+            #[cfg(target_os = "android")]
+            index_warm: LoadState::Idle,
+            #[cfg(target_os = "android")]
+            index_warm_gen: 0,
             installed,
             keys_table: None,
             knock_table: None,
@@ -9246,6 +9602,8 @@ impl App {
             exit_requested: false,
             close_asked: false,
             scene_scale: None,
+            upscale: None,
+            upscale_supported: None,
             cursor_in: false,
             login_error: None,
             backdrop: None,
@@ -9254,12 +9612,15 @@ impl App {
             rename_refused: None,
             trust_for: Default::default(),
             twofa: None,
+            login_catalogue: None,
             lobby_cfg: None,
             title_press: None,
             lobby_values: Default::default(),
             lobby_settings: None,
             updates,
-            first_run: None,
+            first_run: bootstrap.then(|| firstrun::FirstRun::new(first_run_dir)),
+            #[cfg(target_os = "android")]
+            game_data: None,
             update_ui: None,
             viewer_asked: false,
             whats_new,
@@ -9277,15 +9638,25 @@ impl App {
             audio_tried: false,
             music_scene: MusicScene::None,
             music_created: false,
+        };
+        #[cfg(target_os = "android")]
+        if app.cfg.ffxi_dir().join("VTABLE.DAT").is_file()
+            && crate::android_fs::has_all_files_access()
+            && !firstrun::before_title(&app.cfg.game_dir, &app.cfg.ffxi_dir(), app.cfg.installed)
+        {
+            app.start_index_warm();
         }
+        app
     }
 
     /// Puts changed settings into effect: window size and mode, frame limit, anisotropy (new samplers), volumes.
     /// The background resolution is read every frame.
     fn apply_settings(&mut self) {
         self.frame_limit = self.cfg.frame_limit();
+        ground::set_move_rate(self.cfg.move_rate);
         self.present_dirty = true;
-        crate::render::ANISOTROPY.store(self.cfg.anisotropy.clamp(1, 16), std::sync::atomic::Ordering::Relaxed);
+        crate::render::ANISOTROPY
+            .store(self.cfg.anisotropy.clamp(1, MAX_ANISOTROPY), std::sync::atomic::Ordering::Relaxed);
         crate::render::MIPMAPS.store(self.cfg.tool("0000") != 0, std::sync::atomic::Ordering::Relaxed);
         crate::render::set_uncompressed(self.cfg.tool("0018") >= 2);
         crate::render::MAP_COMPRESSED.store(self.cfg.tool("0019") == 0, std::sync::atomic::Ordering::Relaxed);
@@ -9853,22 +10224,52 @@ impl App {
         self.drive.input.as_ref().map_or(self.drive.shot_taken, |s| s.finished())
     }
 
+    fn apply_game_data(&mut self, g: GameDataLoaded) {
+        self.index = Some(g.index);
+        self.keys_table = Some(g.keys_table);
+        self.knock_table = g.knock_table;
+        self.search_words = g.search_words;
+        self.blu_data = Some(g.blu_data);
+        self.cnq_tables = g.cnq_tables;
+        self.point_files = g.point_files;
+        self.msg_files = g.msg_files;
+        self.input.load(&g.ffximain);
+    }
+
+    #[cfg(target_os = "android")]
+    fn start_index_warm(&mut self) {
+        if !crate::android_fs::has_all_files_access() {
+            return;
+        }
+        if self.index.is_some() {
+            return;
+        }
+        self.index_warm_gen = self.index_warm_gen.wrapping_add(1);
+        let warm_gen = self.index_warm_gen;
+        self.index_warm = LoadState::Loading;
+        let dir = self.cfg.ffxi_dir();
+        let tx = self.tasks_tx.clone();
+        std::thread::spawn(move || {
+            let result = read_game_data(&dir);
+            let _ = tx.send(Task::GameDataWarm(GameDataWarmDone { generation: warm_gen, dir, result }));
+        });
+    }
+
     fn game_data(&mut self) -> Result<(Arc<DatIndex>, Arc<zone::Keys>)> {
         if self.index.is_none() {
-            self.index = Some(Arc::new(DatIndex::open(&self.cfg.ffxi_dir())?));
-            let dll = std::fs::read(crate::dat::ffximain(&self.cfg.ffxi_dir()))?;
-            self.keys_table = Some(Arc::new(zone::Keys::from_ffximain(&dll)?));
-            self.knock_table = crate::dat::tables::knockback(&dll).ok();
-            self.search_words =
-                crate::dat::tables::search_words(&dll).map_err(|e| log::warn!("{e:#}")).ok().map(Arc::new);
-            let blu_desc = crate::dat::msg::current_slot_file(&dll, 1, 0x1a);
-            self.blu_data = Some(Arc::new(crate::dat::blumagic::BluData::load(self.index.as_ref().unwrap(), blu_desc)));
-            self.cnq_tables = crate::dat::tables::conquest(&dll).map_err(|e| log::warn!("{e:#}")).ok().map(Arc::new);
-            self.point_files = [0x1d, 0x1e, 0x1f, 0x20, 0x21, maze::TEXT_SLOT]
-                .map(|slot| crate::dat::msg::current_slot_file(&dll, 1, slot));
-            self.msg_files = [0, 0, 0x63, 0x64, 0x65, 0x66, 0x68, 0x69, 0, 0, 0x6a]
-                .map(|slot| (slot != 0).then(|| crate::dat::msg::current_slot_file(&dll, 1, slot)).flatten());
-            self.input.load(&dll);
+            #[cfg(target_os = "android")]
+            {
+                match self.index_warm {
+                    LoadState::Loading => anyhow::bail!("game data loading"),
+                    LoadState::Failed => anyhow::bail!("game data failed to load"),
+                    LoadState::Idle => {
+                        self.start_index_warm();
+                        anyhow::bail!("game data loading");
+                    }
+                }
+            }
+            #[cfg(not(target_os = "android"))]
+            self.apply_game_data(read_game_data(&self.cfg.ffxi_dir())?);
         }
         Ok((self.index.clone().unwrap(), self.keys_table.clone().unwrap()))
     }
@@ -10102,7 +10503,7 @@ impl App {
         }
         // The lobby art loads in the background; nobody is waiting on it. A timed-out run's link comes back after its
         // time-out freed the UI (update_netwait), maybe during the next job.
-        if !matches!(
+        let background = matches!(
             task,
             Task::GameUi(_)
                 | Task::Flyover(_)
@@ -10116,10 +10517,33 @@ impl App {
                 | Task::AreaLoaded(..)
                 | Task::SubAreaLoaded(..)
                 | Task::LobbyBack(_)
-        ) {
+        );
+        #[cfg(target_os = "android")]
+        let background = background || matches!(task, Task::GameDataWarm(_));
+        if !background {
             self.busy = false;
         }
         match task {
+            #[cfg(target_os = "android")]
+            Task::GameDataWarm(done) => {
+                if done.generation != self.index_warm_gen || done.dir != self.cfg.ffxi_dir() {
+                    return;
+                }
+                self.index_warm = if done.result.is_ok() { LoadState::Idle } else { LoadState::Failed };
+                match done.result {
+                    Ok(g) => {
+                        log::info!("game data ready");
+                        self.apply_game_data(g);
+                        if self.game_ui_state == LoadState::Loading && self.game_ui.is_none() {
+                            self.load_game_ui();
+                        }
+                        if self.flyover_state == LoadState::Loading && self.flyover.is_none() {
+                            self.load_flyover();
+                        }
+                    }
+                    Err(e) => log::warn!("game data: {e:#}"),
+                }
+            }
             Task::Names(res) => match (res, &mut self.phase) {
                 (Ok((n, m)), Phase::World(w)) => {
                     log::info!("names loaded; text id map for {} zones", m.zones.len());
@@ -10368,6 +10792,7 @@ impl App {
                             ground: None,
                             name: login.name.clone(),
                             search_addr: login.search,
+                            catalogue_keys: crate::config::active_server_keys(&self.cfg, Some(login.search)),
                             searches: Vec::new(),
                             search: None,
                             search_words: self.search_words.clone(),
@@ -10379,6 +10804,9 @@ impl App {
                             pos: Vec3::ZERO,
                             yaw: 0.0,
                             my_draw_yaw: None,
+                            turn_draw: None,
+                            draw_from: Vec3::ZERO,
+                            turn_rot: None,
                             my_strafe: 0,
                             lock_flip: 0.0,
                             entities: HashMap::new(),
@@ -10505,7 +10933,6 @@ impl App {
                             run_to: None,
                             move_tier: 0.0,
                             step_ticks: 0.0,
-                            step_hist: [Vec3::ZERO; 4],
                             step_to: Vec3::ZERO,
                             draw_pos: Vec3::ZERO,
                             fade: 1.0,
@@ -10592,6 +11019,7 @@ impl App {
                             jp_tables: None,
                             ae_ui: None,
                             ae_tables: None,
+                            point_texts: Default::default(),
                             point_files: self.point_files,
                             msg_files: self.msg_files,
                             msg_texts: HashMap::new(),
@@ -10649,6 +11077,8 @@ impl App {
                             my_face: None,
                             ui_hidden: false,
                             shot_request: None,
+                            upscale_capture: None,
+                            upscale_debug: None,
                             shot_count: (0, -1),
                             mogdoor: None,
                             gmtell: Default::default(),
@@ -10657,6 +11087,8 @@ impl App {
                             carriers: Default::default(),
                             event_voices: false,
                             event_looks: Vec::new(),
+                            unloaded: HashMap::new(),
+                            unload_marks: HashSet::new(),
                             fx_models: HashMap::new(),
                             costumes: HashMap::new(),
                             costume_base: HashMap::new(),
@@ -10860,6 +11292,7 @@ impl App {
                             ambient: None,
                             servmes: None,
                             servmes_armed: true,
+                            mod_updates: Default::default(),
                             ranking: Default::default(),
                             world_name,
                             res_rdy: ResRdy::default(),
@@ -10948,6 +11381,9 @@ impl App {
                                 w.index = Some(index.clone());
                             }
                             let dll = crate::dat::ffximain(&self.cfg.ffxi_dir());
+                            // The process's language, as retail's global, set once here: the dictionary loading
+                            // next reads it, and so do its blocks and German's quotes after.
+                            crate::dat::lang::set(self.cfg.client_language());
                             let tx = self.tasks_tx.clone();
                             let idx = index.clone();
                             std::thread::spawn(move || {
@@ -11636,6 +12072,8 @@ impl App {
 
     fn poll_network(&mut self) {
         let mut took: Option<(u16, u16, preload::Ready, Instant)> = None;
+        // The coming frame's time, as `frame_clock` measures it after this.
+        let ready_dt = self.frame_dt();
         let Phase::World(world) = &mut self.phase else { return };
         world.net.stats.rate_ms.store(self.cfg.send_interval, std::sync::atomic::Ordering::Relaxed);
         world.net.stats.gm_window.store(self.cfg.gm_window, std::sync::atomic::Ordering::Relaxed);
@@ -11878,9 +12316,17 @@ impl App {
                     world.map = None;
                     world.scan = Default::default();
                     // LSB re-sends every container after c2s 0x00C and empties the temporary items and the recycle
-                    // bin on zoning, so slots kept from the last zone would go stale (retail's reset: inferred).
-                    world.inv =
-                        items::Inventory { sizes: world.inv.sizes, sizes2: world.inv.sizes2, ..Default::default() };
+                    // bin on zoning, so slots kept from the last zone would go stale (retail's reset: inferred). The
+                    // view stays (a sorted list stays sorted): a slot refilled with its item keeps its row, one with
+                    // another item goes last (FUN_1021c210), and slots the resend leaves empty go at the settle.
+                    world.inv = items::Inventory {
+                        sizes: world.inv.sizes,
+                        sizes2: world.inv.sizes2,
+                        order: std::mem::take(&mut world.inv.order),
+                        viewed_ids: std::mem::take(&mut world.inv.viewed_ids),
+                        view_changed: world.inv.view_changed,
+                        ..Default::default()
+                    };
                     // FUN_10093720: DAT_10487ef5 = 0.
                     world.weather_forced = false;
                     // The resend refills the emptied view: Auto-sort's free-slot count starts again once it settles.
@@ -11943,7 +12389,7 @@ impl App {
                     world.unsettled = true;
                     // The drawn facing starts at the new heading (a zone-in into the zone already loaded settles in
                     // the same frame, before the easing would snap it); the old float facing is the last zone's.
-                    (world.my_draw_yaw, world.my_face) = (None, None);
+                    (world.my_draw_yaw, world.my_face, world.turn_draw, world.turn_rot) = (None, None, None, None);
                     swkbd::zone_out(world);
                     log::info!("zone-in: zone {zone} at {:?} dir {dir}", pos);
                     // MsgShift's check of this zone's dialogue file (a read and a hash) off the UI thread, before the
@@ -12100,6 +12546,7 @@ impl App {
                         motion: e.motion,
                         ratio: 0.0,
                         last_pos: Vec3::ZERO,
+                        drawn: None,
                         claim: 0,
                         mob: false,
                         index: e.index,
@@ -12306,6 +12753,7 @@ impl App {
                             entry.pos = p;
                             entry.last_pos = p;
                             entry.slide = p;
+                            entry.drawn = None;
                             entry.raw_y = entry.server_y;
                             entry.remain = 0.0;
                         }
@@ -12592,6 +13040,9 @@ impl App {
                         world.inv_flags |= 0x0020_0800;
                     }
                     world.inv_loaded = loaded;
+                    if state == 1 {
+                        world.inv.prune_order(loaded);
+                    }
                     if state == 1 && loaded & 1 << items::INVENTORY != 0 && world.inv_free.is_none() {
                         world.inv_free = Some(items::free_slots(world, items::INVENTORY));
                     }
@@ -12605,10 +13056,10 @@ impl App {
                     if matches!(container, 1..=7 | 9) {
                         world.inv_flags |= 0x0020_0000;
                     }
-                    // A slot newly filled in a container kept sorted sorts it once the burst is over.
-                    let fresh = id != 0 && !world.inv.order.get(&container).is_some_and(|o| o.contains(&index));
-                    world.inv.set(container, index, id, count);
-                    // Retail's Auto-sort (config 0x9a) already sorts the inventory on a new slot.
+                    // A slot newly filled (or refilled with another item) in a container kept sorted sorts it once
+                    // the burst is over.
+                    let fresh = world.inv.set(container, index, id, count);
+                    // Retail's Auto-sort (config 0x9a) already sorts the inventory on a new row, the login load too.
                     let retail = container == items::INVENTORY && world.game.get(0x9a) != 0;
                     if fresh && container < 32 && world.auto_sort >> container & 1 != 0 && !retail {
                         world.sort_due = (world.sort_due.0 | 1 << container, items::SORT_DELAY);
@@ -13001,8 +13452,15 @@ impl App {
                 }
             }
         }
+        // FUN_10096640: the event check (a queued event's actor walk) runs ahead of the hide and model passes.
+        let queued: HashSet<u32> = looks.iter().map(|l| l.0).collect();
+        event::ready(world, ready_dt, &queued);
+        // FUN_10095900: models under an unload mark are freed, the ones whose mark is gone are asked for again.
+        // Their looks go first: a newer one that came with the update that ended the mark wins.
+        let back = event::unload_models(world);
         // Looks the event scripts changed (op 0xb6) load like the server's; held ones go first, newer ones win.
         looks.extend(std::mem::take(&mut world.event_looks));
+        looks.splice(0..0, back);
         looks.splice(0..0, std::mem::take(&mut world.held_looks));
         // The mods' looks changed (render.look): every player look in sight again, before the newer ones.
         let models_ver = world.lua.models_ver();
@@ -13043,6 +13501,11 @@ impl App {
                 }
                 _ => source,
             };
+            // FUN_10095900 makes no model for an actor under an unload mark: its look waits for the mark to go.
+            if let Some(kept) = world.unloaded.get_mut(&id) {
+                *kept = Some(base);
+                continue;
+            }
             let key = format!("{source:?}");
             let spawn_fx = world.entities.get(&id).is_some_and(|e| e.spawn_fx);
             let shadow =
@@ -13701,10 +14164,12 @@ impl App {
             }
         };
         for (eid, e) in world.entities.iter_mut() {
-            // Moved by someone else since last frame (an event script): take that as the slide and drawn spot.
+            // Moved by someone else since last frame (an event script): take that as the slide and drawn spot (the
+            // place setters FUN_100ab830 / FUN_100c3ff0 go through FUN_100929a0, which snaps +0x5fc).
             if e.pos != e.last_pos {
                 e.slide = e.pos;
                 e.remain = 0.0;
+                e.drawn = None;
             }
             // FUN_100c63d0 while +0x102 is set: the push moves the drawn position directly (no walk / turn motion
             // choice); the slide goes on from there afterwards (FUN_1008b680 starts from the actor's position).
@@ -13718,6 +14183,7 @@ impl App {
                     e.pos.y = y;
                 }
                 e.slide = e.pos;
+                e.drawn = None;
                 knock_ends.push((*eid, recover, done));
                 bump::active_tick(e, ticks);
                 carry(eid, e);
@@ -13736,6 +14202,7 @@ impl App {
                     e.pos.y = y;
                 }
                 e.slide = e.pos;
+                e.drawn = None;
                 if done {
                     ride::self_settle(m, e.pos, &mut e.target, &mut e.remain);
                     self_ends.push(*eid);
@@ -13759,6 +14226,7 @@ impl App {
             if let Some(&(p, yaw)) = world.effects.pinned.get(eid) {
                 e.pos = p;
                 e.slide = p;
+                e.drawn = None;
                 if let Some(y) = yaw {
                     e.yaw = y;
                 }
@@ -13801,25 +14269,48 @@ impl App {
                 e.floor_noted = far;
             }
             // The actor is drawn at the slide (+0x34 = +4).
-            let step = e.slide - start;
             e.pos = e.slide;
             carry(eid, e);
             // Characters in a lift shaft stand at its height (FUN_100a4ed0 runs for every collision actor).
+            let mut lifted = false;
             if e.door == 0
                 && e.lift.is_none()
                 && !matches!(e.sub_kind, 2..=4)
                 && let Some((h, _)) = lifts::ride_in(&shafts, e.last_pos, e.pos)
             {
                 e.pos.y = h;
+                lifted = true;
             }
-            // A step under 0.01 a tick counts as standing (motion and facing).
-            let flat = Vec3::new(step.x, 0.0, step.z);
-            let moved = if flat.length() < 0.01 * ticks { 0.0 } else { flat.length() };
-            let want = if moved > 0.0 { (-flat.z).atan2(flat.x) } else { event::rad_of(e.dir) };
+            // FUN_100c63d0 (0x100c6591): the drawn place (+0x5fc) eases 0.125 a tick toward the collision place
+            // (+0x5c4), so an actor glides to a stop. It is snapped on a lift (+0x5e2), after a jump over 12
+            // (FUN_100929a0), and for a status 0x1c rider (FUN_1008cd90 calls FUN_10092c20 every frame).
+            // A 0x1f rider is snapped the same way (FUN_1008cd90). Riders (status 5 / 0x55) ease like walkers: their
+            // mount actor is at +0x768 (0x100c655c). Doors, lifts and ship models are not skeleton actors (no
+            // FUN_100c63d0) and stay where they are put.
+            let snap = jumped
+                || lifted
+                || matches!(e.motion.status, 0x1c | 0x1f)
+                || e.door != 0
+                || e.lift.is_some()
+                || matches!(e.sub_kind, 2..=4);
+            // The drawn step (fStack_26c). A jump over 12 and a 0x1c / 0x1f rider have +0x5fc set to the new place
+            // before the actor update (FUN_100929a0 / FUN_10092c20 in FUN_1008cd90), so it is 0 there: no turn
+            // toward the jump or the carrier's move. A lift sets it in the update (+0x5e2): the whole step.
+            let dstep = ease_drawn(&mut e.drawn, start, e.pos, ticks, snap);
+            let dstep = if snap && !lifted { Vec3::ZERO } else { dstep };
+            // The walk / run motion from the drawn step too (FUN_100c83c0 -> FUN_100c8930 takes its length for an
+            // actor not ours), so an actor gliding to a stop keeps its feet moving; under 0.01 a tick is standing.
+            let flat = Vec3::new(dstep.x, 0.0, dstep.z);
+            let moved = if flat.length() < STAND_MAX * ticks { 0.0 } else { flat.length() };
+            // FUN_100c63d0's turn for an actor not ours: toward the drawn step when it reaches 0.01 a retail frame
+            // (flat, or 3D while falling) and moves 0.01 in x or z; else toward the heading (+0x39). The retail
+            // frame is ours (frame_ticks, Movement Rate): retail at 60 runs every actor's update once a tick.
+            let want = drawn_aim(dstep, AIM_MIN * ticks / ground::frame_ticks())
+                .map_or_else(|| event::rad_of(e.dir), |a| (-a.z).atan2(a.x));
             let tau = std::f32::consts::TAU;
             let diff = (want - e.yaw + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
             // Scheduler op 0x2f: the drawn facing stays while the effect runs (FUN_100c63d0 skips the ease).
-            let rate = world.actors.get(eid).map_or(0.125, |a| turn_rate(a, in_event));
+            let rate = world.actors.get(eid).map_or(DRAW_EASE, |a| turn_rate(a, in_event));
             // A camera rig (op 0xb9, vt+0x154) skips that block of FUN_100c63d0 too.
             let rig = world.actors.get(eid).is_some_and(|a| a.camera_rig);
             if !rig && world.face_locks.get(eid).is_none_or(|t| Instant::now() >= *t) {
@@ -13841,7 +14332,7 @@ impl App {
                 .ground
                 .as_ref()
                 .filter(|g| !g.is_empty())
-                .map_or(p, |g| g.walk_player(from, p, ground::STEP_TICKS, Some(&ride)));
+                .map_or(p, |g| g.walk_player(from, p, ground::frame_ticks(), Some(&ride)));
             knock_ends.push((world.my_id, recover, done));
         }
         // Our own self-move comes before the input's move (FUN_100a57f0), through the walking collision; a push
@@ -13858,7 +14349,7 @@ impl App {
                 .ground
                 .as_ref()
                 .filter(|g| !g.is_empty())
-                .map_or(from + d, |g| g.walk_player(from, from + d, ground::STEP_TICKS, Some(&ride)));
+                .map_or(from + d, |g| g.walk_player(from, from + d, ground::frame_ticks(), Some(&ride)));
             if done {
                 self_ends.push(me);
             }
@@ -14343,13 +14834,54 @@ impl App {
         let moving = stepping;
         // Whole retail frames of FUN_100a48d0 / FUN_100a3560; a position set elsewhere starts over from it.
         if world.pos != world.step_to {
-            (world.step_hist, world.step_to, world.step_ticks) = ([world.pos; 4], world.pos, 0.0);
+            (world.step_to, world.step_ticks) = (world.pos, 0.0);
+            // A place set from outside snaps the drawn position too (FUN_100ab830, FUN_1008cd90).
+            world.turn_draw = None;
         }
+        if world.turn_draw.is_none() {
+            world.draw_from = world.pos;
+        }
+        let riding = matches!(world.my_motion.status, 5 | 0x55);
+        let pin = world.effects.pinned.get(&world.my_id).copied();
+        // The actor update turns our model toward its drawn step (FUN_100c63d0 0x100c6821: free, vt+0x330), with or
+        // without the strafe lock, riding too; only riding (FUN_10084350 / 70) under the strafe lock (vt+0x340, +0xfb)
+        // eases it toward the heading instead (0x100c6b0x). Locked on it eases toward the heading (below). Ours also
+        // leaves it to the ease below in first person (tank controls), under the right drag's facing, the forced follow,
+        // events and a scheduler's pin.
+        let actor_turns = !world.camst.first
+            && !(riding && face_cam)
+            && !in_event
+            && !world.unsettled
+            && pin.is_none()
+            && pull.is_none()
+            && lock_target.is_none()
+            && tank_face.is_none()
+            && (face_cam || !world.mouse_look);
+        let heading_now = || {
+            let dir = world.net.me.lock().map_or(0, |m| m.dir);
+            let f = world.my_face.filter(|f| f.0 == dir).map_or_else(|| forward_from_dir(dir), |f| f.1);
+            (-f.z).atan2(f.x)
+        };
+        // The drawn rotation +0x61c, stepped on retail frames with the move: the actor update's thresholds are per
+        // frame, so they need its frame, not ours.
+        let mut turn_yaw = match world.turn_rot.filter(|_| actor_turns) {
+            Some([_, y]) => y,
+            None => world.my_draw_yaw.unwrap_or_else(heading_now),
+        };
+        // What the rotation eases toward when it has no aim: the heading (+0x39). Under the strafe lock that is +0x44,
+        // the rotation itself (FUN_100a57f0), so no turn; free, FUN_100a6240 turns it to the move.
+        let heading_aim = if face_cam {
+            None
+        } else if stepping {
+            Some((-step.z).atan2(step.x))
+        } else {
+            Some(heading_now())
+        };
+        let mut eased_turn = None;
         world.step_ticks += dt * 60.0;
         let speed = own_speed(world);
         // FUN_100a8000, under the strafe lock or locked on (ours: the right drag's facing too): backing up goes at a third
         // of the speed (vt+0x1b0), sideways at a fixed 0.0625 a tick (0.125 riding), whatever the speed or the stick.
-        let riding = matches!(world.my_motion.status, 5 | 0x55);
         // Locked on (FUN_100a7b80), every control type: the same quarters and speeds, the stick read in the frame the
         // locked step moves in (forward toward the target, side about it, target::locked_step). Measured against this
         // frame's way to the target instead, a target whose position jumps (a monster in melee range, worse up close)
@@ -14359,7 +14891,7 @@ impl App {
         if lock_target.is_none() {
             world.lock_flip = 0.0;
         }
-        let lock_dir = if !stepping {
+        let mut lock_dir = if !stepping {
             0
         } else if lock_target.is_some() {
             // FUN_100a7b80 (0x100a7ef6..0x100a7f2d): a 2 <-> 4 flip against last frame's quarter holds forward (motion,
@@ -14368,10 +14900,8 @@ impl App {
             let d = crate::motion::strafe_dir_held(forward, step, world.my_strafe);
             crate::motion::lock_flip_guard(world.my_strafe, d, &mut world.lock_flip, dt * 60.0)
         } else if face_cam {
-            // The same facing as my_strafe below: the float one while the byte is still ours.
-            let dir = world.net.me.lock().map_or(0, |m| m.dir);
-            let f = world.my_face.filter(|f| f.0 == dir).map_or_else(|| forward_from_dir(dir), |f| f.1);
-            crate::motion::strafe_dir(f, step)
+            // Taken again each retail frame of the move (below).
+            strafe_lock_quarter(turn_yaw, world.turn_draw.unwrap_or(world.pos), world.pos, step)
         } else if world.mouse_look && !tank {
             // The right drag faces the camera's forward this frame (see `to` below), so the quarter is about that. Held
             // across the 45 degree edge a diagonal sits on: the drag turns face and step together every frame.
@@ -14383,24 +14913,31 @@ impl App {
         let shafts = world.lifts.shafts();
         let ride = |a: Vec3, b: Vec3| lifts::ride_in(&shafts, a, b);
         let mut steps = 0;
-        while world.step_ticks >= ground::STEP_TICKS {
-            world.step_ticks -= ground::STEP_TICKS;
+        // Ticks in one retail frame: 2 at the game's 30 frames a second, 1 at 60 (Movement Rate).
+        let frame = ground::frame_ticks();
+        while world.step_ticks >= frame {
+            world.step_ticks -= frame;
             steps += 1;
-            // After a hitch, drop the backlog.
-            if steps > 8 {
+            // After a hitch, drop the backlog (the same time at either rate).
+            if steps as f32 > 16.0 / frame {
                 world.step_ticks = 0.0;
                 break;
             }
             let from = world.pos;
             let mut next = from;
+            if face_cam && stepping {
+                // FUN_100a6240 writes +0x598 each frame from the heading (+0x44, last frame's drawn rotation) and the
+                // drawn position as last frame left them, before this frame's move.
+                lock_dir = strafe_lock_quarter(turn_yaw, world.turn_draw.unwrap_or(from), from, step);
+            }
             if let Some((tp, _)) = pull {
                 next = from + forced::step(from, tp, my_radius);
             } else if stepping {
                 let s = step.normalize();
                 let d = match lock_dir {
-                    3 => speed / 3.0 * ground::STEP_TICKS / 60.0,
-                    2 | 4 => (if riding { 0.125 } else { 0.0625 }) * ground::STEP_TICKS,
-                    _ => speed * tier * ground::STEP_TICKS / 60.0,
+                    3 => speed / 3.0 * frame / 60.0,
+                    2 | 4 => (if riding { 0.125 } else { 0.0625 }) * frame,
+                    _ => speed * tier * frame / 60.0,
                 };
                 // Locked autorun (FUN_100a7b80): a gap to the target under this step's move goes at 0.3 of it, and a
                 // gap under 0 not at all.
@@ -14425,32 +14962,89 @@ impl App {
             }
             // FUN_100a8770 at the end of the move input (also with no input): a character in the way holds the step
             // (the run motion and facing stay).
-            if !in_event && pull.is_none() && bump::blocks(world, from, next - from, ground::STEP_TICKS) {
+            if !in_event && pull.is_none() && bump::blocks(world, from, next - from, frame) {
                 next = from;
             }
             let g = world.ground.as_ref().filter(|g| !g.is_empty());
             if next != from {
-                world.pos = g.map_or(next, |g| g.walk_player(from, next, ground::STEP_TICKS, Some(&ride)));
+                world.pos = g.map_or(next, |g| g.walk_player(from, next, frame, Some(&ride)));
             } else if falls && let Some(g) = g {
                 // A fall goes on without input.
-                world.pos = g.walk_player(from, from, ground::STEP_TICKS, Some(&ride));
+                world.pos = g.walk_player(from, from, frame, Some(&ride));
             } else if let Some((h, _)) = ride(from, from) {
                 // FUN_100a4ed0 runs in events and standing still too.
                 world.pos.y = h;
             }
-            world.step_hist = [world.step_hist[1], world.step_hist[2], world.step_hist[3], world.pos];
+            // The actor update (0x100c6591): the drawn position +0x5fc eased 0.125 a tick toward the moved place (set to
+            // it on a lift), and how far it went this frame; the aim (0x100c6821..0x100c6c1f) and the drawn
+            // rotation's ease toward it, else toward the heading.
+            world.draw_from = world.turn_draw.unwrap_or(from);
+            let lift = ride(world.pos, world.pos).is_some();
+            let aimed = strafe_lock_turn(&mut world.turn_draw, from, world.pos, next - from, lift, turn_yaw, frame);
+            if trace_move() && (stepping || aimed.is_some()) {
+                let drawn = world.turn_draw.unwrap_or(world.pos);
+                let ds = drawn - world.draw_from;
+                let kind = match aimed {
+                    None => "none",
+                    Some(_) if strafe_lock_aim(ds, next - from) == drawn_aim(ds, AIM_MIN) => "drawn",
+                    Some(_) => "moved",
+                };
+                log::info!(
+                    "step t {:.4} view {:.1} stick {:.1} quarter {lock_dir} from ({:.3}, {:.3}) pos ({:.3}, {:.3}) drawn ({:.3}, {:.3}) drawn_step ({:.4}, {:.4}) aim {kind} yaw {:.1} -> {:.1} b {face_cam} turns {actor_turns}",
+                    world.started.elapsed().as_secs_f32(),
+                    world.yaw.to_degrees(),
+                    (-step.z).atan2(step.x).to_degrees(),
+                    from.x,
+                    from.z,
+                    world.pos.x,
+                    world.pos.z,
+                    drawn.x,
+                    drawn.z,
+                    ds.x,
+                    ds.z,
+                    turn_yaw.to_degrees(),
+                    aimed.unwrap_or(turn_yaw).to_degrees()
+                );
+            }
+            if actor_turns {
+                let was = turn_yaw;
+                turn_yaw = match aimed {
+                    Some(y) => {
+                        eased_turn = Some(y);
+                        y
+                    }
+                    None => heading_aim.map_or(turn_yaw, |h| ease_yaw(turn_yaw, h, frame)),
+                };
+                world.turn_rot = Some([was, turn_yaw]);
+            }
+            // FUN_100c8280 at the end of our update while riding: the mount's nose may not go into a wall.
+            if riding
+                && let Some(g) = world.ground.as_ref().filter(|g| !g.is_empty())
+                && let Some(d) = world.turn_draw.as_mut()
+            {
+                *d = rider_nose(*d, turn_yaw, |a, b| g.raycast(a, b).map(|t| a + (b - a).normalize_or_zero() * t));
+            }
+        }
+        if !actor_turns {
+            world.turn_rot = None;
+        } else if world.turn_rot.is_none() {
+            world.turn_rot = Some([turn_yaw; 2]);
         }
         // Scheduler op 0x7a on us (FUN_100c63d0): at actor2's point, no collision or ease, facing actor2 + pi; that
         // place goes out in 0x015.
-        let pin = world.effects.pinned.get(&world.my_id).copied();
         if let Some((p, yaw)) = pin {
-            (world.pos, world.step_hist, world.step_ticks) = (p, [p; 4], 0.0);
+            (world.pos, world.step_ticks) = (p, 0.0);
+            (world.turn_draw, world.draw_from) = (None, p);
             if let Some(y) = yaw {
                 world.yaw = player_yaw(y);
             }
         }
         world.step_to = world.pos;
-        world.draw_pos = drawn_between_steps(&world.step_hist, world.step_ticks / ground::STEP_TICKS);
+        // Drawn between the last two retail frames (ours: we draw more often than retail steps): the model at +0x5fc,
+        // riding too (0x100c655c: with the mount actor at +0x768 the rider eases the same way).
+        let frac = if draw_30hz() { 1.0 } else { world.step_ticks / ground::frame_ticks() };
+        let to = world.turn_draw.unwrap_or(world.pos);
+        world.draw_pos = world.draw_from + (to - world.draw_from) * frac;
         // On a lift the feet are drawn at its height now (the model is too), and the camera eye rides along
         // (FUN_1001ee60: eye.y += the player's y change, the hold set) by the drawn height, every frame as the lift
         // and the look point move: the stepped y would jolt the eye at 30 Hz against them.
@@ -14555,15 +15149,25 @@ impl App {
             } else if let Some(f) = tank_face {
                 Some(f)
             } else if face_cam {
-                // 0x9c held (B / Shift, control type 2): a strafe lock. Retail's FUN_100a6240 returns before the turn
-                // to the move direction while actor +0xfb is set, so the heading stays and the stick strafes.
-                None
+                // 0x9c held (B / Shift, control type 2, actor +0xfb): FUN_100a6240 returns before its turn to the move,
+                // but the turn still comes, eased. The actor update (FUN_100c63d0, 0x100c6821..0x100c6c29: our own
+                // actor, free, not riding) eases the drawn rotation +0x61c 0.125 a tick toward an aim and copies it to
+                // the model's +0x44, which FUN_100a57f0 takes as the heading next frame. The aim: this frame's
+                // displacement (+0x16d) when the drawn step points against it (flat unit vectors, dot < 0); else the
+                // drawn step when it went 0.01 or more (across the ground when it rises, else in 3D) with |x| or |z|
+                // over 0.01; else the heading (no turn): strafe_lock_aim, each retail frame of the move. So the body turns toward the stick within a few ticks (the
+                // step's quarter, motion and speed taken against the heading as it was, lock_dir above), goes on
+                // turning while the drawn position settles, and only the camera stays held. Riding, the drawn
+                // rotation eases toward the heading instead: no turn.
+                eased_turn.map(|y| Vec3::new(y.cos(), 0.0, -y.sin()))
             } else if lock_target.is_some() || world.mouse_look || (turn != 0.0 && !stepping) {
                 Some(face)
             } else if stepping {
                 Some(step.normalize())
             } else {
-                rooted_face
+                // Standing, FUN_100a57f0 takes the heading from +0x44, which the actor update set from the drawn
+                // rotation while it still aimed (the drawn place settling after a stop).
+                rooted_face.or_else(|| eased_turn.map(|y| Vec3::new(y.cos(), 0.0, -y.sin())))
             };
             if let Some(f) = to {
                 me.dir = dir_from_forward(f);
@@ -14575,8 +15179,9 @@ impl App {
             let facing_held = (face_cam || world.mouse_look) && pin.is_none() && lock_target.is_none() && !tank;
             world.my_strafe = if lock_target.is_some() && pin.is_none() {
                 lock_dir
-            } else if facing_held && stepping && world.mouse_look && !face_cam {
-                // The right drag's quarter, held at the edge as the step was (lock_dir above).
+            } else if facing_held && stepping && (world.mouse_look || face_cam) {
+                // The right drag's quarter, held at the edge as the step was; 0x9c's against the heading before this
+                // frame's eased turn (FUN_100a6240 writes +0x598 before the actor update turns it): lock_dir above.
                 lock_dir
             } else if facing_held && stepping {
                 let f = world.my_face.filter(|f| f.0 == me.dir).map_or_else(|| forward_from_dir(me.dir), |f| f.1);
@@ -14612,12 +15217,14 @@ impl App {
             .my_face
             .filter(|f| f.0 == dir)
             .map_or(dir as f32 / 256.0 * std::f32::consts::TAU, |f| (-f.1.z).atan2(f.1.x));
-        world.my_draw_yaw = match world.my_draw_yaw {
-            Some(cur) if !in_event && !world.unsettled && pin.is_none() => {
+        world.my_draw_yaw = match (world.turn_rot, world.my_draw_yaw) {
+            // The actor update's rotation, drawn between the last two retail frames as the position is.
+            (Some([a, b]), _) => Some(a + wrap_angle(b - a) * frac),
+            (None, Some(cur)) if !in_event && !world.unsettled && pin.is_none() => {
                 let d = (target - cur + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-                Some(cur + d * (1.0 - 0.875f32.powf(dt * 60.0)))
+                Some(cur + d * draw_ease(dt * 60.0))
             }
-            _ => Some(target),
+            (None, _) => Some(target),
         };
     }
 
@@ -15110,6 +15717,23 @@ impl App {
         }
     }
 
+    /// The stacked-window pointer follow (World::ptr_dy), only with the drawn (software) cursor.
+    fn ptr_shift(&self) -> f32 {
+        match &self.phase {
+            Phase::World(w) if self.cfg.tool("0021") == 0 => w.ptr_dy,
+            _ => 0.0,
+        }
+    }
+
+    /// The mouse at window pixel `at` (the window's motion or a script's): FUN_100016c0 -> FUN_10125ad0, more than 2
+    /// pixels from a warped game pointer moves it back to the mouse.
+    fn pointer_moved(&mut self, at: (f64, f64)) {
+        let (k, dy) = (self.ui_k, self.ptr_shift());
+        if self.ptr_warp.is_some_and(|pw| pw.shifted(dy).left_by((at.0 as f32 * k.0, at.1 as f32 * k.1 + dy))) {
+            self.ptr_warp = None;
+        }
+    }
+
     /// A look drag begins: the pointer hidden and held where it is, as modern MMOs do.
     fn grab_pointer(&mut self) {
         let Some(g) = self.gfx.as_ref() else { return };
@@ -15149,14 +15773,15 @@ impl App {
         // A release is a drag past 65 square UI pixels or 25 ticks held, or when mouse look turned the camera more than
         // 4 pixels meanwhile (the look holds the pointer, so it barely moves): a camera drag that starts on an actor
         // opens no menu and makes no double click.
-        let looked = self.look_travel > 4.0;
+        let looked = self.look_travel > 4.0 && !cfg!(target_os = "android");
+        let drag = if cfg!(target_os = "android") { 400.0 } else { 65.0 };
         let release = |from: Option<((f64, f64), Instant)>,
                        at: Option<(f64, f64)>,
                        k: (f32, f32)|
          -> Option<((f64, f64), bool)> {
             let ((a, t), b) = (from?, at?);
             let (dx, dy) = ((b.0 - a.0) as f32 * k.0, (b.1 - a.1) as f32 * k.1);
-            Some((b, looked || dx * dx + dy * dy >= 65.0 || t.elapsed().as_secs_f32() * 60.0 >= 25.0))
+            Some((b, looked || dx * dx + dy * dy >= drag || t.elapsed().as_secs_f32() * 60.0 >= 25.0))
         };
         let size = self.window_size;
         let (k, retail_aspect) = (self.ui_k, self.cfg.retail_aspect);
@@ -15404,6 +16029,13 @@ impl App {
     fn ui(&mut self, ctx: &egui::Context, window: [u32; 2]) {
         let mut action: Option<Box<dyn FnOnce(&mut App)>> = None;
         self.ui_drawn = false;
+        #[cfg(target_os = "android")]
+        {
+            self.lobby_ime.set(None);
+            if let Some(m) = self.modern.as_mut() {
+                m.lobby_ime.set(None);
+            }
+        }
         // Config-tool 0037 / 0038: the UI is laid out at its size and stretched to the window.
         let size = self.cfg.ui_size(window);
         self.ui_k = (size[0] as f32 / window[0].max(1) as f32, size[1] as f32 / window[1].max(1) as f32);
@@ -15416,11 +16048,7 @@ impl App {
         if let Some(m) = &self.modern {
             m.set_opacity(self.cfg.modern_opacity);
         }
-        // The stacked-window pointer follow, only with the drawn (software) cursor.
-        let ptr_dy = match &self.phase {
-            Phase::World(w) if self.cfg.tool("0021") == 0 => w.ptr_dy,
-            _ => 0.0,
-        };
+        let ptr_dy = self.ptr_shift();
         let swallow = ctx.input(|i| i.pointer.primary_released()) && std::mem::take(&mut self.swallow_click);
         let notches = self.list_wheel.trunc();
         self.list_wheel -= notches;
@@ -15429,7 +16057,12 @@ impl App {
             && (ctx.is_pointer_over_egui() || ctx.egui_is_using_pointer()));
         let input = ctx.input(|i| UiInput {
             wheel: if mine { notches as i32 } else { 0 },
-            pointer: i.pointer.hover_pos().map(|p| (p.x * ppp * k.0, p.y * ppp * k.1 + ptr_dy)),
+            // No pointer while the mouse is outside the window, warped or not.
+            pointer: match (&self.ptr_warp, i.pointer.hover_pos()) {
+                (_, None) => None,
+                (Some(pw), Some(_)) => pw.shifted(ptr_dy).pointer(),
+                (None, Some(p)) => Some((p.x * ppp * k.0, p.y * ppp * k.1 + ptr_dy)),
+            },
             moved: i.pointer.delta() != egui::Vec2::ZERO,
             clicked: i.pointer.primary_clicked() && !swallow && mine,
             pressed: i.pointer.primary_pressed() && mine,
@@ -15454,23 +16087,32 @@ impl App {
             match fr.ui(ctx) {
                 firstrun::Action::Quit => self.exit_requested = true,
                 firstrun::Action::Ready => {
-                    // The folder may have been changed in the window: the config keeps it.
-                    self.cfg.game_dir = fr.game_dir().to_path_buf();
+                    let dir = fr.game_dir().to_path_buf();
                     self.first_run = None;
-                    // Audio opened on the empty folder (and the title music failed): open it on the new files.
-                    self.audio = None;
-                    self.audio_tried = false;
-                    self.index = None;
-                    self.keys_table = None;
-                    self.game_ui_state = LoadState::Idle;
-                    self.flyover_state = LoadState::Idle;
-                    self.cfg.installed = true;
-                    // From the fixed first-start window to the configured one.
-                    self.window_dirty = true;
-                    if let Err(e) = self.cfg.save() {
-                        log::warn!("saving the config: {e:#}");
+                    #[cfg(target_os = "android")]
+                    {
+                        log::info!("first start ready: {}", dir.display());
+                        self.status = "Loading game data…".into();
+                        self.android_use_game_dir(dir);
+                        self.window_dirty = true;
+                        self.scene_loads();
                     }
-                    self.updates = Some(updater::start(self.cfg.ffxi_dir(), uses_playonline(&self.cfg)));
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        self.cfg.game_dir = dir;
+                        self.audio = None;
+                        self.audio_tried = false;
+                        self.index = None;
+                        self.keys_table = None;
+                        self.game_ui_state = LoadState::Idle;
+                        self.flyover_state = LoadState::Idle;
+                        self.cfg.installed = true;
+                        self.window_dirty = true;
+                        if let Err(e) = self.cfg.save() {
+                            log::warn!("saving the config: {e:#}");
+                        }
+                        self.updates = Some(updater::start(self.cfg.ffxi_dir(), uses_playonline(&self.cfg)));
+                    }
                 }
                 firstrun::Action::Begin(dir) => {
                     self.cfg.game_dir = dir;
@@ -15480,10 +16122,51 @@ impl App {
                 }
                 firstrun::Action::None => {}
             }
+            // Android: the window takes the touches (no mouse invalidation for an undrawn UI). Touch-only: no
+            // hardware or sprite cursor while the installer UI is up.
+            #[cfg(target_os = "android")]
+            {
+                self.mouse.visible = false;
+                self.ui_drawn = true;
+            }
+            return;
+        }
+        #[cfg(target_os = "android")]
+        if let Some(editor) = self.game_data.as_mut() {
+            match editor.ui(ctx) {
+                game_data::Action::Close => self.game_data = None,
+                game_data::Action::Apply(dir) => {
+                    self.game_data = None;
+                    self.android_use_game_dir(dir);
+                }
+                game_data::Action::None => {}
+            }
+            self.ui_drawn = true;
             return;
         }
         if self.game_ui.is_none() {
             if self.game_ui_state == LoadState::Failed {
+                #[cfg(target_os = "android")]
+                if self.first_run.is_none()
+                    && firstrun::before_title(&self.cfg.game_dir, &self.cfg.ffxi_dir(), self.cfg.installed)
+                {
+                    log::warn!("lobby UI failed; opening first-start (install may be incomplete)");
+                    if self.cfg.installed {
+                        self.cfg.installed = false;
+                        let _ = self.cfg.save();
+                    }
+                    self.index = None;
+                    self.index_warm = LoadState::Idle;
+                    self.game_ui_state = LoadState::Idle;
+                    self.flyover_state = LoadState::Idle;
+                    self.flyover = None;
+                    (self.opening, self.movie) = (None, None);
+                    self.first_run = Some(firstrun::FirstRun::new(self.cfg.game_dir.clone()));
+                    self.window_dirty = true;
+                    self.scene_loads();
+                    self.ui_drawn = true;
+                    return;
+                }
                 egui::Area::new(egui::Id::unique("error")).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
                     ctx,
                     |ui| {
@@ -15604,7 +16287,11 @@ impl App {
                         page: false,
                         events: Vec::new(),
                     };
-                    let shown = if self.login_error.is_some() || self.twofa.is_some() || self.update_ui.is_some() {
+                    let shown = if self.login_error.is_some()
+                        || self.twofa.is_some()
+                        || self.update_ui.is_some()
+                        || self.login_catalogue.is_some()
+                    {
                         &none
                     } else {
                         &input
@@ -15612,8 +16299,13 @@ impl App {
                     let mut sounds = Vec::new();
                     let modern_ui = self.cfg.modern_ui;
                     let mut view = None;
+                    #[cfg(target_os = "android")]
+                    let mut field_ime = None;
                     let update_help = self.update_ui.as_ref().map(|u| u.help());
-                    let help_over = update_help.as_deref().or_else(|| self.twofa.as_ref().map(|t| t.help()));
+                    let help_over = update_help
+                        .as_deref()
+                        .or_else(|| self.login_catalogue.as_ref().map(|c| c.help()))
+                        .or_else(|| self.twofa.as_ref().map(|t| t.help()));
                     // Not retail: Update while something is out of date.
                     let update = self.updates.as_ref().is_some_and(|s| s.lock().unwrap().any());
                     let chosen = login_window(
@@ -15634,7 +16326,13 @@ impl App {
                         &mut sounds,
                         modern_ui.then_some(&mut view),
                         ctx.native_pixels_per_point().unwrap_or(1.0),
+                        #[cfg(target_os = "android")]
+                        &mut field_ime,
                     );
+                    #[cfg(target_os = "android")]
+                    if self.login_error.is_none() && self.update_ui.is_none() && self.twofa.is_none() && !busy {
+                        self.lobby_ime.set(field_ime);
+                    }
                     drop(fields);
                     // Trust this computer is the account's: unticked, its token goes at once.
                     if trusted != self.cfg.trust_computer {
@@ -15707,9 +16405,25 @@ impl App {
                         }
                     }
                     // The two-factor window over the form (client/twofa.rs).
+                    #[cfg(target_os = "android")]
+                    let mut account_ime = None;
                     if let Some(t) = self.twofa.as_mut() {
                         let mut tv = None;
                         let act = twofa::window(lu, &input, size, t, busy, &mut sounds, modern_ui.then_some(&mut tv));
+                        #[cfg(target_os = "android")]
+                        {
+                            account_ime = (!busy && !matches!(act, Some(twofa::Act::Close)))
+                                .then(|| t.keyboard())
+                                .flatten()
+                                .map(|password| LobbyIme {
+                                    rect: tv
+                                        .as_ref()
+                                        .and_then(|v| v.fields.get(v.focus).map(|(r, _)| *r))
+                                        .unwrap_or([0.0, 0.0, 2.0, 16.0]),
+                                    password,
+                                    retap: input.clicked,
+                                });
+                        }
                         if let Some(v) = &tv {
                             self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).twofa_window(
                                 ctx,
@@ -15736,6 +16450,56 @@ impl App {
                                     app.twofa_send(Command::ChangePassword, p, otp, new)
                                 }));
                             }
+                            None => {}
+                        }
+                    }
+                    #[cfg(target_os = "android")]
+                    if self.twofa.is_some() && self.login_error.is_none() {
+                        self.lobby_ime.set(account_ime);
+                    }
+                    // Server catalogue repo over the form.
+                    if let Some(c) = self.login_catalogue.as_mut() {
+                        let mut cv = None;
+                        let act =
+                            login_catalogue::window(lu, &input, size, c, &mut sounds, modern_ui.then_some(&mut cv));
+                        if let Some(v) = &cv {
+                            self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).twofa_window(
+                                ctx,
+                                window,
+                                self.cfg.modern_scale,
+                                self.ui_k,
+                                v,
+                            );
+                        }
+                        match act {
+                            Some(login_catalogue::Act::Save) => {
+                                if let Some(keys) = c.save() {
+                                    if let Some(a) = self.audio.as_mut() {
+                                        a.ui(crate::audio::Ui::Select);
+                                    }
+                                    if let Some(m) = self.lobby_settings.as_mut().and_then(|s| s.mods_mut()) {
+                                        m.refetch_server(keys);
+                                    }
+                                    self.login_catalogue = None;
+                                } else if let Some(a) = self.audio.as_mut() {
+                                    a.ui(crate::audio::Ui::Error);
+                                }
+                            }
+                            Some(login_catalogue::Act::Clear) => {
+                                if let Some(keys) = c.clear() {
+                                    c.text.clear();
+                                    if let Some(a) = self.audio.as_mut() {
+                                        a.ui(crate::audio::Ui::Select);
+                                    }
+                                    if let Some(m) = self.lobby_settings.as_mut().and_then(|s| s.mods_mut()) {
+                                        m.refetch_server(keys);
+                                    }
+                                    self.login_catalogue = None;
+                                } else if let Some(a) = self.audio.as_mut() {
+                                    a.ui(crate::audio::Ui::Error);
+                                }
+                            }
+                            Some(login_catalogue::Act::Close) => self.login_catalogue = None,
                             None => {}
                         }
                     }
@@ -15903,36 +16667,107 @@ impl App {
                             None => e.clone(),
                         };
                         let (sw, sh) = (size[0] as f32, size[1] as f32);
-                        let key = input.events.iter().any(|ev| {
-                            matches!(
-                                ev,
-                                egui::Event::Key { key: egui::Key::Enter | egui::Key::Escape, pressed: true, .. }
-                            )
-                        });
-                        let click = if modern_ui {
-                            let r = lu.popup_rects("menu    ok", sw, sh);
-                            let frame = r.as_ref().map_or([0.0; 4], |r| lift(r.frame));
-                            let ok = r
-                                .as_ref()
-                                .and_then(|r| r.children.first().map(|c| place(r.frame, c.1)))
-                                .unwrap_or(frame);
-                            self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).ok_popup(
-                                ctx,
-                                window,
-                                self.cfg.modern_scale,
-                                self.ui_k,
-                                frame,
-                                ok,
-                                &text,
-                            )
-                        } else {
-                            let ok = lu.ok_window(&text, sw, sh);
-                            input.clicked && ok.is_some_and(|r| input.pointer.is_some_and(|p| inside(&r, p)))
-                        };
-                        if key || click {
-                            self.login_error = None;
-                            if let Some(a) = self.audio.as_mut() {
-                                a.ui(crate::audio::Ui::Select);
+                        #[cfg(not(target_os = "android"))]
+                        let login_err_ok = false;
+                        #[cfg(target_os = "android")]
+                        let mut login_err_ok = false;
+                        #[cfg(target_os = "android")]
+                        if android::tls_pin_mismatch_message(&text) {
+                            login_err_ok = true;
+                            let ack = if modern_ui {
+                                let r = lu.popup_rects("menu    ok", sw, sh);
+                                let frame = r.as_ref().map_or([0.0; 4], |r| lift(r.frame));
+                                self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).ok_trust_popup(
+                                    ctx,
+                                    window,
+                                    self.cfg.modern_scale,
+                                    self.ui_k,
+                                    frame,
+                                    &text,
+                                )
+                            } else {
+                                match android::cert_trust_dialog(lu, &text, &input, sw, sh) {
+                                    android::CertTrustAction::Trust => modern::LoginErrorAck::Trust,
+                                    android::CertTrustAction::Dismiss => modern::LoginErrorAck::Ok,
+                                    _ => modern::LoginErrorAck::None,
+                                }
+                            };
+                            let key_dismiss = input.events.iter().any(|ev| {
+                                matches!(
+                                    ev,
+                                    egui::Event::Key { key: egui::Key::Enter | egui::Key::Escape, pressed: true, .. }
+                                )
+                            });
+                            let ack = if key_dismiss && ack == modern::LoginErrorAck::None {
+                                modern::LoginErrorAck::Ok
+                            } else {
+                                ack
+                            };
+                            match ack {
+                                modern::LoginErrorAck::Trust => {
+                                    let host = self.cfg.server.clone();
+                                    let port = android::tls_trust_port(&text, self.cfg.auth_port);
+                                    match android::forget_server_tls_pins(&host, port) {
+                                        Ok(lines) => {
+                                            let forgot = lines.iter().any(|l| l.contains("forgotten"));
+                                            let kept = lines.iter().any(|l| l.contains("kept (a fixed fingerprint"));
+                                            let summary = lines.join("\n");
+                                            if kept && !forgot {
+                                                self.login_error = Some(summary);
+                                            } else {
+                                                self.login_error = None;
+                                                self.status = summary;
+                                            }
+                                        }
+                                        Err(err) => {
+                                            self.login_error = Some(format!("Could not trust the server: {err:#}"));
+                                        }
+                                    }
+                                    if let Some(a) = self.audio.as_mut() {
+                                        a.ui(crate::audio::Ui::Select);
+                                    }
+                                }
+                                modern::LoginErrorAck::Ok => {
+                                    self.login_error = None;
+                                    if let Some(a) = self.audio.as_mut() {
+                                        a.ui(crate::audio::Ui::Select);
+                                    }
+                                }
+                                modern::LoginErrorAck::None => {}
+                            }
+                        }
+                        if !login_err_ok {
+                            let key = input.events.iter().any(|ev| {
+                                matches!(
+                                    ev,
+                                    egui::Event::Key { key: egui::Key::Enter | egui::Key::Escape, pressed: true, .. }
+                                )
+                            });
+                            let click = if modern_ui {
+                                let r = lu.popup_rects("menu    ok", sw, sh);
+                                let frame = r.as_ref().map_or([0.0; 4], |r| lift(r.frame));
+                                let ok = r
+                                    .as_ref()
+                                    .and_then(|r| r.children.first().map(|c| place(r.frame, c.1)))
+                                    .unwrap_or(frame);
+                                self.modern.get_or_insert_with(|| modern::Modern::new(ctx)).ok_popup(
+                                    ctx,
+                                    window,
+                                    self.cfg.modern_scale,
+                                    self.ui_k,
+                                    frame,
+                                    ok,
+                                    &text,
+                                )
+                            } else {
+                                let ok = lu.ok_window(&text, sw, sh);
+                                input.clicked && ok.is_some_and(|r| input.pointer.is_some_and(|p| inside(&r, p)))
+                            };
+                            if key || click {
+                                self.login_error = None;
+                                if let Some(a) = self.audio.as_mut() {
+                                    a.ui(crate::audio::Ui::Select);
+                                }
                             }
                         }
                     }
@@ -15954,6 +16789,10 @@ impl App {
                     match chosen.filter(|_| self.login_error.is_none()) {
                         Some(LoginChoice::Exit) => self.exit_requested = true,
                         Some(LoginChoice::TwoFa) => self.twofa = Some(twofa::TwoFa::new()),
+                        Some(LoginChoice::Catalogue) if !is_playonline(&self.cfg.server) => {
+                            let keys = catalogue_cfg::lobby_catalogue_keys(&self.cfg);
+                            self.login_catalogue = Some(login_catalogue::LoginCatalogue::new(keys));
+                        }
                         Some(LoginChoice::Update) => {
                             if let Some(s) = self.updates.clone() {
                                 self.update_ui = Some(updater::UpdateUi::open(s, self.cfg.ffxi_dir()));
@@ -16132,6 +16971,8 @@ impl App {
                                 (Some(s), _) => s.help(),
                                 (None, Some(c)) => match c.focus() {
                                     Some((_, configui::SETTINGS)) => configui::SETTINGS_HELP.to_string(),
+                                    #[cfg(target_os = "android")]
+                                    Some((_, configui::GAME_DATA)) => configui::GAME_DATA_HELP.to_string(),
                                     // lobyhelp ids 0x24.. (FUN_10236b40) -> group 8 0xf5..0x101 by child.
                                     Some((_, child)) => {
                                         let id = match child {
@@ -16209,6 +17050,10 @@ impl App {
                                     }
                                     lobby_changes(&out.changed, &mut lobby_apply);
                                     closed |= out.closed;
+                                    #[cfg(target_os = "android")]
+                                    if out.open_game_data {
+                                        self.game_data = Some(game_data::Editor::new(self.cfg.game_dir.clone()));
+                                    }
                                 }
                                 if closed {
                                     self.lobby_cfg = None;
@@ -16258,6 +17103,11 @@ impl App {
                                             (s.s.music, s.s.effects) = (v, v);
                                             self.lobby_settings = Some(s);
                                             settings_new = true;
+                                        }
+                                        #[cfg(target_os = "android")]
+                                        if out.open_game_data {
+                                            self.game_data = Some(game_data::Editor::new(self.cfg.game_dir.clone()));
+                                            self.lobby_cfg = None;
                                         }
                                         if out.closed {
                                             self.lobby_cfg = None;
@@ -16475,6 +17325,22 @@ impl App {
                             out.action = out.action.or(more.action);
                             out.moved = more.moved.or(out.moved);
                             out.input |= more.input;
+                            #[cfg(target_os = "android")]
+                            if !busy
+                                && matches!(self.select_ui.focus, select::Focus::Rename(_))
+                                && let Some(h) = m.lobby_ime.take()
+                            {
+                                self.lobby_ime.set(Some(lobby_ime_from_hint(h, ctx.pixels_per_point(), self.ui_k)));
+                            }
+                        }
+                        #[cfg(target_os = "android")]
+                        if !modern_ui && !busy && matches!(self.select_ui.focus, select::Focus::Rename(_)) {
+                            let r = gu.chmkname_field_rect(sw, sh);
+                            self.lobby_ime.set(Some(LobbyIme {
+                                rect: r,
+                                password: false,
+                                retap: input.clicked && input.pointer.is_some_and(|p| inside(&r, p)),
+                            }));
                         }
                         if let Some(a) = self.audio.as_mut() {
                             for s in &out.sounds {
@@ -16713,6 +17579,28 @@ impl App {
                         } else {
                             (creator::draw_ui(gu, &view, sw, sh, status_line, None), creator::Pointer::default())
                         };
+                        #[cfg(target_os = "android")]
+                        if step == 5
+                            && !name_hidden
+                            && self.creator_world.is_none()
+                            && self.creator_ok.is_none()
+                            && !busy
+                        {
+                            if modern_ui {
+                                if let Some(m) = self.modern.as_ref()
+                                    && let Some(h) = m.lobby_ime.take()
+                                {
+                                    self.lobby_ime.set(Some(lobby_ime_from_hint(h, ctx.pixels_per_point(), self.ui_k)));
+                                }
+                            } else {
+                                let r = gu.chmkname_field_rect(sw, sh);
+                                self.lobby_ime.set(Some(LobbyIme {
+                                    rect: r,
+                                    password: false,
+                                    retap: input.clicked && input.pointer.is_some_and(|p| inside(&r, p)),
+                                }));
+                            }
+                        }
                         let pointer = input.pointer.filter(|_| !busy);
                         let mut check = false;
                         if modern_ui {
@@ -17200,6 +18088,7 @@ impl App {
                             let mut s = settings::SettingsUi::open_kind(&self.cfg, window, settings::Kind::Settings);
                             s.in_game = true;
                             s.scope_at = Some(uiconf::at(world));
+                            s.catalogue_keys = crate::config::active_server_keys(&self.cfg, Some(world.search_addr));
                             world.modmgr = Some(modern::ModMgr::new(s, world.lua.settings_pages(&self.cfg.mods), id));
                         }
                     }
@@ -17572,14 +18461,31 @@ impl App {
     /// Parses the lobby DATs and font on a worker thread.
     fn load_game_ui(&mut self) {
         self.game_ui_state = LoadState::Loading;
-        if firstrun::needed(&self.cfg.ffxi_dir()) {
-            self.first_run = Some(firstrun::FirstRun::new(self.cfg.game_dir.clone()));
-            self.game_ui_state = LoadState::Failed;
+        if firstrun::before_title(&self.cfg.game_dir, &self.cfg.ffxi_dir(), self.cfg.installed) {
+            // scene_loads runs every frame while the UI is idle. Replacing the window drops the button's result.
+            if self.first_run.is_none() {
+                self.first_run = Some(firstrun::FirstRun::new(self.cfg.game_dir.clone()));
+            }
+            self.game_ui_state = LoadState::Idle;
             return;
+        }
+        #[cfg(target_os = "android")]
+        if self.index.is_none() {
+            if self.index_warm == LoadState::Loading {
+                return;
+            }
+            if self.index_warm == LoadState::Idle {
+                self.start_index_warm();
+                return;
+            }
         }
         let index = match self.game_data() {
             Ok((index, _)) => index,
             Err(e) => {
+                #[cfg(target_os = "android")]
+                if self.index_warm == LoadState::Loading {
+                    return;
+                }
                 log::warn!("lobby UI: {e:#}");
                 self.game_ui_state = LoadState::Failed;
                 return;
@@ -17604,7 +18510,21 @@ impl App {
     /// Loads a random title movie and its zone on a worker thread.
     fn load_flyover(&mut self) {
         self.flyover_state = LoadState::Loading;
+        #[cfg(target_os = "android")]
+        if self.index.is_none() {
+            if self.index_warm == LoadState::Loading {
+                return;
+            }
+            if self.index_warm == LoadState::Idle {
+                self.start_index_warm();
+                return;
+            }
+        }
         let Ok((index, keys)) = self.game_data() else {
+            #[cfg(target_os = "android")]
+            if self.index_warm == LoadState::Loading {
+                return;
+            }
             self.flyover_state = LoadState::Failed;
             return;
         };
@@ -17646,6 +18566,10 @@ impl App {
             return;
         }
         let Some(mut gfx) = self.gfx.take() else { return };
+        if gfx.surface.is_none() {
+            self.gfx = Some(gfx);
+            return;
+        }
         if !self.shown {
             self.shown = true;
             gfx.window.set_visible(true);
@@ -17676,48 +18600,55 @@ impl App {
         }
         let size = [gfx.config.width, gfx.config.height];
         let movie = self.movie.get_or_insert_with(|| crate::render::movie::Movie::new(&gfx.gpu, gfx.config.format));
-        if let Some(o) = self.opening.as_mut()
-            && let wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) =
-                gfx.surface.get_current_texture()
-        {
-            if let Some(f) = o.fresh.take() {
-                movie.upload(&gfx.gpu, &f);
-            }
-            let view = frame.texture.create_view(&Default::default());
-            let mut encoder = gfx.gpu.device.create_command_encoder(&Default::default());
-            movie.draw(&gfx.gpu, &mut encoder, &view, size, opening::picture_rect(size, o.rows), o.showing());
-            let row = (size[0] * 4).div_ceil(256) * 256;
-            let capture = shot.filter(|_| gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC)).map(|path| {
-                let buf = gfx.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("screenshot"),
-                    size: (row * size[1]) as u64,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                });
-                encoder.copy_texture_to_buffer(
-                    frame.texture.as_image_copy(),
-                    wgpu::TexelCopyBufferInfo {
-                        buffer: &buf,
-                        layout: wgpu::TexelCopyBufferLayout {
-                            offset: 0,
-                            bytes_per_row: Some(row),
-                            rows_per_image: Some(size[1]),
-                        },
-                    },
-                    wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
-                );
-                (buf, path)
-            });
-            gfx.gpu.queue.submit([encoder.finish()]);
-            if let Some((buf, path)) = capture {
-                match save_capture(&gfx.gpu, &buf, size, row, gfx.config.format, &path, None, None) {
-                    Err(e) => log::error!("screenshot failed: {e:#}"),
-                    Ok(()) => log::info!("screenshot written to {}", path.display()),
+        match gfx.surface.as_ref().unwrap().get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                let Some(o) = self.opening.as_mut() else {
+                    drop(frame);
+                    self.gfx = Some(gfx);
+                    return;
+                };
+                if let Some(f) = o.fresh.take() {
+                    movie.upload(&gfx.gpu, &f);
                 }
+                let view = frame.texture.create_view(&Default::default());
+                let mut encoder = gfx.gpu.device.create_command_encoder(&Default::default());
+                movie.draw(&gfx.gpu, &mut encoder, &view, size, opening::picture_rect(size, o.rows), o.showing());
+                let row = (size[0] * 4).div_ceil(256) * 256;
+                let capture = shot.filter(|_| gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC)).map(|path| {
+                    let buf = gfx.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("screenshot"),
+                        size: (row * size[1]) as u64,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    });
+                    encoder.copy_texture_to_buffer(
+                        frame.texture.as_image_copy(),
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &buf,
+                            layout: wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(row),
+                                rows_per_image: Some(size[1]),
+                            },
+                        },
+                        wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                    );
+                    (buf, path)
+                });
+                gfx.gpu.queue.submit([encoder.finish()]);
+                if let Some((buf, path)) = capture {
+                    match save_capture(&gfx.gpu, &buf, size, row, gfx.config.format, &path, None, None) {
+                        Err(e) => log::error!("screenshot failed: {e:#}"),
+                        Ok(()) => log::info!("screenshot written to {}", path.display()),
+                    }
+                }
+                gfx.gpu.queue.present(frame);
             }
-            gfx.gpu.queue.present(frame);
-        } else {
-            gfx.surface.configure(&gfx.gpu.device, &gfx.config);
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                gfx.surface.as_ref().unwrap().configure(&gfx.gpu.device, &gfx.config);
+            }
+            // Timeout while the last movie frame is still on the GPU: configuring here waits it out on this thread.
+            _ => self.next_frame = Some(Instant::now() + std::time::Duration::from_millis(16)),
         }
         self.gfx = Some(gfx);
     }
@@ -17755,6 +18686,16 @@ impl App {
         if let Some(on) = p.save_rumble.take() {
             cfg.gamepad_rumble = on;
         }
+        if let Some(guid) = p.save_device.take() {
+            cfg.gamepad_padguid = guid;
+            save = true;
+        }
+        for (k, on) in std::mem::take(&mut p.save_flags).into_iter().enumerate() {
+            if let Some(on) = on {
+                *[&mut cfg.gamepad_xinput, &mut cfg.gamepad_sliders, &mut cfg.gamepad_hat][k] = Some(on);
+                save = true;
+            }
+        }
         if let Some((padsin, padexsin, on, bg, dead)) = p.save.take() {
             (cfg.gamepad_padsin, cfg.gamepad_padexsin) = (padsin, padexsin);
             (cfg.gamepad, cfg.gamepad_background) = (on, bg);
@@ -17763,6 +18704,9 @@ impl App {
         }
         if std::mem::take(&mut p.use_retail) {
             (cfg.gamepad_padsin, cfg.gamepad_padexsin) = (String::new(), String::new());
+            // The controller choice and its options go back to retail's too (padguid000, padmode000).
+            cfg.gamepad_padguid.clear();
+            (cfg.gamepad_xinput, cfg.gamepad_sliders, cfg.gamepad_hat) = (None, None, None);
             save = true;
         }
         if std::mem::take(&mut p.reread) {
@@ -17779,10 +18723,14 @@ impl App {
             }
         }
         let p = &mut w.padcfg;
-        p.set = Some(gamepad::settings(cfg, gp.retail()));
+        p.set = Some(gamepad::settings(cfg, gp.retail()).for_dinput(gp.plays_dinput()));
         p.dead = (cfg.gamepad_deadzone * 100.0).round() as u32;
         p.retail = gp.retail().map(|r| r.source.clone());
         p.pads = gp.pads();
+        p.di = gp.plays_dinput();
+        if p.open && std::mem::take(&mut p.list_devices) {
+            p.devices = gp.devices();
+        }
     }
 
     /// The window's upkeep each frame: monitors, mode and size changes, the full-screen re-ask, the present mode.
@@ -17826,9 +18774,11 @@ impl App {
             }
         }
         if std::mem::take(&mut self.present_dirty) {
-            gfx.config.present_mode =
-                present_mode(&gfx.surface.get_capabilities(&gfx.gpu.adapter), self.frame_limit, &gfx.window);
-            gfx.surface.configure(&gfx.gpu.device, &gfx.config);
+            if let Some(surface) = &gfx.surface {
+                gfx.config.present_mode =
+                    present_mode(&surface.get_capabilities(&gfx.gpu.adapter), self.frame_limit, &gfx.window);
+                surface.configure(&gfx.gpu.device, &gfx.config);
+            }
         }
         self.perf.limit = format!(
             "limit {}  present {:?}",
@@ -18010,6 +18960,8 @@ impl App {
     /// The frame's work before any drawing: finished loader tasks, the network, area switches, then the world's
     /// (or the lobby's) per-frame updates and the mods' frame.
     fn frame_updates(&mut self) {
+        // Material Maps: the pack follows the setting before any load starts, so the first zone's textures get maps.
+        crate::material::set_enabled(self.cfg.material_maps != 0);
         while let Ok(t) = self.tasks.try_recv() {
             let name = t.name();
             perf::timed(|| format!("task {name}"), || self.handle_task(t));
@@ -18029,6 +18981,7 @@ impl App {
             synth::update(w);
             resttick::update(w);
             servmes::frame(w);
+            modupdates::frame(w);
             ranking::frame(w);
             // A server's certificate pin that could not be saved: told once a run.
             if let Some(n) = crate::net::tls::take_notice() {
@@ -18046,14 +18999,36 @@ impl App {
 
     /// Whether this frame draws the game: not while the opening movie plays, nor before the title can draw.
     fn frame_shown(&mut self) -> bool {
-        // Config 0022: the opening movie before the title, which loads behind it.
+        // Config 0022: the opening movie before the title, which loads behind it (not during install / recovery).
         if self.opening.is_some() {
-            self.draw_opening();
-            return false;
+            if self.first_run.is_some() {
+                log::info!("opening: skipped for first-start / recovery");
+                (self.opening, self.movie) = (None, None);
+            } else {
+                self.draw_opening();
+                return false;
+            }
+        }
+        #[cfg(target_os = "android")]
+        {
+            if self.gfx.as_ref().is_some_and(|g| g.surface.is_some()) {
+                return true;
+            }
+            if self.gfx.is_some() {
+                self.next_frame = None;
+                return false;
+            }
         }
         // Nothing is shown until the title can draw.
         if !self.shown {
             if !self.title_ready() {
+                #[cfg(target_os = "android")]
+                if self.game_ui_state == LoadState::Failed && self.first_run.is_none() {
+                    log::warn!(
+                        "title blocked: lobby UI failed to load (game files at {} may be incomplete)",
+                        self.cfg.ffxi_dir().display()
+                    );
+                }
                 self.next_frame = Some(Instant::now() + std::time::Duration::from_millis(16));
                 return false;
             }
@@ -18069,19 +19044,23 @@ impl App {
         true
     }
 
-    /// The frame's time (dt, sped up by a mod's cutscene speed) and the work that runs on it before the input: the
-    /// test drive's step (true when it wants a screenshot), key functions, movement and the lobby fades.
-    fn frame_clock(&mut self) -> (bool, f32) {
-        let shoot = self.step_drive();
+    /// The time since the last frame, sped up by a Lua mod's cutscene speed while an event plays.
+    fn frame_dt(&self) -> f32 {
         let dt = self.last_frame.elapsed().as_secs_f32().min(0.1);
-        self.last_frame = Instant::now();
-        // A Lua mod's cutscene speed: the whole frame runs faster while an event plays.
-        let dt = match &self.phase {
+        match &self.phase {
             Phase::World(w) if w.opts.cutscene_speed > 1.0 && event::active(w) => {
                 (dt * w.opts.cutscene_speed).min(0.25)
             }
             _ => dt,
-        };
+        }
+    }
+
+    /// The frame's time (dt, sped up by a mod's cutscene speed) and the work that runs on it before the input: the
+    /// test drive's step (true when it wants a screenshot), key functions, movement and the lobby fades.
+    fn frame_clock(&mut self) -> (bool, f32) {
+        let shoot = self.step_drive();
+        let dt = self.frame_dt();
+        self.last_frame = Instant::now();
         self.key_functions(dt);
         perf::timed(|| "movement".into(), || self.update_movement(dt));
         if matches!(&self.phase, Phase::Characters { screen: LobbyScreen::Create, .. })
@@ -18110,7 +19089,7 @@ impl App {
         let mut raw = gfx.egui_state.take_egui_input(&gfx.window);
         // egui-winit passes the texture limit in its first input only; lost, egui assumes 2048 and the modern atlases
         // (status_0@2x is 2184 wide) fail its debug check.
-        raw.max_texture_side = Some(gfx.gpu.device.limits().max_texture_dimension_2d as usize);
+        raw.max_texture_side = Some(gfx.gpu.max_texture_2d as usize);
         if let Phase::World(w) = &mut self.phase {
             w.lua.synth_enter = self
                 .synth_events
@@ -18139,6 +19118,8 @@ impl App {
             Phase::World(w) => lua::input::pad_filter(w, b, a, on),
             _ => Vec::new(),
         };
+        #[cfg(windows)]
+        self.gamepad.set_window(&gfx.window);
         let pad = self.gamepad.poll(&self.cfg, gfx.window.has_focus(), ctx, dt, &mut to_mods);
         // FUN_10007ae0: the frame's rumble, from the world only (the creator's foley tracks carry none).
         let sum = if let Phase::World(w) = &self.phase { rumble_sum(w) } else { 0 };
@@ -18210,6 +19191,7 @@ impl App {
                             self.mouse.visible = true;
                         }
                         (self.cursor_in, self.last_cursor) = (true, Some(at));
+                        self.pointer_moved(at);
                     }
                     egui::Event::PointerButton { button, pressed, .. } if !consumed || !*pressed => {
                         let b = if *button == egui::PointerButton::Secondary {
@@ -18462,10 +19444,39 @@ impl App {
         if self.ui_drawn {
             platform.cursor_icon =
                 if self.cfg.tool("0021") == 0 { egui::CursorIcon::None } else { egui::CursorIcon::Default };
+            // Touch drives the game sprite; hide the system cursor so RedrawRequested cannot pin a stale icon.
+            #[cfg(target_os = "android")]
+            if self.first_run.is_some() || self.cfg.tool("0021") == 0 {
+                platform.cursor_icon = egui::CursorIcon::None;
+                gfx.window.set_cursor_visible(false);
+                self.mouse.invalidate();
+            }
         } else {
             self.mouse.invalidate();
         }
-        // The open chat line takes an IME (ours): its caret places the candidate window; closed, the IME is off.
+        #[cfg(target_os = "android")]
+        if platform.ime.is_none()
+            && !matches!(&self.phase, Phase::World(_))
+            && let Some(ime) = self.lobby_ime.take()
+        {
+            let (ppp, k) = (ctx.pixels_per_point(), self.ui_k);
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(ime.rect[0] / k.0 / ppp, ime.rect[1] / k.1 / ppp),
+                egui::vec2(ime.rect[2] / k.0 / ppp, ime.rect[3] / k.1 / ppp),
+            );
+            platform.ime = Some(egui::output::IMEOutput {
+                purpose: if ime.password { egui::IMEPurpose::Password } else { egui::IMEPurpose::Normal },
+                rect,
+                cursor_rect: rect,
+                should_interrupt_composition: ime.retap,
+            });
+        }
+        #[cfg(target_os = "android")]
+        if matches!(&self.phase, Phase::World(_)) {
+            // In-world text uses retail swkbd (Back), not the Android keyboard over the game view.
+            platform.ime = None;
+        }
+        #[cfg(not(target_os = "android"))]
         if let Phase::World(w) = &self.phase
             && w.typing
             && platform.ime.is_none()
@@ -18541,6 +19552,8 @@ impl App {
         } else {
             (bg, aspect)
         };
+        // Within the device's texture size (4096 on some GLES parts), the aspect kept.
+        let bg = crate::render::scale::fit(bg, gfx.gpu.max_texture_2d);
         if lcd {
             self.lcd_frame = (self.lcd_frame + 1) % 4;
         }
@@ -18563,6 +19576,31 @@ impl App {
             || lcd
             || self.cfg.antialias != 0
             || self.cfg.grading != 0;
+        // The upscaler (not retail): the world draws at the render size with a jitter and the upscaler takes it to the
+        // window's size (a Background above it would only be upscaled to be shrunk again). The frame's bg is then the
+        // render size: the effects and screen passes size themselves by the scene target.
+        // Neural rendering (config `neural`) runs in the same frame, with Upscaling off too.
+        let neural = self.cfg.neural && crate::render::upscale::neural_status().is_ok();
+        let upscaling = world_phase
+            && !lcd
+            && (self.cfg.upscaler != 0 || neural)
+            && self.upscale_ready(gfx)
+            && self.upscale.as_ref().is_none_or(|u| u.usable(self.cfg.upscaler));
+        if self.cfg.upscaler == 0 && !neural {
+            self.upscale = None;
+        }
+        let (mut target_size, mut jitter, mut snaps, mut motion) = (bg, glam::Vec2::ZERO, None, None);
+        if upscaling {
+            let up = self.upscale.get_or_insert_with(|| crate::render::upscale::Upscale::new(&gfx.gpu));
+            (target_size, jitter) =
+                up.begin(&gfx.gpu, size, self.cfg.upscale_quality, gfx.config.format, self.cfg.upscaler != 0);
+            snaps = up.targets.as_ref().map(|t| [t.snap_opaque.clone(), t.snap_blend.clone(), t.snap_pre_fx.clone()]);
+            motion = up.motion_target();
+        }
+        // Below the window's size the textures take finer mips (AMD's FSR 3.1 notes: log2(render / display) - 1).
+        let below = upscaling && target_size[0] < size[0];
+        crate::render::set_lod_bias(if below { (target_size[0] as f32 / size[0] as f32).log2() - 1.0 } else { 0.0 });
+        let bg = target_size;
         let (scene_view, scene_depth, scene_tex) = if scaled {
             self.scene_scale
                 .get_or_insert_with(|| crate::render::scale::SceneScale::new(&gfx.gpu, gfx.config.format))
@@ -18597,6 +19635,11 @@ impl App {
             m_actors,
             counts,
             drew_world,
+            upscaling,
+            jitter,
+            snaps,
+            frame_camera: None,
+            motion,
         }
     }
 
@@ -18769,6 +19812,17 @@ impl App {
 
     /// The scene finished: the lobby's fade over it, then the scaling pass into the window (gamma, 3D LCD Mode,
     /// anti-aliasing, grading); the 2D layer's and the scene's levels.
+    /// Whether the device can run the upscaler (checked once; logged when not).
+    fn upscale_ready(&mut self, gfx: &Gfx) -> bool {
+        *self.upscale_supported.get_or_insert_with(|| match crate::render::upscale::supported(&gfx.gpu) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("upscaler unavailable: {e}");
+                false
+            }
+        })
+    }
+
     fn finish_scene(&mut self, gfx: &Gfx, g: &mut FrameGpu, size: [u32; 2]) -> (f32, f32) {
         let (bg, gamma, lcd, scaled) = (g.bg, g.gamma, g.lcd, g.scaled);
         let (scene_view, view) = (g.scene_view.clone(), g.view.clone());
@@ -18787,6 +19841,37 @@ impl App {
                 .get_or_insert_with(|| crate::render::screenfx::ScreenFx::new(&gfx.gpu, gfx.config.format));
             fx.draw(&gfx.gpu, encoder, &scene_view, bg, None, [scene_level; 3]);
         }
+        let upscaled = match (&mut self.phase, self.upscale.as_mut()) {
+            (Phase::World(w), Some(up)) if g.upscaling && g.drew_world => {
+                // F12 / FFXI_PERF: the scene, then the upscaler.
+                if let Some(t) = g.gpu_time.as_mut() {
+                    t.mark(encoder, "scene");
+                }
+                up.frame_camera = g.frame_camera;
+                up.zone(w.zone);
+                if let Some(req) = w.upscale_capture.take() {
+                    up.capture = Some(req);
+                }
+                if let Some(d) = w.upscale_debug.take() {
+                    self.cfg.upscale_debug = if d == u32::MAX { (self.cfg.upscale_debug + 1) % 5 } else { d.min(4) };
+                }
+                let out = up.run(
+                    &gfx.gpu,
+                    encoder,
+                    &g.scene_raw,
+                    &g.scene_depth,
+                    self.cfg.upscaler,
+                    self.cfg.upscale_sharpness,
+                    self.cfg.upscale_debug,
+                    self.cfg.neural,
+                );
+                if let Some(t) = g.gpu_time.as_mut() {
+                    t.mark(encoder, "upscale");
+                }
+                out
+            }
+            _ => None,
+        };
         if g.drew_world
             && scaled
             && let Some(sc) = &mut self.scene_scale
@@ -18800,6 +19885,7 @@ impl App {
                 lcd.then_some((LCD_SHIFT, self.lcd_frame % 2 == 1)),
                 self.cfg.antialias != 0,
                 self.cfg.grading,
+                upscaled.as_ref().map(|(v, s)| (v, *s)),
             );
         }
         (ui_level, scene_level)
@@ -18824,11 +19910,36 @@ impl App {
             Phase::World(w) => w.game.get(0xa4),
             _ => self.cfg.game.global.get(0xa4),
         } != 0;
+        let dy = self.ptr_shift();
         if self.ui_drawn
             && let Some(lu) = &mut self.game_ui
         {
             lu.open_ticks = if no_zoom { 0.0 } else { 25.0 };
             lu.end_frame(dt);
+            // FUN_10125b90 does nothing during a drag (mouse kinds 3..6: the scroll thumb, a move or camera drag, the
+            // autoscroll); ours sets kinds 4 / 5 and keeps the thumb drag on the bar's hold.
+            use mousecur::{AUTOSCROLL, CAMERA_DRAG, MOVE_DRAG, SCROLL_DRAG};
+            let dragging = matches!(self.mouse.kind, SCROLL_DRAG | MOVE_DRAG | CAMERA_DRAG | AUTOSCROLL)
+                || lu.bar_hold.as_ref().is_some_and(|h| h.dragging());
+            if let Some(at) = lu.take_focus_warp()
+                && !dragging
+            {
+                let k = self.ui_k;
+                let mouse = self.last_cursor.map(|(x, y)| (x as f32 * k.0, y as f32 * k.1 + dy));
+                let drawn = self.ptr_warp.map(|pw| pw.shifted(dy).drawn).or(mouse).unwrap_or(at);
+                match os_pointer_warp(&self.cfg, k, &gfx.window, at) {
+                    OsWarp::Skipped => self.ptr_warp = Some(ptrwarp::PtrWarp::new(at, drawn, dy)),
+                    OsWarp::Moved(phys) => {
+                        self.ptr_warp = Some(ptrwarp::PtrWarp::new(at, drawn, dy));
+                        self.last_cursor = Some(phys);
+                    }
+                    // The arrow stayed: so does the windows' pointer, which is where the arrow is.
+                    OsWarp::Refused => {}
+                }
+            }
+            if let Some(pw) = &mut self.ptr_warp {
+                pw.step(dt);
+            }
             if self.cfg.tool("0021") == 0
                 && self.cursor_in
                 && let Some((x, y)) = self.last_cursor
@@ -18838,18 +19949,13 @@ impl App {
                 let s = self.cfg.cursor_scale(size[1]) * self.ui_k.1;
                 let fs =
                     if self.cfg.cursor_size == 0 { 1.0 } else { self.cfg.cursor_size as f32 / 100.0 } * self.ui_k.1;
-                let dy = if let Phase::World(w) = &self.phase { w.ptr_dy } else { 0.0 };
+                // The sprite at +0xc / +0x10, which follows a warped pointer (FUN_10126340).
+                let at = self
+                    .ptr_warp
+                    .map_or((x as f32 * self.ui_k.0, y as f32 * self.ui_k.1 + dy), |pw| pw.shifted(dy).drawn);
                 // Over the modern layer too: drawn after its pass.
                 lu.start_top();
-                self.mouse.draw(
-                    lu,
-                    self.index.as_ref(),
-                    x as f32 * self.ui_k.0,
-                    y as f32 * self.ui_k.1 + dy,
-                    dt,
-                    s,
-                    fs,
-                );
+                self.mouse.draw(lu, self.index.as_ref(), at.0, at.1, dt, s, fs);
             }
             g.counts.ui_vertices = lu.vertex_count();
             lu.scene_depth = g.drew_world.then(|| scene_depth.clone());
@@ -19033,6 +20139,9 @@ impl App {
         if let Some(r) = self.recorder.as_mut() {
             r.after_submit(&gfx.gpu);
         }
+        if let Some(u) = self.upscale.as_mut() {
+            u.after_submit(&gfx.gpu);
+        }
         self.gpu_time = gpu_time;
         if let (Some(eg), Phase::World(w)) = (&mut self.effects_gpu, &mut self.phase) {
             eg.after_submit(&gfx.gpu, &mut w.effects);
@@ -19112,6 +20221,10 @@ impl App {
         let m_update = Instant::now();
 
         let Some(mut gfx) = self.gfx.take() else { return };
+        if gfx.surface.is_none() {
+            self.gfx = Some(gfx);
+            return;
+        }
         let mut raw = self.frame_input(&mut gfx, dt);
         let size = [gfx.config.width, gfx.config.height];
         let mut script_shot = self.drive_frame(&gfx, &mut raw);
@@ -19120,13 +20233,13 @@ impl App {
         let (jobs, pixels_per_point) = self.frame_ui(&mut gfx, raw, size, dt);
         let m_ui = Instant::now();
 
-        let frame = match gfx.surface.get_current_texture() {
+        let frame = match gfx.surface.as_ref().unwrap().get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             other => {
                 // Outdated or lost (KWin's full-screen re-ask makes the swapchain stale): rebuilt, and the next frame
                 // asked for here, or the loop waits on events with nothing scheduled and the window stays frozen.
                 log::debug!("surface: no frame ({other:?}), configured again");
-                gfx.surface.configure(&gfx.gpu.device, &gfx.config);
+                gfx.surface.as_ref().unwrap().configure(&gfx.gpu.device, &gfx.config);
                 self.next_frame = Some(Instant::now() + std::time::Duration::from_millis(16));
                 self.gfx = Some(gfx);
                 return;
@@ -19166,6 +20279,14 @@ struct FrameGpu {
     drew_world: bool,
     /// The refracting actors draw_scene found shown; draw_effects draws them among the effects.
     refracting: Vec<u32>,
+    /// The upscaler runs this frame: the projection's jitter, the colour snapshots' targets (after the opaque
+    /// scenery, after the blended, before the effects) and the camera the world drew with.
+    upscaling: bool,
+    jitter: glam::Vec2,
+    snaps: Option<[wgpu::Texture; 3]>,
+    frame_camera: Option<crate::render::upscale::FrameCamera>,
+    /// The actor motion pass's target for this frame's camera.
+    motion: Option<crate::render::upscale::MotionTarget>,
 }
 
 /// What the world's frame uses of the app besides the world, borrowed beside it: its steps take the world and its
@@ -19192,7 +20313,19 @@ fn world_frame(cx: &mut WorldDraw, gfx: &mut Gfx, g: &mut FrameGpu, w: &mut Worl
         c.tick(dt * 60.0);
     }
     world_prepare(cx, gfx, g, w, &mut wf, dt);
+    if g.upscaling {
+        wf.camera.jitter = g.jitter;
+        g.frame_camera = Some(crate::render::upscale::FrameCamera { camera: wf.camera, aspect: g.aspect });
+    }
     if let Some(mut r) = w.renderer.take() {
+        r.snaps = g.snaps.clone().map(|s| (g.scene_tex.clone(), s));
+        r.motion_target = g.motion.take().map(|mut m| {
+            m.vp = wf.camera.steady().view_proj(g.aspect);
+            if m.prev_vp.is_nan() {
+                m.prev_vp = m.vp;
+            }
+            m
+        });
         world_uploads(gfx, g, w, &mut r, &wf);
         world_lighting(cx, w, &mut r, &wf);
         cross_capture(cx, gfx, g, w, &mut r, &wf);
@@ -19461,7 +20594,15 @@ fn world_uploads(gfx: &Gfx, fg: &mut FrameGpu, w: &mut World, r: &mut ZoneRender
     // This frame's copies: a zone going up (more while its indicator hides the world), then the models
     // actors are waiting for.
     use crate::render::upload::{FRAME_MS, LOADING_MS};
+    #[cfg(not(target_os = "android"))]
     gfx.gpu.begin_uploads(if w.downloading.is_some() { LOADING_MS } else { FRAME_MS });
+    // GLES copies are slow: at the desktop's budget only the sky is up for a long time.
+    #[cfg(target_os = "android")]
+    gfx.gpu.begin_uploads(if w.zone_uploading.is_some() || w.downloading.is_some() {
+        LOADING_MS * 15.0
+    } else {
+        FRAME_MS * 8.0
+    });
     perf::timed(|| "uploads".into(), || r.upload_step(&gfx.gpu, &mut fg.encoder));
     // A preloaded zone streams in whatever room is left (client/preload.rs).
     if let Some(p) = w.preload.as_mut().and_then(|p| p.ready.as_mut()) {
@@ -20559,6 +21700,9 @@ fn draw_scene(
     r.bump_mode = cx.cfg.tool("0017") != 0 && w.zone != Some(182);
     // Light Shading (ours): Smooth lights the scenery's lamps per pixel, Retail per vertex.
     r.smooth_lights = cx.cfg.smooth_lights;
+    // Material Maps (ours): the pack (App::frame_updates) gives maps to textures loaded while it is open.
+    r.material_maps = cx.cfg.material_maps != 0 && crate::material::available();
+    r.material_strength = cx.cfg.material_maps as f32;
     // Windowed (0034 != 0, no gamma ramp): lights boosted by the channels' ramps (render::light_boost),
     // gamma base 0028 + 1 + Gameplay R / G / B / 100 (FUN_101aa650).
     r.light_boost = if cx.cfg.window_mode() != 0 {
@@ -20648,10 +21792,13 @@ fn draw_effects(
     let (scene_depth, scene_tex, scene_raw) = (fg.scene_depth.clone(), fg.scene_tex.clone(), fg.scene_raw.clone());
     let (dt, ev_clock) = (wf.dt, wf.ev_clock);
     let WorldFrame { camera, model_hidden, places, drops, new_lamps, .. } = wf;
+    if let Some((scene, s)) = &r.snaps {
+        crate::render::upscale::snap(&mut fg.encoder, scene, &s[2]);
+    }
     // Effect generators: CPU emission, the GPU update pass, then the elements over the scene.
     // Its pipelines are made while the zone still goes up (behind the loading indicator), not on the
     // first shown frame.
-    let eg = cx.effects_gpu.get_or_insert_with(|| crate::render::effects::EffectsGpu::new(&gfx.gpu, scene_fmt));
+    let Some(eg) = crate::render::effects::kept(cx.effects_gpu, &gfx.gpu, scene_fmt) else { return };
     if let Some(l) = &new_lamps {
         eg.set_lamps(&gfx.gpu, &l.iter().map(|l| (l.pos, l.slot, l.template, l.colour)).collect::<Vec<_>>());
     }
@@ -20896,6 +22043,8 @@ impl FrameGpu {
 impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         use winit::event_loop::ControlFlow;
+        #[cfg(target_os = "android")]
+        self.android_about_to_wait(event_loop);
         match self.next_frame {
             Some(t) if Instant::now() < t => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             Some(_) => {
@@ -20912,23 +22061,49 @@ impl ApplicationHandler for App {
                         event_loop.set_control_flow(ControlFlow::WaitUntil(t));
                     }
                 } else if let Some(g) = &self.gfx {
-                    g.window.request_redraw();
+                    if g.surface.is_some() {
+                        g.window.request_redraw();
+                    }
                 }
             }
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 
+    fn suspended(&mut self, _: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        self.android_drop_surface();
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gfx.is_some() {
+            #[cfg(target_os = "android")]
+            self.android_refresh_surface();
             return;
         }
         // Hidden (and on Wayland unmapped, nothing being presented) until the title can draw. Driven test runs
         // don't ask for focus and say so in the title, so they never take the user's keyboard.
         let title = if self.drive.driven() { "FINAL FANTASY XI [test]" } else { "FINAL FANTASY XI" };
         // No game files yet: the first-start window is a fixed size, whatever the config says.
-        let bootstrap = firstrun::needed(&self.cfg.ffxi_dir());
-        let [ww, wh] = if bootstrap { firstrun::WINDOW } else { self.cfg.window_size() };
+        let bootstrap = firstrun::before_title(&self.cfg.game_dir, &self.cfg.ffxi_dir(), self.cfg.installed);
+        let [ww, wh] = if bootstrap {
+            #[cfg(target_os = "android")]
+            {
+                pick_monitor(&self.cfg.monitor, event_loop.primary_monitor(), event_loop.available_monitors(), [1, 1])
+                    .as_ref()
+                    .map(|m| {
+                        let s = m.size();
+                        [s.width, s.height]
+                    })
+                    .unwrap_or(firstrun::WINDOW)
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                firstrun::WINDOW
+            }
+        } else {
+            self.cfg.window_size()
+        };
         // Test runs are windowed, unless their config puts them borderless on a named monitor (mode 3), which keeps
         // them off the screen the user works on.
         let test_monitor = self.drive.driven() && self.cfg.window_mode() == 3 && !self.cfg.monitor.is_empty();
@@ -20956,13 +22131,20 @@ impl ApplicationHandler for App {
             let attrs = WindowAttributesExtWayland::with_name(attrs, "vana-client", "vana-client");
             WindowAttributesExtX11::with_name(attrs, "vana-client", "vana-client")
         };
-        let window = Arc::new(event_loop.create_window(attrs).expect("creating the window"));
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            // Android's native window may not be up yet: about_to_wait tries again.
+            Err(e) if cfg!(target_os = "android") => {
+                log::warn!("creating the window: {e}");
+                return;
+            }
+            Err(e) => panic!("creating the window: {e:?}"),
+        };
         #[cfg(windows)]
         windpi::keep_size(&window);
         // A first start (no config yet): Menu Size and Interface Size from the screen's size (client/screen.rs).
-        if std::mem::take(&mut self.cfg.first_start)
-            && let Some(m) = window.current_monitor().or_else(|| monitor.clone())
-        {
+        let first_start = std::mem::take(&mut self.cfg.first_start);
+        if first_start && let Some(m) = window.current_monitor().or_else(|| monitor.clone()) {
             screen::size_ui(&mut self.cfg, &m);
             if let Err(e) = self.cfg.save() {
                 log::warn!("saving the config: {e:#}");
@@ -20974,22 +22156,42 @@ impl ApplicationHandler for App {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
             event_loop.owned_display_handle(),
         )));
-        let surface = instance.create_surface(window.clone()).expect("creating the surface");
-        self.gpus = crate::render::adapter_names(&instance, Some(&surface));
-        let gpu = Gpu::with_adapter(instance, Some(&surface), &self.cfg.gpu).expect("opening the GPU");
-        let size = window.inner_size();
-        // A software adapter (a VM without a GPU): the first time, the scene draws at half the window's size.
-        if gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu && !self.cfg.software_gpu_seen {
-            self.cfg.software_gpu_seen = true;
-            if !self.cfg.tool.contains_key("0003") && !self.cfg.tool.contains_key("0004") {
-                self.cfg.set_tool("0003", (size.width / 2).max(320));
-                self.cfg.set_tool("0004", (size.height / 2).max(240));
-                log::info!("software GPU: background set to {}x{}", self.cfg.tool("0003"), self.cfg.tool("0004"));
+        let surface = match instance.create_surface(window.clone()) {
+            Ok(s) => s,
+            Err(e) if cfg!(target_os = "android") => {
+                log::warn!("creating the surface: {e}");
+                return;
             }
-            // Anisotropic filtering costs a software rasterizer the most per texel.
-            if self.cfg.anisotropy == Config::default().anisotropy {
-                self.cfg.anisotropy = 1;
-                crate::render::ANISOTROPY.store(1, std::sync::atomic::Ordering::Relaxed);
+            Err(e) => panic!("creating the surface: {e:?}"),
+        };
+        self.gpus = crate::render::adapter_names(&instance, Some(&surface));
+        let gpu = match Gpu::with_adapter(instance, Some(&surface), &self.cfg.gpu) {
+            Ok(g) => g,
+            Err(e) if cfg!(target_os = "android") => {
+                log::warn!("opening the GPU: {e:#}");
+                return;
+            }
+            Err(e) => panic!("opening the GPU: {e:?}"),
+        };
+        let size = window.inner_size();
+        // A low-spec GPU (GL / GLES, no BC textures, a software rasterizer) on a first start (no config file yet):
+        // cheaper values than the defaults (Config::low_spec_defaults). An existing config is never rewritten, so an
+        // upgrade or one run on another backend (WGPU_BACKEND=gl) leaves the player's settings alone.
+        let class = crate::render::GpuClass::of(&gpu.adapter.get_info(), gpu.adapter.features());
+        if class != crate::render::GpuClass::Capable && first_start {
+            // The game window's size, not the installer's (bootstrap opens a fixed one; the configured window follows
+            // when setup is done, window_dirty, in the mode set here). Wayland has no current monitor for a window
+            // not yet shown: the one picked for it then.
+            let game = if bootstrap { self.cfg.window_size() } else { [size.width, size.height] };
+            let screen = window.current_monitor().or_else(|| monitor.clone());
+            let was_mode = self.cfg.window_mode();
+            let changes =
+                self.cfg.low_spec_defaults(class, game, screen.as_ref().map(|m| [m.size().width, m.size().height]));
+            log::info!("low-spec GPU ({class:?}), first start: {}", changes.join(", "));
+            crate::render::ANISOTROPY.store(self.cfg.anisotropy, std::sync::atomic::Ordering::Relaxed);
+            self.frame_limit = self.cfg.frame_limit();
+            if self.cfg.window_mode() == 3 && was_mode != 3 && !bootstrap && !self.drive.driven() {
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(screen)));
             }
             if let Err(e) = self.cfg.save() {
                 log::warn!("saving the config: {e}");
@@ -21017,14 +22219,20 @@ impl ApplicationHandler for App {
             &window,
             Some(window.scale_factor() as f32),
             None,
-            Some(gpu.device.limits().max_texture_dimension_2d as usize),
+            Some(gpu.max_texture_2d as usize),
         );
         let egui_renderer = egui_wgpu::Renderer::new(&gpu.device, config.format, Default::default());
         // Zone, posing and mip pipelines are compiled now, off this thread.
         gpu.warm(&[config.format]);
         window.request_redraw();
         self.next_frame = Some(Instant::now());
-        self.gfx = Some(Gfx { window, gpu, surface, config, depth, egui_ctx, egui_state, egui_renderer });
+        #[cfg(target_os = "android")]
+        {
+            self.shown = true;
+            window.set_visible(true);
+        }
+        self.gfx =
+            Some(Gfx { window, gpu, surface: Some(surface), config, depth, egui_ctx, egui_state, egui_renderer });
     }
 
     /// The raw motion while a look drag holds the pointer locked.
@@ -21058,19 +22266,43 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => crate::voice::release(),
             _ => {}
         }
+        #[cfg(target_os = "android")]
+        if self.android_system_back(&event) {
+            return;
+        }
         // Lua mods see keys and the mouse first, and may take them; a press over a window (a mod's pop-up, a panel) is
         // the window's, never a HUD element's under it.
         if let (Phase::World(w), Some(gfx)) = (&mut self.phase, &self.gfx) {
             lua::input::set_over_ui(w, gfx.egui_ctx.is_pointer_over_egui());
         }
-        if self.opening.is_none()
+        // Android: pointer goes to egui through `synth_events` (`android_egui_pointer`), with a move before each
+        // button so a tap is not dropped. egui-winit would turn the same winit touch or mouse event into a second press.
+        let pointer_first = cfg!(target_os = "android")
+            && matches!(
+                event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Touch(_)
+            );
+        if !pointer_first
+            && self.opening.is_none()
             && let Phase::World(w) = &mut self.phase
             && lua::input::window_event(w, &event)
         {
             return;
         }
         let Some(gfx) = &mut self.gfx else { return };
-        let consumed = gfx.egui_state.on_window_event(&gfx.window, &event).consumed;
+        let consumed = if pointer_first {
+            egui_winit::EventResponse { consumed: false, repaint: true }
+        } else {
+            gfx.egui_state.on_window_event(&gfx.window, &event)
+        }
+        .consumed;
+        if pointer_first
+            && self.opening.is_none()
+            && let Phase::World(w) = &mut self.phase
+            && lua::input::window_event(w, &event)
+        {
+            return;
+        }
         match event {
             // Retail takes Close off its window menu (RemoveMenu SC_CLOSE). Ours logs out first in the world
             // ("/shutdown on", exit when the server ends the session); at once elsewhere, with the link quiet for
@@ -21097,9 +22329,19 @@ impl ApplicationHandler for App {
             // 5120 at 200%); full screen keeps the monitor's size.
             WindowEvent::ScaleFactorChanged { scale_factor, mut inner_size_writer } => {
                 if gfx.window.fullscreen().is_none() {
-                    let [w, h] = if self.first_run.is_some() { firstrun::WINDOW } else { self.cfg.window_size() };
-                    log::info!("window: scale factor {scale_factor}, keeping {w}x{h}");
-                    let _ = inner_size_writer.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+                    let lock = if self.first_run.is_some() {
+                        if cfg!(target_os = "android") {
+                            None
+                        } else {
+                            Some(firstrun::WINDOW)
+                        }
+                    } else {
+                        Some(self.cfg.window_size())
+                    };
+                    if let Some([w, h]) = lock {
+                        log::info!("window: scale factor {scale_factor}, keeping {w}x{h}");
+                        let _ = inner_size_writer.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+                    }
                 }
             }
             WindowEvent::Resized(size) => {
@@ -21115,7 +22357,9 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.redraw();
                 if self.ui_drawn
+                    && self.first_run.is_none()
                     && self.cfg.tool("0021") != 0
+                    && !cfg!(target_os = "android")
                     && let Some(gfx) = &self.gfx
                 {
                     self.mouse.apply_hardware(&gfx.window, event_loop, self.index.as_ref());
@@ -21189,7 +22433,11 @@ impl ApplicationHandler for App {
                 self.cursor_in = true;
                 self.mouse.invalidate();
             }
-            WindowEvent::CursorLeft { .. } => self.cursor_in = false,
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor_in = false;
+                // The windows see no pointer once the mouse is out; a warp does not hold one there.
+                self.ptr_warp = None;
+            }
             // Config-tool 0035 = 0: no sound while the window is not focused (no DSBCAPS_GLOBALFOCUS).
             WindowEvent::Focused(f) => {
                 if !f {
@@ -21206,21 +22454,34 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            #[cfg(not(target_os = "android"))]
             WindowEvent::MouseInput { state, button, .. } if !consumed || state == ElementState::Released => {
                 self.mouse_button(button, state == ElementState::Pressed, consumed);
             }
+            #[cfg(target_os = "android")]
+            WindowEvent::MouseInput { state, button, .. } => self.android_mouse_input(button, state),
+            #[cfg(target_os = "android")]
+            WindowEvent::Touch(touch) if self.opening.is_some() && touch.phase == winit::event::TouchPhase::Started => {
+                self.skip_opening();
+            }
+            #[cfg(target_os = "android")]
+            WindowEvent::Touch(touch) => self.android_touch(touch),
             WindowEvent::CursorMoved { position, .. } => {
+                self.pointer_moved((position.x, position.y));
                 // FUN_100016c0: window-message motion shows the cursor only past 2 px (not while a look drag holds it).
                 if self.look_grab.is_none()
+                    && self.first_run.is_none()
                     && self
                         .last_cursor
                         .is_none_or(|(x, y)| (position.x - x).abs() > 2.0 || (position.y - y).abs() > 2.0)
                 {
                     self.mouse.visible = true;
                 }
+                // Android: a left drag never looks (a tap's jitter would turn it into a drag with no click).
                 let looking = self.dragging
                     || self.middle_down
                     || (self.left_down
+                        && !cfg!(target_os = "android")
                         && self.press_at.is_some_and(|a| (a.0 - position.x).abs() + (a.1 - position.y).abs() >= 5.0));
                 if let (true, Some((x, y))) = (looking, self.last_cursor) {
                     if self.look_grab.is_none() {
@@ -21231,13 +22492,18 @@ impl ApplicationHandler for App {
                     if self.look_grab != Some(true) {
                         self.look(position.x - x, position.y - y);
                     }
-                    if let (Some(false), Some(at), Some(g)) = (self.look_grab, self.grab_at, self.gfx.as_ref()) {
+                    if !cfg!(target_os = "android")
+                        && let (Some(false), Some(at), Some(g)) = (self.look_grab, self.grab_at, self.gfx.as_ref())
+                    {
                         let _ = g.window.set_cursor_position(winit::dpi::PhysicalPosition::new(at.0, at.1));
                         self.last_cursor = Some(at);
                         return;
                     }
                 }
                 self.last_cursor = Some((position.x, position.y));
+                self.pointer_moved((position.x, position.y));
+                #[cfg(target_os = "android")]
+                self.android_egui_pointer((position.x, position.y), None);
             }
             WindowEvent::MouseWheel { delta, .. } if !consumed => {
                 if let Phase::World(world) = &mut self.phase {
@@ -21357,9 +22623,10 @@ fn monitor_list(all: impl Iterator<Item = winit::monitor::MonitorHandle>) -> Vec
 
 /// The swapchain and depth buffer at a new window size.
 fn resize_surface(gfx: &mut Gfx, size: winit::dpi::PhysicalSize<u32>) {
+    let Some(surface) = &gfx.surface else { return };
     gfx.config.width = size.width.max(1);
     gfx.config.height = size.height.max(1);
-    gfx.surface.configure(&gfx.gpu.device, &gfx.config);
+    surface.configure(&gfx.gpu.device, &gfx.config);
     gfx.depth = depth_view(&gfx.gpu.device, gfx.config.width, gfx.config.height);
 }
 
@@ -21599,18 +22866,31 @@ fn minus_pressed(events: &[egui::Event]) -> bool {
     events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Minus, pressed: true, .. }))
 }
 
-pub fn run(cfg: Config, drive: Drive) -> Result<()> {
+pub fn run(mut cfg: Config, drive: Drive) -> Result<()> {
     if desktop::supported()
         && let Err(e) = desktop::settle()
     {
         log::warn!("installing the client copy: {e:#}");
     }
     crate::patch::adopt_old_ffximain(&cfg.ffxi_dir());
+    #[cfg(target_os = "android")]
+    firstrun::sync_config(&mut cfg);
+    #[cfg(not(target_os = "android"))]
     let event_loop = EventLoop::new()?;
+    #[cfg(target_os = "android")]
+    let event_loop = android::event_loop()?;
     let mut app = App::new(cfg, drive);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
+
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(target_os = "android")]
+pub(crate) use android::{
+    android_activity_ptr, android_block_reentry, android_event_loop_running, android_resume_after_activity,
+    set_android_app,
+};
 
 /// The window's egui context: no egui keyboard zoom (Ctrl+0 / Ctrl+Plus / Ctrl+Minus are macro keys), and no quit
 /// shortcut (egui consumes Ctrl+Q, and we never act on its close).
@@ -22142,25 +23422,6 @@ mod tests {
         assert_eq!(chat_line(0, 0, 0, "Rabbit", "x", "", true), Some(("Rabbit : x".into(), 9)));
     }
 
-    /// A steady slope is drawn exactly (one step late); the downhill bob (drops 0.046, 0.083, 0.046 ...) is not.
-    #[test]
-    fn drawn_steps_smooth_the_bob() {
-        let ramp: Vec<Vec3> = (0..6).map(|k| Vec3::new(k as f32 * 0.17, k as f32 * 0.06, 0.0)).collect();
-        let h = [ramp[2], ramp[3], ramp[4], ramp[5]];
-        assert!((drawn_between_steps(&h, 0.5) - ramp[3].lerp(ramp[4], 0.5)).length() < 1e-5);
-        let drops = [0.046f32, 0.083, 0.046, 0.046, 0.083, 0.046, 0.046, 0.083];
-        let mut y = vec![0f32];
-        for d in drops {
-            y.push(y.last().unwrap() + d);
-        }
-        let p: Vec<Vec3> = y.iter().map(|&y| Vec3::new(0.0, y, 0.0)).collect();
-        let drawn: Vec<f32> =
-            (0..5).map(|k| drawn_between_steps(&[p[k], p[k + 1], p[k + 2], p[k + 3]], 0.0).y).collect();
-        for w in drawn.windows(2) {
-            assert!((w[1] - w[0] - 0.175 / 3.0).abs() < 1e-4, "{drawn:?}");
-        }
-    }
-
     #[test]
     fn channel_swap() {
         assert_eq!(strip_channel("/party hello there"), "hello there");
@@ -22274,4 +23535,272 @@ pub fn map_borders(zone: u32, a: u8, b: u8) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod strafe_lock_turn_tests {
+    use super::*;
+
+    /// Backing up under the strafe lock (speed 5, a third, one retail frame a step): the body turns from facing +x
+    /// (dir angle 0) toward the step at once, eased, and is within 45 degrees of it after a handful of frames. The
+    /// thresholds are per retail frame, so the frame rate we draw at does not enter.
+    #[test]
+    fn backing_up_turns() {
+        let step = Vec3::new(-5.0 / 3.0 * ground::STEP_TICKS / 60.0, 0.0, 0.0);
+        let (mut draw, mut pos, mut yaw) = (None, Vec3::ZERO, 0.0f32);
+        let mut frames = 0;
+        while yaw.abs() < std::f32::consts::FRAC_PI_4 * 3.0 {
+            let y = strafe_lock_turn(&mut draw, pos, pos + step, step, false, yaw, ground::STEP_TICKS)
+                .expect("an aim every frame");
+            assert!(y.abs() > yaw.abs());
+            (pos, yaw, frames) = (pos + step, y, frames + 1);
+            assert!(frames < 20);
+        }
+        assert!(frames >= 3, "{frames}");
+    }
+
+    /// Standing still: no aim once the drawn position has settled; a tiny drift below 0.01 a frame turns nothing.
+    #[test]
+    fn still_keeps_facing() {
+        let mut draw = Some(Vec3::new(0.005, 0.0, 0.0));
+        assert_eq!(
+            strafe_lock_turn(&mut draw, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, false, 1.0, ground::STEP_TICKS),
+            None
+        );
+    }
+
+    const RUN: f32 = 5.0 * ground::STEP_TICKS / 60.0;
+
+    /// Retail frames of a free run: the stick `dir(frame)` (a unit step), the strafe lock held or not. Returns each
+    /// frame's (quarter, drawn rotation, drawn position, position), the actor update as update_movement steps it.
+    fn run(frames: usize, held: bool, yaw0: f32, dir: impl Fn(usize) -> Vec3) -> Vec<(u8, f32, Vec3, Vec3)> {
+        run_at(ground::STEP_TICKS, frames, held, yaw0, dir)
+    }
+
+    /// `run` with retail frames `ticks` long (1: Movement Rate 60).
+    fn run_at(
+        ticks: f32,
+        frames: usize,
+        held: bool,
+        yaw0: f32,
+        dir: impl Fn(usize) -> Vec3,
+    ) -> Vec<(u8, f32, Vec3, Vec3)> {
+        let run = RUN / ground::STEP_TICKS * ticks;
+        let (mut draw, mut pos, mut yaw) = (None, Vec3::ZERO, yaw0);
+        (0..frames)
+            .map(|i| {
+                let step = dir(i);
+                let q = if held { strafe_lock_quarter(yaw, draw.unwrap_or(pos), pos, step) } else { 1 };
+                let d = match q {
+                    3 => run / 3.0,
+                    2 | 4 => 0.0625 * ticks,
+                    _ => run,
+                };
+                let from = pos;
+                pos += step * d;
+                let heading = (-step.z).atan2(step.x);
+                yaw = strafe_lock_turn(&mut draw, from, pos, pos - from, false, yaw, ticks)
+                    .unwrap_or_else(|| if held { yaw } else { ease_yaw(yaw, heading, ticks) });
+                (q, yaw, draw.unwrap(), pos)
+            })
+            .collect()
+    }
+
+    /// The drawn model trails a steady run by the 0.125 ease's settled gap (0.875^2 / (1 - 0.875^2) frames of the
+    /// move) and comes to rest on the position after a stop, never past it.
+    #[test]
+    fn drawn_place_trails_and_settles() {
+        let east = Vec3::X;
+        let frames = run(60, false, 0.0, |_| east);
+        let (_, _, drawn, pos) = frames[59];
+        let gap = 0.875f32.powi(2) / draw_ease(ground::STEP_TICKS) * RUN;
+        assert!(((pos - drawn).x - gap).abs() < 1e-3, "{} vs {gap}", (pos - drawn).x);
+        let mut draw = Some(drawn);
+        let mut last = drawn.x;
+        for _ in 0..60 {
+            strafe_lock_turn(&mut draw, pos, pos, Vec3::ZERO, false, 0.0, ground::STEP_TICKS);
+            let x = draw.unwrap().x;
+            assert!(x >= last && x <= pos.x);
+            last = x;
+        }
+        assert!(pos.x - last < 1e-3);
+        // On a lift the drawn place is the position.
+        let mut draw = Some(Vec3::ZERO);
+        strafe_lock_turn(&mut draw, Vec3::X, Vec3::X * 2.0, Vec3::X, true, 0.0, ground::STEP_TICKS);
+        assert_eq!(draw, Some(Vec3::X * 2.0));
+    }
+
+    /// B held, the stick pushed a quarter turn off the facing and held there: the body turns toward it every frame,
+    /// never back, and the step's quarter changes once (sideways to forward), not back and forth.
+    #[test]
+    fn held_turn_is_steady() {
+        for (yaw0, dir) in [(0.0f32, Vec3::NEG_Z), (0.0, Vec3::Z), (std::f32::consts::PI, Vec3::X)] {
+            let frames = run(45, true, yaw0, |_| dir);
+            let goal = (-dir.z).atan2(dir.x);
+            let mut last = wrap_angle(goal - yaw0).abs();
+            for (_, y, _, _) in &frames {
+                let off = wrap_angle(goal - y).abs();
+                assert!(off <= last + 1e-5, "turned back: {off} after {last}");
+                last = off;
+            }
+            assert!(last < 0.05, "{last}");
+            let quarters: Vec<u8> = frames.iter().map(|f| f.0).collect();
+            let changes = quarters.windows(2).filter(|w| w[0] != w[1]).count();
+            assert!(changes <= 2, "{quarters:?}");
+            assert_eq!(*quarters.last().unwrap(), 1);
+        }
+    }
+
+    /// B held, running and the stick reversed: the body turns round one way only (no frame back toward where it
+    /// came from), and the step's quarter goes back, sideways, forward without returning to an earlier one.
+    #[test]
+    fn held_reversal_turns_one_way() {
+        for flip in [40usize, 12] {
+            let frames =
+                run(80, true, std::f32::consts::FRAC_PI_2, |i| if (i / flip) % 2 == 0 { Vec3::NEG_Z } else { Vec3::Z });
+            for w in frames.windows(3) {
+                let (a, b) = (wrap_angle(w[1].1 - w[0].1), wrap_angle(w[2].1 - w[1].1));
+                assert!(a * b >= -1e-6 || a.abs() < 1e-4 || b.abs() < 1e-4 || w[2].0 == 3, "turned back: {a} then {b}");
+            }
+            for seg in frames.chunks(flip).skip(1) {
+                let q: Vec<u8> = seg.iter().map(|f| f.0).collect();
+                let changes = q.windows(2).filter(|w| w[0] != w[1]).count();
+                assert!(changes <= 2, "{q:?}");
+            }
+        }
+    }
+
+    /// Movement Rate 60 (one tick a frame, retail with an fps add-on): B held and the stick reversed, the turn comes in
+    /// steps about half as big as at 30 (retail's own trace at 60: 16 to 21 degrees a frame), still one way only, and
+    /// a second of running covers the same ground at either rate.
+    #[test]
+    fn sixty_turns_in_smaller_steps() {
+        let biggest = |frames: &[(u8, f32, Vec3, Vec3)]| {
+            frames.windows(2).map(|w| wrap_angle(w[1].1 - w[0].1).abs()).fold(0.0f32, f32::max).to_degrees()
+        };
+        let reverse = |flip: usize| move |i: usize| if i < flip { Vec3::NEG_Z } else { Vec3::Z };
+        let half = std::f32::consts::FRAC_PI_2;
+        let (thirty, sixty) = (run_at(2.0, 60, true, half, reverse(30)), run_at(1.0, 120, true, half, reverse(60)));
+        let (b30, b60) = (biggest(&thirty), biggest(&sixty));
+        assert!(b60 < b30 * 0.7 && b60 < 25.0, "{b60} vs {b30}");
+        for w in sixty.windows(3) {
+            let (a, b) = (wrap_angle(w[1].1 - w[0].1), wrap_angle(w[2].1 - w[1].1));
+            assert!(a * b >= -1e-6 || a.abs() < 1e-4 || b.abs() < 1e-4 || w[2].0 == 3, "turned back: {a} then {b}");
+        }
+        let (r30, r60) = (run_at(2.0, 30, false, 0.0, |_| Vec3::X), run_at(1.0, 60, false, 0.0, |_| Vec3::X));
+        assert!((r30[29].3 - r60[59].3).length() < 1e-4);
+        // Sideways under B: 0.0625 a tick, so 0.0625 a frame at 60 as retail's trace shows.
+        let side = run_at(1.0, 2, true, 0.0, |_| Vec3::NEG_Z);
+        assert_eq!(side[0].0, 2);
+        assert!(((side[0].3).length() - 0.0625).abs() < 1e-6);
+    }
+
+    /// Free (no B), the stick swung a quarter turn: the heading takes it at once, the drawn body follows the drawn
+    /// path round, a little more each frame.
+    #[test]
+    fn free_turn_follows_drawn_path() {
+        let frames = run(60, false, 0.0, |i| if i < 20 { Vec3::X } else { Vec3::NEG_Z });
+        let goal = std::f32::consts::FRAC_PI_2;
+        let mut last = 0.0f32;
+        for (_, y, _, _) in &frames[20..] {
+            assert!(*y >= last - 1e-5 && *y <= goal + 1e-5, "{y} after {last}");
+            last = *y;
+        }
+        // Still turning a few frames in: the drawn place comes round the corner, not the heading.
+        assert!(frames[23].1 < goal * 0.8, "{}", frames[23].1);
+        assert!(goal - last < 0.05);
+    }
+
+    /// Drawn between retail frames, the rotation goes the short way across +-pi.
+    #[test]
+    fn drawn_rotation_wraps() {
+        let (a, b) = (3.1f32, -3.1f32);
+        let mid = a + wrap_angle(b - a) * 0.5;
+        assert!(
+            (wrap_angle(mid) - std::f32::consts::PI).abs() < 1e-3
+                || (wrap_angle(mid) + std::f32::consts::PI).abs() < 1e-3
+        );
+    }
+}
+
+#[cfg(test)]
+mod remote_drawn_tests {
+    use super::*;
+
+    /// A walking NPC stops: its drawn place trails the collision place while it walks, then glides the rest of the
+    /// way over the next frames and settles on it (snapped once within reach).
+    #[test]
+    fn glides_to_a_stop() {
+        let (mut drawn, mut pos) = (None, Vec3::ZERO);
+        let step = Vec3::new(0.08, 0.0, 0.0);
+        for _ in 0..60 {
+            pos += step;
+            ease_drawn(&mut drawn, pos - step, pos, 1.0, false);
+        }
+        // Steady walking: the lag is step * 0.875 / 0.125 = 7 steps.
+        let lag = pos.x - drawn.expect("trails while walking").x;
+        assert!((lag - 0.56).abs() < 0.01, "{lag}");
+        let mut last = 0.0;
+        let mut frames = 0;
+        while drawn.is_some() {
+            let d = ease_drawn(&mut drawn, pos, pos, 1.0, false);
+            assert!(d.x > 0.0 && (frames == 0 || d.x <= last + 1e-6), "slows every tick");
+            last = d.x;
+            frames += 1;
+            assert!(frames < 400);
+        }
+        assert!(frames > 30, "{frames}");
+    }
+
+    /// The ease is per tick: two frames of one tick land where one frame of two does.
+    #[test]
+    fn frame_rate_free() {
+        let to = Vec3::new(4.0, 1.0, -2.0);
+        let (mut a, mut b) = (Some(Vec3::ZERO), Some(Vec3::ZERO));
+        ease_drawn(&mut a, Vec3::ZERO, to, 1.0, false);
+        ease_drawn(&mut a, Vec3::ZERO, to, 1.0, false);
+        ease_drawn(&mut b, Vec3::ZERO, to, 2.0, false);
+        assert!((a.unwrap() - b.unwrap()).length() < 1e-5);
+    }
+
+    /// A jump (FUN_100929a0), a lift or a 0x1c rider snaps the drawn place to the collision place.
+    #[test]
+    fn snap_lands_at_once() {
+        let mut drawn = Some(Vec3::ZERO);
+        let to = Vec3::new(20.0, 0.0, 0.0);
+        assert_eq!(ease_drawn(&mut drawn, Vec3::ZERO, to, 1.0, true), to);
+        assert_eq!(drawn, None);
+    }
+
+    /// The turn aims at the drawn step while it moves over 0.01 a retail frame (3D only while falling), else none
+    /// (the heading); a gliding stop keeps the facing until the glide gets that slow.
+    #[test]
+    fn aims_at_the_drawn_step() {
+        assert!(drawn_aim(Vec3::new(0.0, 0.0, -0.02), 0.01).is_some());
+        assert_eq!(drawn_aim(Vec3::new(0.005, 0.0, 0.005), 0.01), None);
+        // Rising: only the flat reach counts.
+        assert_eq!(drawn_aim(Vec3::new(0.008, 0.5, 0.0), 0.01), None);
+        // Falling: the 3D reach counts, but x or z must still move over the minimum.
+        assert_eq!(drawn_aim(Vec3::new(0.008, -0.5, 0.0), 0.01), None);
+        assert!(drawn_aim(Vec3::new(0.011, -0.5, 0.0), 0.01).is_some());
+    }
+
+    /// FUN_100c8280: facing +x (yaw 0) with a wall at x = 1.0, the probe runs from x 1.1 to 0.8 one up and hits at
+    /// 1.0, so the drawn place goes back 0.1; facing away, or with nothing hit, it stays.
+    #[test]
+    fn rider_nose_stops_at_a_wall() {
+        let wall = |a: Vec3, b: Vec3| {
+            assert!((a.y - b.y).abs() < 1e-6, "level");
+            ((a.x - 1.0) * (b.x - 1.0) <= 0.0).then(|| a + (b - a) * ((1.0 - a.x) / (b.x - a.x)))
+        };
+        let d = rider_nose(Vec3::ZERO, 0.0, wall);
+        assert!((d - Vec3::new(-0.1, 0.0, 0.0)).length() < 1e-5, "{d}");
+        assert_eq!(rider_nose(Vec3::ZERO, std::f32::consts::PI, wall), Vec3::ZERO);
+        assert_eq!(rider_nose(Vec3::new(-2.0, 0.5, 0.0), 0.0, wall), Vec3::new(-2.0, 0.5, 0.0));
+        // Facing -z (yaw pi/2, forward (0, 0, -1)): the probe runs along -z.
+        let d = rider_nose(Vec3::ZERO, std::f32::consts::FRAC_PI_2, |a: Vec3, _| {
+            (a.z < -1.0).then_some(Vec3::new(a.x, a.y, -1.0))
+        });
+        assert!((d.z - 0.1).abs() < 1e-5 && d.x.abs() < 1e-5, "{d}");
+    }
 }
