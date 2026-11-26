@@ -388,7 +388,7 @@ impl FirstRun {
         let install_parent = self.install_parent();
         let archives = PathBuf::from(self.archive_path_input.trim());
         let _ = crate::android_fs::poll_all_files_access();
-        request_installer_ready(install_parent.clone(), archives.clone());
+        request_installer_ready(&install_parent, &archives);
         let all_files = crate::android_fs::poll_all_files_access().unwrap_or(false);
         let step = |n: &str| egui::RichText::new(n).size(14.0).color(egui::Color32::LIGHT_GRAY);
         let green = egui::Color32::from_rgb(0x90, 0xc8, 0x90);
@@ -417,8 +417,11 @@ impl FirstRun {
             }
             if ui.button("Local installer").clicked() {
                 self.note = "Choose the folder that holds all five FFXIFullSetup parts.".into();
-                let start = if archives.as_os_str().is_empty() { downloads() } else { archives };
-                self.open_browser(Browse::Archives, &start);
+                if archives.as_os_str().is_empty() {
+                    self.open_browser(Browse::Archives, &downloads());
+                } else {
+                    self.open_browser(Browse::Archives, &archives);
+                }
             }
             if ui.button("Existing install").clicked() {
                 self.note = "Choose the folder that contains FINAL FANTASY XI.".into();
@@ -556,14 +559,15 @@ enum InstallerPoll {
 
 static INSTALLER: Mutex<Option<(PathBuf, PathBuf, InstallerPoll)>> = Mutex::new(None);
 
-fn request_installer_ready(parent: PathBuf, archives: PathBuf) {
+fn request_installer_ready(parent: &Path, archives: &Path) {
     let mut g = INSTALLER.lock().unwrap();
-    if g.as_ref().is_some_and(|(p, a, s)| *p == parent && *a == archives && !matches!(s, InstallerPoll::Loading)) {
+    if g.as_ref().is_some_and(|(p, a, s)| p == parent && a == archives && !matches!(s, InstallerPoll::Loading)) {
         return;
     }
-    if g.as_ref().is_some_and(|(p, a, s)| *p == parent && *a == archives && matches!(s, InstallerPoll::Loading)) {
+    if g.as_ref().is_some_and(|(p, a, s)| p == parent && a == archives && matches!(s, InstallerPoll::Loading)) {
         return;
     }
+    let (parent, archives) = (parent.to_path_buf(), archives.to_path_buf());
     *g = Some((parent.clone(), archives.clone(), InstallerPoll::Loading));
     std::thread::spawn(move || {
         let ok = installer_dir(&parent, &archives).is_some_and(|d| crate::install::validate_installer_dir(&d).is_ok());
@@ -572,7 +576,7 @@ fn request_installer_ready(parent: PathBuf, archives: PathBuf) {
 }
 
 fn poll_installer_ready(parent: &Path, archives: &Path) -> Option<bool> {
-    request_installer_ready(parent.to_path_buf(), archives.to_path_buf());
+    request_installer_ready(parent, archives);
     match &*INSTALLER.lock().unwrap() {
         Some((p, a, InstallerPoll::Ready(ok))) if p == parent && a == archives => Some(*ok),
         _ => None,
