@@ -22219,6 +22219,10 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => crate::voice::release(),
             _ => {}
         }
+        #[cfg(target_os = "android")]
+        if self.android_system_back(&event) {
+            return;
+        }
         // Lua mods see keys and the mouse first, and may take them; a press over a window (a mod's pop-up, a panel) is
         // the window's, never a HUD element's under it.
         if let (Phase::World(w), Some(gfx)) = (&mut self.phase, &self.gfx) {

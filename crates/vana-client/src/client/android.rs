@@ -6,9 +6,41 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, Touch, TouchPhase};
+use super::Phase;
+use super::swkbd;
+use winit::event::{ElementState, KeyEvent, MouseButton, Touch, TouchPhase, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::{Key, NamedKey, NativeKeyCode, PhysicalKey};
 use winit::platform::android::activity::AndroidApp;
+
+/// Android `KEYCODE_BACK` (4), whether winit mapped it to a code or left it unidentified.
+pub(crate) const KEYCODE_BACK: u32 = 4;
+
+/// True for the system Back gesture or hardware key (not pad RB).
+pub(crate) fn is_system_back(event: &KeyEvent) -> bool {
+    match event.logical_key {
+        Key::Named(NamedKey::BrowserBack | NamedKey::GoBack) => true,
+        _ => matches!(
+            event.physical_key,
+            PhysicalKey::Unidentified(NativeKeyCode::Android(KEYCODE_BACK))
+        ),
+    }
+}
+
+/// World-phase Back: toggle the software keyboard; true when the event should not fall through.
+pub(crate) fn system_back_world(world: &mut super::World) -> bool {
+    if swkbd::android_back(world) {
+        return true;
+    }
+    // Back still closes an open chat line like Escape elsewhere.
+    if world.typing {
+        world.typing = false;
+        (world.chat_input, world.chat_caret, world.chat_anchor) = (String::new(), None, None);
+        world.sounds.push(crate::audio::Ui::Cancel as u32);
+        return true;
+    }
+    false
+}
 
 /// The activity, kept for running on Java's main thread and for waking the event loop from JNI callbacks.
 static APP: Mutex<Option<AndroidApp>> = Mutex::new(None);
@@ -68,6 +100,27 @@ pub(crate) fn android_block_reentry() -> ! {
 }
 
 impl App {
+    /// System Back before egui or Lua (Android would finish the activity otherwise).
+    pub(super) fn android_system_back(&mut self, event: &WindowEvent) -> bool {
+        let WindowEvent::KeyboardInput { event: k, .. } = event else {
+            return false;
+        };
+        if !is_system_back(k) {
+            return false;
+        }
+        if k.repeat {
+            return true;
+        }
+        if k.state != ElementState::Pressed {
+            return true;
+        }
+        if let Phase::World(world) = &mut self.phase {
+            system_back_world(world);
+            return true;
+        }
+        false
+    }
+
     /// Before the event loop waits: the window until it is up, the surface after another activity, and frames
     /// while a window of ours (first start, Game data) or the title's loading has nothing else to wake it.
     pub(super) fn android_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {

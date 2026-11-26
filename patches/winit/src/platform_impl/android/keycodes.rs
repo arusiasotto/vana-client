@@ -84,6 +84,7 @@ pub fn to_physical_key(keycode: Keycode) -> PhysicalKey {
 
         Keycode::Space => KeyCode::Space,
         Keycode::Escape => KeyCode::Escape,
+        Keycode::Back => KeyCode::Escape,
         Keycode::Enter => KeyCode::Enter, // not on the Numpad
         Keycode::Tab => KeyCode::Tab,
 

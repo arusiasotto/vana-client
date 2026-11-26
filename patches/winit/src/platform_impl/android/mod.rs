@@ -664,11 +664,7 @@ impl<T: 'static> EventLoop<T> {
                     {
                         input_status = InputStatus::Unhandled
                     },
-                    Keycode::Back if pad_key => {
-                        // Let the system/back path alone; gamepad Select is KEYCODE_BUTTON_SELECT.
-                        input_status = InputStatus::Unhandled
-                    },
-                    keycode if pad_key => {
+                    keycode if pad_key && keycode != Keycode::Back => {
                         let down = matches!(key.action(), KeyAction::Down);
                         if !(down && key.repeat_count() > 0) {
                             extern "C" {
