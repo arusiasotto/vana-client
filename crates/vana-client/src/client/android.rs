@@ -211,7 +211,8 @@ impl App {
 
     /// The Game data window's folder: saved, and the game files loaded again from it (as a first start's end).
     pub(super) fn android_use_game_dir(&mut self, game_dir: std::path::PathBuf) {
-        self.cfg.game_dir = game_dir;
+        self.cfg.game_dir = game_dir.clone();
+        crate::android_fs::mark_setup_done(&game_dir);
         self.cfg.installed = true;
         self.audio = None;
         self.audio_tried = false;

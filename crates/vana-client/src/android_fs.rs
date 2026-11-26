@@ -2,8 +2,43 @@
 
 use jni::JNIEnv;
 use jni::objects::JObject;
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// App-private marker that setup finished (wiped with **Clear data**; not on shared storage).
+#[cfg(target_os = "android")]
+fn setup_done_path() -> std::path::PathBuf {
+    crate::config::data_dir().join("files").join("setup_done")
+}
+
+/// Whether this app install has finished game setup at least once (survives config edits; cleared with the app).
+#[cfg(target_os = "android")]
+pub fn setup_done() -> bool {
+    setup_done_path().is_file()
+}
+
+/// Records successful setup. `game_dir` is stored for logging only.
+#[cfg(target_os = "android")]
+pub fn mark_setup_done(game_dir: &Path) {
+    let path = setup_done_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = format!("game_dir={}\n", game_dir.display());
+    if let Err(e) = std::fs::write(&path, body) {
+        log::warn!("writing {}: {e:#}", path.display());
+    }
+}
+
+/// Clears the setup marker when the install is incomplete or wiped.
+#[cfg(target_os = "android")]
+pub fn clear_setup_done() {
+    let path = setup_done_path();
+    if path.is_file() {
+        let _ = std::fs::remove_file(path);
+    }
+}
 
 enum AllFilesPoll {
     Unknown,

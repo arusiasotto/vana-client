@@ -89,6 +89,9 @@ pub fn needs_recovery(game_dir: &Path) -> bool {
         return true;
     }
     let ffxi = game_dir.join("FINAL FANTASY XI");
+    if install_complete(&ffxi) && !crate::android_fs::setup_done() {
+        return true;
+    }
     if !incomplete(&ffxi) {
         return false;
     }
@@ -96,18 +99,36 @@ pub fn needs_recovery(game_dir: &Path) -> bool {
         || game_dir.is_dir() && std::fs::read_dir(game_dir).map(|mut rd| rd.next().is_some()).unwrap_or(false)
 }
 
-/// On Android, `installed` lives in app storage while game files stay on disk — clear a stale `installed` when setup
-/// still needs to run.
+/// On Android, `installed` in `config.json` is cleared with the app; [`crate::android_fs::setup_done`] is the durable
+/// setup marker in app-private storage (also cleared on **Clear data**).
 #[cfg(target_os = "android")]
 pub fn sync_config(cfg: &mut crate::config::Config) {
-    if !before_title(&cfg.game_dir, &cfg.ffxi_dir(), cfg.installed) {
+    let ffxi = cfg.ffxi_dir();
+    let game_dir = &cfg.game_dir;
+    if crate::android_fs::setup_done()
+        && !interrupted_install(game_dir)
+        && !incomplete(&ffxi)
+        && !cfg.installed
+    {
+        log::info!("restoring installed from app setup marker");
+        cfg.installed = true;
+        if let Err(e) = cfg.save() {
+            log::warn!("saving the config: {e:#}");
+        }
+    }
+    if crate::android_fs::setup_done() && (interrupted_install(game_dir) || incomplete(&ffxi)) {
+        log::info!("clearing app setup marker (install incomplete)");
+        crate::android_fs::clear_setup_done();
+    }
+    if !before_title(game_dir, &ffxi, cfg.installed) {
         return;
     }
     if !cfg.installed {
         return;
     }
-    log::info!("game install at {} is incomplete; opening first-start", cfg.ffxi_dir().display());
+    log::info!("game install at {} is incomplete; opening first-start", ffxi.display());
     cfg.installed = false;
+    crate::android_fs::clear_setup_done();
     if let Err(e) = cfg.save() {
         log::warn!("saving the config: {e:#}");
     }
@@ -119,8 +140,8 @@ pub fn sync_config(cfg: &mut crate::config::Config) {
 /// `ffxi_dir.parent()` differ or the retail tree already has `VTABLE.DAT`.
 ///
 /// On Android, game files live on shared storage and survive **Clear data**; only app storage (including
-/// `config.json` and `installed`) is wiped. Until setup has finished (`installed`), first-start runs even when
-/// `VTABLE.DAT` is already on disk (the user can pick **Existing install** or reinstall).
+/// `config.json`, `installed`, and `files/setup_done`) is wiped. The boot gate reads the app setup marker first, then
+/// shared storage ([`needs_recovery`]) so a complete tree after clear data opens recovery instead of the title.
 pub fn before_title(game_dir: &Path, ffxi_dir: &Path, installed: bool) -> bool {
     if interrupted_install(game_dir) {
         log::info!("first-start: install staging under {}", game_dir.display());
@@ -132,6 +153,9 @@ pub fn before_title(game_dir: &Path, ffxi_dir: &Path, installed: bool) -> bool {
     #[cfg(target_os = "android")]
     {
         if needs_recovery(game_dir) {
+            return true;
+        }
+        if !crate::android_fs::setup_done() {
             return true;
         }
         if !installed {
@@ -507,6 +531,25 @@ mod tests {
         std::fs::write(game.join(MARKER), b"").unwrap();
         assert!(before_title(&game, &ffxi, true));
         assert!(before_title(&game, &ffxi, false));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "android")]
+    fn needs_recovery_when_setup_marker_cleared_with_complete_tree() {
+        crate::android_fs::clear_setup_done();
+        let base = std::env::temp_dir().join(format!("vana-setup-done-{}", std::process::id()));
+        let game = base.join("Game").join("FFXI");
+        let ffxi = game.join("FINAL FANTASY XI");
+        std::fs::create_dir_all(&ffxi).unwrap();
+        std::fs::write(ffxi.join("VTABLE.DAT"), b"").unwrap();
+        std::fs::write(ffxi.join("FTABLE.DAT"), &[0u8; 2]).unwrap();
+        std::fs::write(ffxi.join("FFXiMain.dll"), b"").unwrap();
+        assert!(!crate::android_fs::setup_done());
+        assert!(needs_recovery(&game));
+        crate::android_fs::mark_setup_done(&game);
+        assert!(!needs_recovery(&game));
+        crate::android_fs::clear_setup_done();
         std::fs::remove_dir_all(&base).unwrap();
     }
 

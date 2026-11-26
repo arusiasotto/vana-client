@@ -514,6 +514,7 @@ impl FirstRun {
         if is_default_install_dir(install_parent) {
             match wipe_install_dir(install_parent, false) {
                 Ok(()) => {
+                    crate::android_fs::clear_setup_done();
                     log::info!("recovery: wiped {}", install_parent.display());
                     self.note = format!("Removed old files under {}.", short_path(install_parent));
                     *self.stage.lock().unwrap() = Stage::Ask;
@@ -568,6 +569,7 @@ impl FirstRun {
                 if ui.button("Delete all").clicked() {
                     match wipe_install_dir(&pending, true) {
                         Ok(()) => {
+                            crate::android_fs::clear_setup_done();
                             self.note = format!("Removed old files under {}.", short_path(&pending));
                             self.wipe_confirm = None;
                             *self.stage.lock().unwrap() = Stage::Ask;
@@ -739,6 +741,7 @@ impl FirstRun {
                 if ui.button("Delete all").clicked() {
                     match wipe_install_dir(&pending, true) {
                         Ok(()) => {
+                            crate::android_fs::clear_setup_done();
                             self.note = format!("Removed old files under {}.", short_path(&pending));
                             self.wipe_confirm = None;
                         }
@@ -755,7 +758,10 @@ impl FirstRun {
         if ui.button("Remove old install files").clicked() {
             if is_default_install_dir(install_parent) {
                 match wipe_install_dir(install_parent, false) {
-                    Ok(()) => self.note = format!("Removed old files under {}.", short_path(install_parent)),
+                    Ok(()) => {
+                        crate::android_fs::clear_setup_done();
+                        self.note = format!("Removed old files under {}.", short_path(install_parent));
+                    }
                     Err(e) => self.note = format!("Could not remove files: {e}"),
                 }
             } else {
@@ -896,6 +902,7 @@ fn poll_installer_ready(parent: &Path, archives: &Path) -> Option<bool> {
 /// Stage volumes under `game_dir/.download`, install, patch; caller offers to delete the stash.
 fn install(game_dir: &Path, archive_dir: &Path, p: &Arc<Progress>) -> Result<PathBuf> {
     let stash = game_dir.join(".download");
+    crate::android_fs::clear_setup_done();
     std::fs::write(game_dir.join(MARKER), b"")?;
     crate::install::stage_installer_volumes(archive_dir, &stash, p)?;
     let root = game_dir.join("FINAL FANTASY XI");

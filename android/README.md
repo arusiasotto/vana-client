@@ -18,11 +18,13 @@ The first start has two steps:
 
 ### Clear app data
 
-Android **Settings → Apps → vana-client → Storage → Clear data** (or **Clear storage**) removes everything in **app storage** only: `config.json`, saved logins, mods under the data dir, logs and caches. It does **not** delete game files under shared storage (for example `/sdcard/Game/FFXI` or a path you chose on an SD card).
+Android **Settings → Apps → vana-client → Storage → Clear data** (or **Clear storage**) removes everything in **app storage** only: `config.json`, saved logins, the app-local setup marker (`files/setup_done` under the data dir), mods under the data dir, logs and caches. It does **not** delete game files under shared storage (for example `/sdcard/Game/FFXI` or a path you chose on an SD card).
 
-After clear data the client has no config (`installed` is false again) and shows the **first-start** screen even when `VTABLE.DAT` is still on disk. Use **Existing install** to point at that folder and skip reinstalling. Installer archives in **Download** are also left on the device unless you removed them yourself.
+After clear data the client has no config (`installed` is false) and no setup marker. If shared storage still has game files, the client does **not** boot to the title or opening movie — it opens **recovery** first so you can **Check install complete**, wipe the folder, or continue setup. Installer archives in **Download** are also left on the device unless you removed them yourself.
 
-When first-start finds an **incomplete or stale** install (partial files, `.vana-installing`, `.staging`, staged installer volumes, or a stale setup flag), it opens a **recovery** screen before the normal setup steps. You can **Check install complete** (validates `VTABLE.DAT`, `FTABLE.DAT`, FFXiMain, and staging markers — a complete tree continues into the game), **Wipe Game/FFXI folder** at the default path (`/storage/emulated/0/Game/FFXI`), or **Continue to setup** for a fresh or resumed local install. Custom install folders are never deleted automatically; **Wipe install folder** asks for confirmation first. A complete tree at the default path after **Clear data** is not treated as broken — use **Existing install** on the setup screen.
+Setup completion is recorded in app-private storage (`files/setup_done`), set when an install or **Existing install** finishes successfully and cleared when an install is incomplete or wiped. That marker is separate from `config.json` and from markers on shared storage (`.vana-installing`, `.staging`, and so on).
+
+When first-start finds an **incomplete or stale** install (partial files, `.vana-installing`, `.staging`, staged installer volumes, missing setup marker after clear data with a complete tree on disk), it opens a **recovery** screen before the normal setup steps. You can **Check install complete** (validates `VTABLE.DAT`, `FTABLE.DAT`, FFXiMain, and staging markers — a complete tree continues into the game), **Wipe Game/FFXI folder** at the default path (`/storage/emulated/0/Game/FFXI`), or **Continue to setup** for a fresh or resumed local install. Custom install folders are never deleted automatically; **Wipe install folder** asks for confirmation first.
 
 ## Mods, addons, and Download
 
