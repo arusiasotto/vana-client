@@ -1317,6 +1317,10 @@ fn login_window(
                     chosen = Some(LoginChoice::Catalogue);
                     sounds.push(crate::audio::Ui::Select);
                 }
+                egui::Key::Enter if *focus < first => {
+                    chosen = enabled[0].then_some(LoginChoice::LogIn);
+                    sounds.push(if enabled[0] { crate::audio::Ui::Select } else { crate::audio::Ui::Error });
+                }
                 egui::Key::Enter if *focus >= first && *focus < first + 3 => {
                     let k = *focus - first;
                     chosen = enabled[k].then_some(CHOICES[k]);
@@ -1359,7 +1363,15 @@ fn login_window(
          trusting it."
     } else if *focus == cat {
         "Set the GitHub repository for this server's mod and DAT catalogue."
-    } else if *focus >= first && *focus < first + 3 && !enabled[*focus - first] {
+    } else if *focus >= first
+        && !(if *focus == twofa {
+            filled
+        } else if *focus < first + 3 {
+            enabled[*focus - first]
+        } else {
+            true
+        })
+    {
         if playonline {
             "Enter the PlayOnline ID and password and the Square Enix ID and password first."
         } else {

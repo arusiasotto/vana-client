@@ -219,17 +219,23 @@ impl ServerCatalogues {
     }
 }
 
+/// `owner/repo` or `owner/repo@branch` → raw JSON URL under `catalogue/` (default branch `master`).
 pub fn expand_server_catalogue(repo: &str, list_file: &str) -> Option<String> {
-    let mut s = repo.trim().trim_end_matches('/').trim_end_matches(".git").to_string();
-    if s.is_empty() {
+    let trimmed = repo.trim().trim_end_matches('/').trim_end_matches(".git");
+    if trimmed.is_empty() {
         return None;
     }
+    let (repo_part, branch) = match trimmed.rsplit_once('@') {
+        Some((left, right)) if left.contains('/') && !left.contains("://") => (left, right.trim()),
+        _ => (trimmed, "master"),
+    };
+    let mut s = repo_part.to_string();
     if let Some(rest) = s.strip_prefix("https://raw.githubusercontent.com/") {
         let base = rest.trim_end_matches('/');
-        if base.ends_with("/master") {
+        if base.ends_with("/master") || base.ends_with("/main") {
             return Some(format!("https://raw.githubusercontent.com/{base}/catalogue/{list_file}"));
         }
-        return Some(format!("https://raw.githubusercontent.com/{base}/master/catalogue/{list_file}"));
+        return Some(format!("https://raw.githubusercontent.com/{base}/{branch}/catalogue/{list_file}"));
     }
     if let Some(rest) = s.strip_prefix("https://github.com/") {
         s = rest.to_string();
@@ -241,7 +247,7 @@ pub fn expand_server_catalogue(repo: &str, list_file: &str) -> Option<String> {
         return Some(PathBuf::from(s).join("catalogue").join(list_file).to_string_lossy().into_owned());
     }
     if s.contains('/') && !s.starts_with('/') {
-        return Some(format!("https://raw.githubusercontent.com/{s}/master/catalogue/{list_file}"));
+        return Some(format!("https://raw.githubusercontent.com/{s}/{branch}/catalogue/{list_file}"));
     }
     None
 }
@@ -1378,6 +1384,8 @@ mod tests {
             u,
             "https://raw.githubusercontent.com/arusiasotto/vana-server-catalogue-template/master/catalogue/mods.json"
         );
+        let u = super::expand_server_catalogue("org/repo@main", "mods.json").unwrap();
+        assert_eq!(u, "https://raw.githubusercontent.com/org/repo/main/catalogue/mods.json");
     }
 
     #[test]

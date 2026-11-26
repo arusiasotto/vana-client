@@ -15,17 +15,39 @@ pub fn repo_for_keys(keys: &[String]) -> String {
     String::new()
 }
 
-/// Clears the saved catalogue repo for `keys`; returns them for refetch on success.
+fn entry_matches(a: &config::ServerCatalogueEntry, b: &config::ServerCatalogueEntry) -> bool {
+    a.repo == b.repo && a.mods == b.mods && a.dats == b.dats
+}
+
+/// Clears the saved catalogue repo for `keys` and any other stored key with the same entry (e.g. search + login); returns
+/// keys touched for refetch on success.
 pub fn clear_repo(keys: &[String]) -> Option<Vec<String>> {
     let mut store = ServerCatalogues::load();
+    let mut touched: Vec<String> = Vec::new();
     for key in keys {
+        let snapshot = store.get(key).cloned();
         store.clear(key);
+        if !touched.iter().any(|k| k == key) {
+            touched.push(key.clone());
+        }
+        let Some(entry) = snapshot else { continue };
+        let also: Vec<String> = store
+            .list()
+            .filter(|(k, e)| !keys.contains(k) && entry_matches(&entry, e))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in also {
+            store.clear(&k);
+            if !touched.iter().any(|t| t == &k) {
+                touched.push(k);
+            }
+        }
     }
     if let Err(e) = store.save() {
         log::warn!("server catalogues: {e:#}");
         return None;
     }
-    Some(keys.to_vec())
+    Some(touched)
 }
 
 /// Stores `text` as the catalogue repo for `keys` (clears when empty); returns keys for refetch.
