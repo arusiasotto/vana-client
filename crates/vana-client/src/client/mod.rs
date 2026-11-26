@@ -19444,8 +19444,9 @@ impl App {
         if self.ui_drawn {
             platform.cursor_icon =
                 if self.cfg.tool("0021") == 0 { egui::CursorIcon::None } else { egui::CursorIcon::Default };
+            // Touch drives the game sprite; hide the system cursor so RedrawRequested cannot pin a stale icon.
             #[cfg(target_os = "android")]
-            if self.first_run.is_some() {
+            if self.first_run.is_some() || self.cfg.tool("0021") == 0 {
                 platform.cursor_icon = egui::CursorIcon::None;
                 gfx.window.set_cursor_visible(false);
                 self.mouse.invalidate();
@@ -22358,6 +22359,7 @@ impl ApplicationHandler for App {
                 if self.ui_drawn
                     && self.first_run.is_none()
                     && self.cfg.tool("0021") != 0
+                    && !cfg!(target_os = "android")
                     && let Some(gfx) = &self.gfx
                 {
                     self.mouse.apply_hardware(&gfx.window, event_loop, self.index.as_ref());
@@ -22490,13 +22492,16 @@ impl ApplicationHandler for App {
                     if self.look_grab != Some(true) {
                         self.look(position.x - x, position.y - y);
                     }
-                    if let (Some(false), Some(at), Some(g)) = (self.look_grab, self.grab_at, self.gfx.as_ref()) {
+                    if !cfg!(target_os = "android")
+                        && let (Some(false), Some(at), Some(g)) = (self.look_grab, self.grab_at, self.gfx.as_ref())
+                    {
                         let _ = g.window.set_cursor_position(winit::dpi::PhysicalPosition::new(at.0, at.1));
                         self.last_cursor = Some(at);
                         return;
                     }
                 }
                 self.last_cursor = Some((position.x, position.y));
+                self.pointer_moved((position.x, position.y));
                 #[cfg(target_os = "android")]
                 self.android_egui_pointer((position.x, position.y), None);
             }

@@ -288,25 +288,16 @@ impl App {
             TouchPhase::Started | TouchPhase::Ended | TouchPhase::Cancelled => {
                 let pressed = touch.phase == TouchPhase::Started;
                 self.last_cursor = Some(at);
+                self.pointer_moved(at);
                 self.android_egui_pointer(at, Some((MouseButton::Left, pressed)));
                 self.mouse_button(MouseButton::Left, pressed, over_ui);
             }
             TouchPhase::Moved => {
                 self.android_egui_pointer(at, None);
-                if let (true, Some((x, y))) = (self.dragging || self.middle_down, self.last_cursor) {
-                    if self.look_grab.is_none() {
-                        self.grab_pointer();
-                    }
-                    if self.look_grab != Some(true) {
-                        self.look(at.0 - x, at.1 - y);
-                    }
-                    if let (Some(false), Some(grab), Some(g)) = (self.look_grab, self.grab_at, self.gfx.as_ref()) {
-                        let _ = g.window.set_cursor_position(winit::dpi::PhysicalPosition::new(grab.0, grab.1));
-                        self.last_cursor = Some(grab);
-                        return;
-                    }
-                }
+                // Touch is the pointer on Android: no confined/locked grab or warp-back (that pinned the sprite
+                // and left clicks on egui while draw_game_ui still followed ptr_warp or grab_at).
                 self.last_cursor = Some(at);
+                self.pointer_moved(at);
             }
         }
     }
