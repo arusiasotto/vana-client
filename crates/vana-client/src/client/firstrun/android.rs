@@ -366,19 +366,25 @@ impl FirstRun {
         let working = matches!(&*self.stage.lock().unwrap(), Stage::Working);
         let mut action = Action::None;
         let screen = ctx.content_rect();
+        let ppp = ctx.pixels_per_point();
+        let two_cols = screen.width() / ppp >= 480.0;
+        let margin = if two_cols { 14.0 } else { 8.0 };
+        let panel_w = (screen.width() - margin * 2.0).max(280.0);
+        let scroll_max = (screen.height() - 44.0).max(120.0);
         ctx.layer_painter(egui::LayerId::background()).rect_filled(
             screen,
             0.0,
             egui::Color32::from_rgb(0x12, 0x14, 0x22),
         );
-        egui::Area::new(egui::Id::new("first run")).anchor(egui::Align2::CENTER_TOP, [0.0, 10.0]).show(ctx, |ui| {
+        egui::Area::new(egui::Id::new("first run")).anchor(egui::Align2::CENTER_TOP, [0.0, 6.0]).show(ctx, |ui| {
             egui::Frame::new()
                 .fill(egui::Color32::from_rgb(0x1e, 0x22, 0x3a))
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x6a, 0x70, 0xa8)))
                 .corner_radius(6.0)
                 .inner_margin(12.0)
                 .show(ui, |ui| {
-                    ui.set_max_width((screen.width() - 28.0).max(320.0));
+                    ui.set_min_width(panel_w);
+                    ui.set_max_width(panel_w);
                     ui.style_mut().spacing.button_padding = egui::vec2(10.0, 6.0);
                     ui.label(
                         egui::RichText::new("FINAL FANTASY XI game files")
@@ -386,15 +392,24 @@ impl FirstRun {
                             .color(egui::Color32::from_rgb(0xe8, 0xc8, 0x80)),
                     );
                     ui.add_space(4.0);
-                    match (&failed, working, &cleanup) {
-                        (Some(e), _, _) => self.failed_ui(ui, e, &mut action),
-                        (None, true, _) => self.progress_ui(ui),
-                        (None, false, Some(stash)) => self.cleanup_offer_ui(ui, stash, &mut action),
-                        (None, false, None) => self.ask_ui_scroll(ui, &mut action),
-                    }
-                    if failed.is_none() && cleanup.is_none() && !working && self.browse.is_none() {
-                        self.ask_ui_start_row(ui, &mut action);
-                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("firstrun body")
+                        .max_height(scroll_max)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            match (&failed, working, &cleanup) {
+                                (Some(e), _, _) => self.failed_ui(ui, e, &mut action),
+                                (None, true, _) => self.progress_ui(ui),
+                                (None, false, Some(stash)) => self.cleanup_offer_ui(ui, stash, &mut action),
+                                (None, false, None) => {
+                                    self.ask_ui_scroll(ui, two_cols);
+                                    if self.browse.is_none() {
+                                        self.ask_ui_start_row(ui, &mut action);
+                                    }
+                                }
+                            }
+                        });
                 });
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(if working { 250 } else { 16 }));
@@ -421,7 +436,7 @@ impl FirstRun {
         }
     }
 
-    fn ask_ui_scroll(&mut self, ui: &mut egui::Ui, _action: &mut Action) {
+    fn ask_ui_scroll(&mut self, ui: &mut egui::Ui, two_cols: bool) {
         if self.folder_browser(ui) {
             return;
         }
@@ -472,18 +487,38 @@ impl FirstRun {
             ui.label(egui::RichText::new(&self.note).size(13.0).color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)));
         }
         ui.add_space(8.0);
+        if two_cols {
+            let gap = 12.0;
+            let col_w = ((ui.available_width() - gap) * 0.5).max(120.0);
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(egui::vec2(col_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    self.ask_ui_archives(ui, &archives, green);
+                });
+                ui.add_space(gap);
+                ui.allocate_ui_with_layout(egui::vec2(col_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    self.ask_ui_install_to(ui, &install_parent);
+                });
+            });
+        } else {
+            self.ask_ui_archives(ui, &archives, green);
+            ui.add_space(8.0);
+            self.ask_ui_install_to(ui, &install_parent);
+        }
+    }
+
+    fn ask_ui_archives(&mut self, ui: &mut egui::Ui, archives: &Path, green: egui::Color32) {
         ui.label(egui::RichText::new("Installer downloads").size(14.0));
         ui.label(
-            egui::RichText::new(short_path(&archives))
+            egui::RichText::new(short_path(archives))
                 .size(13.0)
                 .font(egui::FontId::monospace(13.0)),
         );
         ui.horizontal(|ui| {
             if ui.button("Browse Download").clicked() {
                 self.note.clear();
-                self.open_browser(Browse::Archives, &archives);
+                self.open_browser(Browse::Archives, archives);
             }
-            let n = installer_parts_in(&archives);
+            let n = installer_parts_in(archives);
             if n > 0 {
                 ui.label(
                     egui::RichText::new(format!("{n}/{VOLUMES} valid"))
@@ -492,12 +527,14 @@ impl FirstRun {
                 );
             }
         });
-        ui.add_space(8.0);
+    }
+
+    fn ask_ui_install_to(&mut self, ui: &mut egui::Ui, install_parent: &Path) {
         ui.label(egui::RichText::new("Install to").size(14.0));
-        ui.label(egui::RichText::new(short_path(&install_parent)).size(13.0).font(egui::FontId::monospace(13.0)));
+        ui.label(egui::RichText::new(short_path(install_parent)).size(13.0).font(egui::FontId::monospace(13.0)));
         if ui.button("Browse install folder").clicked() {
             self.note.clear();
-            self.open_browser(Browse::InstallTo, &install_parent);
+            self.open_browser(Browse::InstallTo, install_parent);
         }
     }
 
