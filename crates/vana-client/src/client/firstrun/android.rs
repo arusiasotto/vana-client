@@ -1,7 +1,7 @@
 //! The first-start window on Android: All files access first, then game files from Square Enix's installer volumes
 //! the user downloaded (kept where they are), or an install already on the device.
 
-use super::{Action, MARKER, Stage, VOLUMES, closing_note, existing, set, volume};
+use super::{Action, MARKER, Stage, VOLUMES, closing_note, existing, incomplete, set, volume};
 use crate::install::Progress;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -79,6 +79,62 @@ fn short_path(p: &Path) -> String {
     if n > 44 { format!("…{}", s.chars().skip(n - 40).collect::<String>()) } else { s }
 }
 
+/// Normalized install-root path for comparisons (`/sdcard` → emulated storage).
+fn norm_install_root(path: &Path) -> String {
+    path.to_string_lossy().replace("/sdcard", "/storage/emulated/0").trim_end_matches('/').to_string()
+}
+
+/// The config default (`/storage/emulated/0/Game/FFXI`).
+pub fn is_default_install_dir(path: &Path) -> bool {
+    norm_install_root(path) == norm_install_root(&crate::config::default_game_dir())
+}
+
+fn install_dir_has_content(game_dir: &Path) -> bool {
+    game_dir.is_dir() && std::fs::read_dir(game_dir).map(|mut rd| rd.next().is_some()).unwrap_or(false)
+}
+
+/// Deletes everything under the install folder (not the folder itself). Non-default paths need `allow_non_default`.
+pub fn wipe_install_dir(game_dir: &Path, allow_non_default: bool) -> std::io::Result<()> {
+    if !is_default_install_dir(game_dir) && !allow_non_default {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "refusing to wipe a non-default install folder without confirmation",
+        ));
+    }
+    if !game_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(game_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(path)?;
+        } else {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Clears a stale or partial install under the default folder when first-start opens.
+fn auto_wipe_default_if_stale(game_dir: &Path) {
+    if !is_default_install_dir(game_dir) {
+        return;
+    }
+    let ffxi = game_dir.join("FINAL FANTASY XI");
+    if !incomplete(&ffxi) && !install_dir_has_content(game_dir) {
+        return;
+    }
+    if !incomplete(&ffxi) {
+        // A complete retail tree at the default path is kept (for example after Clear data + Existing install).
+        return;
+    }
+    match wipe_install_dir(game_dir, false) {
+        Ok(()) => log::info!("cleared incomplete default install at {}", game_dir.display()),
+        Err(e) => log::warn!("could not clear default install at {}: {e}", game_dir.display()),
+    }
+}
+
 /// Which choice the in-app folder list is filling in.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Browse {
@@ -99,6 +155,8 @@ pub struct FirstRun {
     /// Folder the in-app list is showing while `browse` is set.
     browser_at: PathBuf,
     note: String,
+    /// A tap on **Remove old install files** for a custom install folder is waiting for confirmation.
+    wipe_confirm: Option<PathBuf>,
 }
 
 impl FirstRun {
@@ -132,6 +190,7 @@ impl FirstRun {
         // Configs from before shared storage kept the game in app storage.
         let game_dir =
             if crate::config::in_app_storage(&game_dir) { crate::config::default_game_dir() } else { game_dir };
+        auto_wipe_default_if_stale(&game_dir);
         Self {
             path_input: game_dir.display().to_string(),
             archive_path_input: downloads().display().to_string(),
@@ -141,6 +200,7 @@ impl FirstRun {
             browse: None,
             browser_at: crate::client::folder_pick::storage_root(),
             note: String::new(),
+            wipe_confirm: None,
         }
     }
 
@@ -171,6 +231,11 @@ impl FirstRun {
                 default.display()
             );
             return Action::None;
+        }
+        if is_default_install_dir(&parent) {
+            if let Err(e) = wipe_install_dir(&parent, false) {
+                log::warn!("clearing default install folder before install: {e}");
+            }
         }
         if let Err(e) = std::fs::create_dir_all(&parent) {
             self.note = format!("Cannot use that install folder: {e}");
@@ -537,6 +602,57 @@ impl FirstRun {
             self.note.clear();
             self.open_browser(Browse::InstallTo, install_parent);
         }
+        self.ask_ui_wipe_install(ui, install_parent);
+    }
+
+    fn ask_ui_wipe_install(&mut self, ui: &mut egui::Ui, install_parent: &Path) {
+        if !install_dir_has_content(install_parent) {
+            self.wipe_confirm = None;
+            return;
+        }
+        if let Some(pending) = self.wipe_confirm.clone() {
+            if norm_install_root(&pending) != norm_install_root(install_parent) {
+                self.wipe_confirm = None;
+            }
+        }
+        if let Some(pending) = &self.wipe_confirm {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Delete everything under {}? This cannot be undone.",
+                    short_path(pending)
+                ))
+                .size(12.0)
+                .color(egui::Color32::from_rgb(0xe0, 0xa0, 0x70)),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Delete all").clicked() {
+                    match wipe_install_dir(pending, true) {
+                        Ok(()) => {
+                            self.note = format!("Removed old files under {}.", short_path(pending));
+                            self.wipe_confirm = None;
+                        }
+                        Err(e) => self.note = format!("Could not remove files: {e}"),
+                    }
+                }
+                if ui.button("Cancel").clicked() {
+                    self.wipe_confirm = None;
+                }
+            });
+            return;
+        }
+        ui.add_space(4.0);
+        if ui.button("Remove old install files").clicked() {
+            if is_default_install_dir(install_parent) {
+                match wipe_install_dir(install_parent, false) {
+                    Ok(()) => self.note = format!("Removed old files under {}.", short_path(install_parent)),
+                    Err(e) => self.note = format!("Could not remove files: {e}"),
+                }
+            } else {
+                self.wipe_confirm = Some(install_parent.to_path_buf());
+                self.note.clear();
+            }
+        }
     }
 
     fn ask_ui_start_row(&mut self, ui: &mut egui::Ui, action: &mut Action) {
@@ -689,6 +805,26 @@ fn install(game_dir: &Path, archive_dir: &Path, p: &Arc<Progress>) -> Result<Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_install_dir_matches_emulated_and_sdcard_aliases() {
+        let default = crate::config::default_game_dir();
+        assert!(is_default_install_dir(&default));
+        assert!(is_default_install_dir(&PathBuf::from("/sdcard/Game/FFXI")));
+        assert!(!is_default_install_dir(&PathBuf::from("/storage/emulated/0/Documents/FFXI")));
+    }
+
+    #[test]
+    fn wipe_refuses_custom_install_root_without_confirmation() {
+        let base = std::env::temp_dir().join(format!("vana-wipe-{}", std::process::id()));
+        let custom = base.join("MyGame");
+        std::fs::create_dir_all(&custom).unwrap();
+        std::fs::write(custom.join("leftover.txt"), b"x").unwrap();
+        assert!(wipe_install_dir(&custom, false).is_err());
+        wipe_install_dir(&custom, true).unwrap();
+        assert!(!install_dir_has_content(&custom));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     fn installer_volumes_must_share_one_folder() {

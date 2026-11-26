@@ -22,6 +22,8 @@ Android **Settings → Apps → vana-client → Storage → Clear data** (or **C
 
 After clear data the client has no config (`installed` is false again) and shows the **first-start** screen even when `VTABLE.DAT` is still on disk. Use **Existing install** to point at that folder and skip reinstalling. Installer archives in **Download** are also left on the device unless you removed them yourself.
 
+The default install folder (`/storage/emulated/0/Game/FFXI`, the config default) is cleared automatically when first-start opens with an **incomplete or stale** install there (missing files, `.vana-installing`, `.staging`, or staged installer volumes). A **complete** tree at that path is kept so you can use **Existing install** after Clear data. Starting a **local install** into the default folder wipes it first. **Remove old install files** on the first-start screen deletes everything under the chosen install folder; custom paths ask for confirmation first.
+
 ## Mods, addons, and Download
 
 **Settings → Mods** scans **`/storage/emulated/0/Download`** (and subfolders) for zip/7z/rar packs and opens **Install from File** there. That needs **All files access** (same as playing in zones), or the folder stays empty in the app.
