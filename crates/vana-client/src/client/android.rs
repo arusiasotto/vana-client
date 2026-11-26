@@ -203,7 +203,7 @@ impl App {
         }
         if self.index_warm == LoadState::Idle
             && self.cfg.ffxi_dir().join("VTABLE.DAT").is_file()
-            && !super::firstrun::needed(&self.cfg.ffxi_dir(), self.cfg.installed)
+            && !super::firstrun::before_title(&self.cfg.game_dir, &self.cfg.ffxi_dir(), self.cfg.installed)
         {
             self.start_index_warm();
         }
