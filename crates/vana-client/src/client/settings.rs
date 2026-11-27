@@ -387,6 +387,11 @@ fn sentence(s: &str) -> String {
     if s.ends_with(['.', '!', '?']) { s.to_string() } else { format!("{s}.") }
 }
 const MODERN_SCALES: &[(u32, &str)] = &[
+    (25, "25%"),
+    (30, "30%"),
+    (35, "35%"),
+    (40, "40%"),
+    (45, "45%"),
     (50, "50%"),
     (55, "55%"),
     (60, "60%"),
@@ -439,12 +444,21 @@ const PACKS: usize = 10;
 const MODS: usize = 11;
 const EXTRA_TABS: [&str; 4] = ["Maps", "Timers", "Battle", "Misc."];
 
+#[cfg(not(target_os = "android"))]
+const BACKGROUND_HELP: &str = "How sharp the 3D world is drawn. Set it higher than the window for a sharper picture at a cost in speed, or lower for speed.";
+/// Android: every stop is a share of this screen. 100% follows the screen. The others are that percentage of its
+/// lines, in the same shape.
+#[cfg(target_os = "android")]
+const BACKGROUND_HELP: &str = "How sharp the 3D world is drawn. 100% is this screen. Each other step is that share of its lines, in the same shape: 50% draws half as many, 200% draws twice as many. Lower is faster, higher is sharper. Menus and text stay sharp.";
+
 /// `in_game`: the volumes are the Gameplay page's there, so the Sound page leaves them out. `modern`: the minimap's and
 /// the Timers' place and size are set by dragging them there, so those rows are left out.
 fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] {
     use Val::*;
     use When::*;
     const GENERAL: &[SRow] = &[
+        // Android's surface is the activity: window mode does not change it.
+        #[cfg(not(target_os = "android"))]
         row(
             "Window Mode",
             "Full screen, a window, or a borderless window at your chosen size or the size of your desktop.",
@@ -468,7 +482,10 @@ fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] 
         ),
     ];
     const SCREEN: &[SRow] = &[
+        // Android's surface is the activity: the window size and which monitor do not change it.
+        #[cfg(not(target_os = "android"))]
         row("Resolution", "The size of the game window.", Size("0001", "0002", Sizes::Window), &[], Now),
+        #[cfg(not(target_os = "android"))]
         row("Monitor", "Which monitor the game opens on (not retail).", Monitor, &[], Now),
         row(
             "GPU",
@@ -477,13 +494,7 @@ fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] 
             &[],
             Restart,
         ),
-        row(
-            "Background",
-            "How sharp the 3D world is drawn. Set it higher than the window for a sharper picture at a cost in speed, or lower for speed.",
-            Size("0003", "0004", Sizes::Background),
-            &[],
-            Now,
-        ),
+        row("Background", BACKGROUND_HELP, Size("0003", "0004", Sizes::Background), &[], Now),
         row(
             "Menu Size",
             "The size menus and text are drawn at before they are stretched to the window. Smaller numbers make menus bigger.",
@@ -846,6 +857,31 @@ fn rows(kind: Kind, tab: usize, in_game: bool, modern: bool) -> &'static [SRow] 
     }
 }
 
+/// Android's Background stops, smallest share first. 100% is stored as the window's own size so it keeps following
+/// the screen. Every other stop is that percentage of the screen, in the same shape.
+const PHONE_PERCENTS: &[(u32, &str)] =
+    &[(33, "33%"), (50, "50%"), (67, "67%"), (75, "75%"), (100, "100%"), (125, "125%"), (150, "150%"), (200, "200%")];
+
+fn phone_background(window: [u32; 2]) -> Vec<([u32; 2], &'static str)> {
+    let [w, h] = [window[0].max(1), window[1].max(1)];
+    let mut v = Vec::new();
+    for (pct, name) in PHONE_PERCENTS {
+        if *pct == 100 {
+            v.push(([0, 0], *name));
+            continue;
+        }
+        let size = [
+            ((w as f32) * (*pct as f32) / 100.0).round().clamp(1.0, 8192.0) as u32,
+            ((h as f32) * (*pct as f32) / 100.0).round().clamp(1.0, 8192.0) as u32,
+        ];
+        if size == [w, h] || v.iter().any(|s| s.0 == size) {
+            continue;
+        }
+        v.push((size, *name));
+    }
+    v
+}
+
 const RESOLUTIONS: [[u32; 2]; 17] = [
     [640, 480],
     [800, 600],
@@ -936,6 +972,7 @@ pub struct SettingsUi {
     pub mod_changes: Vec<(String, String, serde_json::Value)>,
     /// Mods' settings shown on our Extras tabs: (mod, row).
     tab_rows: Vec<(String, ModRow)>,
+    pub catalogue_keys: Vec<String>,
 }
 
 /// What a row's controls are.
@@ -979,6 +1016,7 @@ impl SettingsUi {
             lua_names: crate::modpack::lua_folders(),
             m_dat_tab: 0,
             lua_info: crate::modpack::lua_info(),
+            catalogue_keys: crate::config::active_server_keys(c, None),
         };
         s.col = s.marked_col();
         // Not in tests: it loads the engine in the data folder.
@@ -1100,9 +1138,13 @@ impl SettingsUi {
             Sizes::Window => RESOLUTIONS.to_vec(),
             // 0 = the window's; then scales of it and the tool's squares.
             Sizes::Background => {
-                let mut v = vec![[0, 0], scaled(0.5), scaled(0.75), scaled(1.5), scaled(2.0)];
-                v.extend([[512, 512], [1024, 1024], [2048, 2048], [4096, 4096]]);
-                v
+                if cfg!(target_os = "android") {
+                    phone_background(self.window).into_iter().map(|(s, _)| s).collect()
+                } else {
+                    let mut v = vec![[0, 0], scaled(0.5), scaled(0.75), scaled(1.5), scaled(2.0)];
+                    v.extend([[512, 512], [1024, 1024], [2048, 2048], [4096, 4096]]);
+                    v
+                }
             }
             // The v5 tool: the window, then 95 %, 90 % ... while the height stays 512 or more.
             Sizes::Ui => {
@@ -1348,10 +1390,19 @@ impl SettingsUi {
     /// The row's value as a slider shows it.
     fn shown(&self, r: &Row) -> String {
         match r.val {
-            Val::Size(a, b, _) => match [self.tool_get(a), self.tool_get(b)] {
-                [0, _] | [_, 0] => "Window".into(),
-                [x, y] => format!("{x}x{y}"),
-            },
+            Val::Size(a, b, k) => {
+                let cur = [self.tool_get(a), self.tool_get(b)];
+                if cfg!(target_os = "android")
+                    && k == Sizes::Background
+                    && let Some(name) = phone_background(self.window).iter().find(|(s, n)| *s == cur && !n.is_empty())
+                {
+                    return name.1.to_string();
+                }
+                match cur {
+                    [0, _] | [_, 0] => "Window".into(),
+                    [x, y] => format!("{x}x{y}"),
+                }
+            }
             Val::Gamma => format!("{:+.1}", f32::from_bits(self.tool_get("0028"))),
             Val::FrameLimit if self.s.frame_limit == 0 => "Unlimited".into(),
             Val::FrameLimit => format!("{}", self.s.frame_limit),
@@ -1413,7 +1464,8 @@ impl SettingsUi {
         self.tab = (self.tab as i32 + d).rem_euclid(self.tabs().len() as i32) as usize;
         if self.on_mods() {
             // An install's failure belongs to the page it was asked on.
-            self.mods_ui.get_or_insert_with(super::modsui::Mods::open).error = None;
+            let keys = self.catalogue_keys.clone();
+            self.mods_ui.get_or_insert_with(|| super::modsui::Mods::open(keys)).error = None;
         }
         self.row = self.row.min(self.row_count());
         self.col = self.marked_col();
@@ -1700,7 +1752,8 @@ impl SettingsUi {
     pub fn goto(&mut self, tab: usize, row: usize) {
         self.tab = tab.min(self.tabs().len() - 1);
         if self.on_mods() {
-            let m = self.mods_ui.get_or_insert_with(super::modsui::Mods::open);
+            let keys = self.catalogue_keys.clone();
+            let m = self.mods_ui.get_or_insert_with(|| super::modsui::Mods::open(keys));
             m.wait_scan();
             let _ = m.tick(&mut self.s.mods);
         }
@@ -1922,7 +1975,7 @@ fn plain(help: &str) -> String {
 impl SettingsUi {
     pub fn view(&self) -> View {
         let rows = if self.on_mods() {
-            let offers = self.offers();
+            let offers = self.offers(self.lua_page(), false);
             let lua = self.lua_page();
             let installed = self.on_page().into_iter().enumerate().map(|(i, k)| {
                 let (m, on) = (&self.s.mods[k], self.mod_on(k));
@@ -2015,12 +2068,12 @@ impl SettingsUi {
         if self.on_mods() { self.mods_total() } else { self.rows().len() }
     }
 
-    fn offers(&self) -> Vec<super::modsui::Offer> {
-        self.mods_ui.as_ref().map(|m| m.offers(self.lua_page())).unwrap_or_default()
+    pub fn offers(&self, lua: bool, server: bool) -> Vec<super::modsui::Offer> {
+        self.mods_ui.as_ref().map(|m| m.offers(lua, server)).unwrap_or_default()
     }
 
     fn mods_total(&self) -> usize {
-        self.on_page().len() + self.offers().len()
+        self.on_page().len() + self.offers(self.lua_page(), false).len()
     }
 
     /// Buttons on a row: ON / OFF (and Move for a pack, Update for a mod with one), or an offer's one.
@@ -2210,7 +2263,7 @@ impl SettingsUi {
                 m.held = Some(self.s.mods.clone());
             }
             self.sounds.push(Se::Select);
-        } else if self.mods_ui.as_mut().is_some_and(|m| m.install_offer(i - sh.len(), lua)) {
+        } else if self.mods_ui.as_mut().is_some_and(|m| m.install_offer(i - sh.len(), lua, false)) {
             self.sounds.push(Se::Select);
         } else {
             self.sounds.push(Se::Error);
@@ -2244,7 +2297,7 @@ impl SettingsUi {
         let sh = self.on_page();
         let n = sh.len();
         let total = self.mods_total();
-        let offers = self.offers();
+        let offers = self.offers(self.lua_page(), false);
         for (vis, i) in (top..total).take(super::modsui::VISIBLE).enumerate() {
             let hy = y + Self::TOP + PITCH * vis as f32;
             if let Some(b) = gu.cell_bounds("menu    windowps", 465, 2) {
@@ -2309,11 +2362,11 @@ impl SettingsUi {
     }
 
     /// The page's installed packs or mods (name, on) in order, then its offers: archives found and catalogue entries.
-    /// A Lua mod goes by its mod.toml's name.
-    pub fn mods_rows(&self) -> (Vec<(String, bool)>, Vec<super::modsui::Offer>) {
+    /// A Lua mod goes by its mod.toml's name. `server` picks standard or server catalogue rows on DATs.
+    pub fn mods_rows(&self, server: bool) -> (Vec<(String, bool)>, Vec<super::modsui::Offer>) {
         let name = |n: &String| self.lua_info.get(n).map_or_else(|| n.clone(), |i| i.name.clone());
         let packs = self.on_page().into_iter().map(|k| (name(&self.s.mods[k].name), self.mod_on(k))).collect();
-        (packs, self.offers())
+        (packs, self.offers(self.lua_page(), server))
     }
 
     /// The page's installed pack or mod `i`'s folder (a Lua mod's id).
@@ -2360,9 +2413,9 @@ impl SettingsUi {
     }
 
     /// The page's offer `k` (an archive found, a catalogue entry) installed.
-    pub fn archive_install(&mut self, k: usize) {
+    pub fn archive_install(&mut self, k: usize, server: bool) {
         let lua = self.lua_page();
-        let ok = self.mods_ui.as_mut().is_some_and(|m| m.install_offer(k, lua));
+        let ok = self.mods_ui.as_mut().is_some_and(|m| m.install_offer(k, lua, server));
         self.sounds.push(if ok { Se::Select } else { Se::Error });
     }
 
@@ -2400,7 +2453,11 @@ impl SettingsUi {
                 _ => "Deletes this pack's folder.",
             }
             .into(),
-            (st, _) => self.offers().into_iter().nth(st.saturating_sub(2 + n)).map_or_else(String::new, |o| o.help),
+            (st, _) => self
+                .offers(self.lua_page(), false)
+                .into_iter()
+                .nth(st.saturating_sub(2 + n))
+                .map_or_else(String::new, |o| o.help),
         }
     }
 
@@ -2426,7 +2483,7 @@ impl SettingsUi {
                 "DAT pack {} of {n}: a higher one's textures win. ON / OFF, or Move it. Takes effect on restart.",
                 i + 1
             ),
-            Some(i) => self.offers().into_iter().nth(i - n).map_or_else(String::new, |o| o.help),
+            Some(i) => self.offers(self.lua_page(), false).into_iter().nth(i - n).map_or_else(String::new, |o| o.help),
         }
     }
 }
@@ -2674,6 +2731,33 @@ mod tests {
         assert_eq!(Settings::of(&back), ui.s);
     }
 
+    /// Android's Background steps are shares of the screen. 100% is the screen itself, stored so it keeps following it.
+    #[test]
+    fn phone_background_is_a_share_of_the_screen() {
+        let wide = phone_background([2400, 1080]);
+        assert_eq!(
+            wide.iter().map(|s| s.1).collect::<Vec<_>>(),
+            ["33%", "50%", "67%", "75%", "100%", "125%", "150%", "200%"]
+        );
+        assert_eq!(wide.iter().find(|s| s.1 == "50%").unwrap().0, [1200, 540]);
+        assert_eq!(wide.iter().find(|s| s.1 == "100%").unwrap().0, [0, 0]);
+        assert_eq!(wide.iter().find(|s| s.1 == "200%").unwrap().0, [4800, 2160]);
+        let tall = phone_background([1080, 2400]);
+        assert_eq!(tall.iter().find(|s| s.1 == "50%").unwrap().0, [540, 1200]);
+        for (window, stops) in [([2400, 1080], &wide), ([1080, 2400], &tall)] {
+            let area = |s: [u32; 2]| {
+                let [x, y] = if s == [0, 0] { window } else { s };
+                x as u64 * y as u64
+            };
+            assert!(stops.windows(2).all(|w| area(w[0].0) <= area(w[1].0)));
+            let mut sizes: Vec<_> = stops.iter().map(|s| s.0).collect();
+            let n = sizes.len();
+            sizes.sort();
+            sizes.dedup();
+            assert_eq!(sizes.len(), n);
+        }
+    }
+
     /// Extras: pages as Settings (Maps, Timers, Battle, Misc.), opened on the page name; buttons pick with Left / Right
     /// and Enter; Up from the page name wraps to the last row.
     #[test]
@@ -2800,9 +2884,9 @@ mod tests {
         assert_eq!(ui.tab, MODS);
         // "a" a Lua mod: the Mods page holds it alone, with ON / OFF; on DAT Packs, "b" moves down past it.
         ui.lua_names.insert("a".into());
-        assert_eq!((ui.mods_rows().0, ui.mods_cols(1)), (vec![("a".to_string(), false)], 2));
+        assert_eq!((ui.mods_rows(false).0, ui.mods_cols(1)), (vec![("a".to_string(), false)], 2));
         ui.goto(PACKS, 1);
-        assert_eq!(ui.mods_rows().0.iter().map(|r| r.0.as_str()).collect::<String>(), "bc");
+        assert_eq!(ui.mods_rows(false).0.iter().map(|r| r.0.as_str()).collect::<String>(), "bc");
         assert!(ui.mod_move(0, false));
         assert_eq!(names(&ui), "cab");
     }

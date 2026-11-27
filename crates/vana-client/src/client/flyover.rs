@@ -301,7 +301,27 @@ impl Flyover {
             let k = crate::dat::weather::clipping(e.draw_dist, self.clip_x, zone_id).1;
             Lighting::from_env_k(&e, self.minute, k)
         });
-        let zone = self.zone.get_or_insert_with(|| ZoneRenderer::new(gpu, &self.data.scene, format));
+        // The whole zone in one upload stalls the phone long enough for Android to offer to close the app.
+        #[cfg(target_os = "android")]
+        {
+            if self.zone.is_none() {
+                let geo = std::sync::Arc::new(crate::render::ZoneGeometry::build(&self.data.scene));
+                let textures = std::mem::take(&mut self.data.scene.textures);
+                self.zone = Some(ZoneRenderer::streamed(gpu, geo, textures, format));
+            }
+            let zone = self.zone.as_mut().unwrap();
+            gpu.begin_uploads(crate::render::upload::LOADING_MS * 15.0);
+            zone.upload_step(gpu, encoder);
+            gpu.run_mips(encoder, crate::render::MIP_BUDGET);
+            if !zone.ready(gpu) {
+                return false;
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            self.zone.get_or_insert_with(|| ZoneRenderer::new(gpu, &self.data.scene, format));
+        }
+        let zone = self.zone.as_mut().unwrap();
         zone.lighting = lighting;
         // The lobby state (FUN_10013ad0) probes under its camera each frame (FUN_101829c0) and puts that camera list
         // in force (FUN_1017a960), as the world does: without it, a zone that places a detailed mesh and a simpler

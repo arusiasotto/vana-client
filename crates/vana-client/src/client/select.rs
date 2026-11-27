@@ -426,8 +426,33 @@ impl SelectScene {
         alive: Option<Vec<u32>>,
     ) {
         let view = target.0;
+        #[cfg(not(target_os = "android"))]
         let zone = self.zone.get_or_insert_with(|| ZoneRenderer::new(gpu, &self.data.scene, format));
+        #[cfg(target_os = "android")]
+        let zone = self.zone.get_or_insert_with(|| {
+            let geo = std::sync::Arc::new(crate::render::ZoneGeometry::build(&self.data.scene));
+            let textures = std::mem::take(&mut self.data.scene.textures);
+            ZoneRenderer::streamed(gpu, geo, textures, format)
+        });
+        #[cfg(target_os = "android")]
+        {
+            use crate::render::upload::LOADING_MS;
+            gpu.begin_uploads(LOADING_MS * 15.0);
+            zone.upload_step(gpu, encoder);
+            gpu.run_mips(encoder, crate::render::MIP_BUDGET);
+            if !zone.ready(gpu) {
+                return;
+            }
+        }
         zone.lighting = self.data.lighting;
+        // One character a frame on Android: every model's textures at once is what makes the system offer to close
+        // the app while the ring is coming up.
+        #[cfg(target_os = "android")]
+        if self.actors.len() < self.data.models.len() {
+            let i = self.actors.len();
+            self.actors.push(self.data.models[i].as_ref().map(|(model, _)| zone.new_actor(gpu, model)));
+        }
+        #[cfg(not(target_os = "android"))]
         if self.actors.len() != self.data.models.len() {
             self.actors =
                 self.data.models.iter().map(|m| m.as_ref().map(|(model, _)| zone.new_actor(gpu, model))).collect();

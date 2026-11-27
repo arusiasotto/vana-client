@@ -9,8 +9,23 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Where releases are published.
+/// Desktop releases (mods catalogue and client binaries).
 pub const RELEASE_REPO: &str = "lenonk/vana-client";
+
+/// The GitHub repo whose *client* release the updater asks for. Android APKs live on the fork;
+/// `VANA_RELEASE_REPO` overrides for tests.
+pub fn client_release_repo() -> String {
+    std::env::var("VANA_RELEASE_REPO").unwrap_or_else(|_| {
+        #[cfg(target_os = "android")]
+        {
+            return "arusiasotto/vana-client".into();
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            RELEASE_REPO.into()
+        }
+    })
+}
 
 /// The release asset for this platform. A build for a platform no release carries (macOS, Linux on ARM so far) finds
 /// none and is never offered another platform's binary.
@@ -21,8 +36,28 @@ pub fn asset_name() -> &'static str {
         ("linux", "aarch64") => "vana-client-linux-aarch64",
         ("macos", "aarch64") => "vana-client-macos-aarch64",
         ("macos", "x86_64") => "vana-client-macos-x86_64",
+        ("android", "aarch64") => "vana-client-android-aarch64.apk",
         _ => "vana-client-unsupported-platform",
     }
+}
+
+/// Release tag without the `android-v` / `v` prefix (`android-v1.0.14-rc4` -> `1.0.14-rc4`).
+pub fn release_tag_version(tag: &str) -> &str {
+    tag.strip_prefix("android-v").or_else(|| tag.strip_prefix('v')).unwrap_or(tag)
+}
+
+/// The running client's version as the updater compares it to release tags.
+pub fn running_client_version() -> String {
+    #[cfg(target_os = "android")]
+    if let Some(v) = crate::android_fs::app_version_name() {
+        return v;
+    }
+    env!("CARGO_PKG_VERSION").into()
+}
+
+/// Whether `tag` names a client release newer than the one running.
+pub fn newer_client(tag: &str, current: &str) -> bool {
+    newer(release_tag_version(tag), release_tag_version(current))
 }
 
 pub enum Game {
@@ -153,9 +188,12 @@ pub fn start(root: PathBuf, playonline: bool) -> Shared {
     });
     let c = s.clone();
     std::thread::spawn(move || {
+        let running = running_client_version();
         let client = match latest_release() {
-            Ok(Some(r)) if newer(&r.tag, env!("CARGO_PKG_VERSION")) && r.sig_url.is_none() => Client::Unsigned(r.tag),
-            Ok(Some(r)) if newer(&r.tag, env!("CARGO_PKG_VERSION")) => Client::Available(r),
+            Ok(Some(r)) if newer_client(&r.tag, &running) && r.sig_url.is_none() && !cfg!(target_os = "android") => {
+                Client::Unsigned(r.tag)
+            }
+            Ok(Some(r)) if newer_client(&r.tag, &running) => Client::Available(r),
             Ok(Some(_)) => Client::Current,
             Ok(None) => Client::Unavailable("no release for this platform".into()),
             Err(e) => Client::Unavailable(format!("{e:#}")),
@@ -163,6 +201,8 @@ pub fn start(root: PathBuf, playonline: bool) -> Shared {
         match &client {
             Client::Unsigned(tag) => log::warn!("update check: release {tag} has no {}.sig; not offered", asset_name()),
             Client::Unavailable(why) => log::warn!("update check: no client release: {why}"),
+            Client::Current => log::info!("update check: client up to date ({running})"),
+            Client::Available(r) => log::info!("update check: client {} -> {}", running, r.tag),
             _ => {}
         }
         c.lock().unwrap().client = client;
@@ -185,22 +225,50 @@ pub(super) fn get_text(url: &str) -> Result<String> {
         .read_to_string()?)
 }
 
-/// The latest GitHub release and this platform's asset in it (None: no release, or no such asset).
-fn latest_release() -> Result<Option<Release>> {
-    // VANA_RELEASE_API: another endpoint for the test drives (a local mock of the GitHub answer).
-    let url = std::env::var("VANA_RELEASE_API")
-        .unwrap_or_else(|_| format!("https://api.github.com/repos/{RELEASE_REPO}/releases/latest"));
-    let mut resp = match agent().get(&url).header("Accept", "application/vnd.github+json").call() {
-        Ok(r) => r,
-        Err(ureq::Error::StatusCode(404)) => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    let v: serde_json::Value = serde_json::from_str(&resp.body_mut().read_to_string()?)?;
-    let tag = v["tag_name"].as_str().unwrap_or_default().to_string();
-    let find = |name: &str| v["assets"].as_array().and_then(|a| a.iter().find(|x| x["name"].as_str() == Some(name)));
+/// One release row with this platform's asset.
+fn release_from_json(v: &serde_json::Value) -> Option<Release> {
+    let tag = v["tag_name"].as_str()?.to_string();
+    let find = |name: &str| v["assets"].as_array()?.iter().find(|x| x["name"].as_str() == Some(name));
     let url = |a: &serde_json::Value| a["browser_download_url"].as_str().unwrap_or_default().to_string();
-    let sig_url = find(&format!("{}.sig", asset_name())).map(url);
-    Ok(find(asset_name()).map(|a| Release { tag, url: url(a), size: a["size"].as_u64().unwrap_or(0), sig_url }))
+    let asset = asset_name();
+    let sig_url = find(&format!("{asset}.sig")).map(url);
+    find(asset).map(|a| Release { tag, url: url(a), size: a["size"].as_u64().unwrap_or(0), sig_url })
+}
+
+/// Android prereleases (`android-v1.0.14-rc4`); desktop `/releases/latest` only.
+fn latest_release() -> Result<Option<Release>> {
+    #[cfg(target_os = "android")]
+    {
+        let url = std::env::var("VANA_RELEASES_API")
+            .unwrap_or_else(|_| format!("https://api.github.com/repos/{}/releases?per_page=30", client_release_repo()));
+        let v: serde_json::Value = serde_json::from_str(&get_text(&url)?)?;
+        let mut best: Option<Release> = None;
+        for r in v
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| !r["draft"].as_bool().unwrap_or(false))
+            .filter(|r| r["tag_name"].as_str().is_some_and(|t| t.starts_with("android-v")))
+            .filter_map(release_from_json)
+        {
+            if best.as_ref().is_none_or(|b| newer_client(&r.tag, &b.tag)) {
+                best = Some(r);
+            }
+        }
+        Ok(best)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let url = std::env::var("VANA_RELEASE_API")
+            .unwrap_or_else(|_| format!("https://api.github.com/repos/{}/releases/latest", client_release_repo()));
+        let mut resp = match agent().get(&url).header("Accept", "application/vnd.github+json").call() {
+            Ok(r) => r,
+            Err(ureq::Error::StatusCode(404)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let v: serde_json::Value = serde_json::from_str(&resp.body_mut().read_to_string()?)?;
+        Ok(release_from_json(&v))
+    }
 }
 
 /// The release signing key's public half (release/signing-key.pub; release/publish.sh signs with the private one).
@@ -509,32 +577,52 @@ impl UpdateUi {
                     lines.push(format!("PlayOnline Viewer updated to {version} ({total_files} files)."));
                 }
                 if let Some(r) = release {
-                    let dest = exe().context("no executable path")?.with_extension("new");
-                    download(&r.url, &dest, &|d, t| {
-                        set(Progress {
-                            label: format!("Downloading vana-client {}", r.tag),
-                            done: d,
-                            total: t.max(r.size),
-                            detail: format!("{:.1} of {:.1} MB", d as f64 / 1e6, t.max(r.size) as f64 / 1e6),
-                        })
-                    })?;
-                    verify(&r, &dest)?;
-                    replace_self(&dest)?;
-                    status.lock().unwrap().client = Client::Current;
-                    lines.push(format!("vana-client {} is installed; restart to use it.", r.tag));
-                    restart = true;
-                    // The notes since this version, for the restarted client to show (none if GitHub won't say).
-                    let from = env!("CARGO_PKG_VERSION");
-                    match super::notes::fetch(from, &r.tag) {
-                        Ok(notes) if !notes.is_empty() => {
-                            if let Err(e) =
-                                super::notes::save(&super::notes::Saved { from: from.into(), to: r.tag.clone(), notes })
-                            {
-                                log::warn!("update: can't keep the release notes: {e:#}");
+                    #[cfg(target_os = "android")]
+                    {
+                        let dest = crate::android_fs::update_apk_path()?;
+                        download(&r.url, &dest, &|d, t| {
+                            set(Progress {
+                                label: format!("Downloading vana-client {}", r.tag),
+                                done: d,
+                                total: t.max(r.size),
+                                detail: format!("{:.1} of {:.1} MB", d as f64 / 1e6, t.max(r.size) as f64 / 1e6),
+                            })
+                        })?;
+                        crate::android_fs::install_apk(&dest)?;
+                        status.lock().unwrap().client = Client::Current;
+                        lines.push(format!("vana-client {} downloaded; confirm install in the system prompt.", r.tag));
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        let dest = exe().context("no executable path")?.with_extension("new");
+                        download(&r.url, &dest, &|d, t| {
+                            set(Progress {
+                                label: format!("Downloading vana-client {}", r.tag),
+                                done: d,
+                                total: t.max(r.size),
+                                detail: format!("{:.1} of {:.1} MB", d as f64 / 1e6, t.max(r.size) as f64 / 1e6),
+                            })
+                        })?;
+                        verify(&r, &dest)?;
+                        replace_self(&dest)?;
+                        status.lock().unwrap().client = Client::Current;
+                        lines.push(format!("vana-client {} is installed; restart to use it.", r.tag));
+                        restart = true;
+                        // The notes since this version, for the restarted client to show (none if GitHub won't say).
+                        let from = env!("CARGO_PKG_VERSION");
+                        match super::notes::fetch(from, &r.tag) {
+                            Ok(notes) if !notes.is_empty() => {
+                                if let Err(e) = super::notes::save(&super::notes::Saved {
+                                    from: from.into(),
+                                    to: r.tag.clone(),
+                                    notes,
+                                }) {
+                                    log::warn!("update: can't keep the release notes: {e:#}");
+                                }
                             }
+                            Ok(_) => log::info!("update: no release notes after {from}"),
+                            Err(e) => log::warn!("update: release notes: {e:#}"),
                         }
-                        Ok(_) => log::info!("update: no release notes after {from}"),
-                        Err(e) => log::warn!("update: release notes: {e:#}"),
                     }
                 }
                 Ok(())
@@ -669,6 +757,7 @@ impl UpdateUi {
         match self.cursor {
             0 => "The game's data files, from the PlayOnline patch server.".into(),
             1 => "The PlayOnline Viewer's files, which a PlayOnline log-in needs current (kept, never run).".into(),
+            2 if cfg!(target_os = "android") => "The Android APK from its latest release.".into(),
             2 => "vana-client itself, from its latest release.".into(),
             UPDATE => "Download and install what is checked.".into(),
             _ => "Close this window.".into(),
@@ -739,12 +828,12 @@ impl UpdateUi {
                         "vana-client",
                         match &s.client {
                             Client::Available(r) => {
-                                format!("{} to {} ({:.1} MB)", env!("CARGO_PKG_VERSION"), r.tag, r.size as f64 / 1e6)
+                                format!("{} to {} ({:.1} MB)", running_client_version(), r.tag, r.size as f64 / 1e6)
                             }
                             Client::Checking => "Checking...".into(),
-                            Client::Current => format!("Up to date ({})", env!("CARGO_PKG_VERSION")),
+                            Client::Current => format!("Up to date ({})", running_client_version()),
                             Client::Unsigned(tag) => format!("{tag} is not signed; not offered"),
-                            Client::Unavailable(_) => format!("No newer release ({})", env!("CARGO_PKG_VERSION")),
+                            Client::Unavailable(_) => format!("No newer release ({})", running_client_version()),
                         },
                         matches!(s.client, Client::Available(_)),
                     ),
@@ -906,7 +995,7 @@ impl View {
 
 #[cfg(test)]
 mod tests {
-    use super::{SIGNING_KEY, asset_name, newer, signed_by, signed_text, thousands};
+    use super::{SIGNING_KEY, asset_name, newer, newer_client, release_tag_version, signed_by, signed_text, thousands};
 
     /// Each platform asks for its asset; only the published ones carry the release names.
     #[test]
@@ -915,10 +1004,19 @@ mod tests {
             "vana-client-linux-x86_64"
         } else if cfg!(all(windows, target_arch = "x86_64")) {
             "vana-client-windows-x86_64.exe"
+        } else if cfg!(all(target_os = "android", target_arch = "aarch64")) {
+            "vana-client-android-aarch64.apk"
         } else {
             return assert!(!["vana-client-linux-x86_64", "vana-client-windows-x86_64.exe"].contains(&asset_name()));
         };
         assert_eq!(asset_name(), want);
+    }
+
+    #[test]
+    fn android_release_tags_compare() {
+        assert_eq!(release_tag_version("android-v1.0.14-rc4"), "1.0.14-rc4");
+        assert!(newer_client("android-v1.0.14-rc4", "1.0.14-rc3"));
+        assert!(!newer_client("android-v1.0.14-rc3", "1.0.14-rc4"));
     }
 
     /// A signature covers the tag, the asset's name and its bytes; openssl's Ed25519 (pkeyutl -sign -rawin) checks.

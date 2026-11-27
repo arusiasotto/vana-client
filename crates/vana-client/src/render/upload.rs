@@ -17,25 +17,31 @@ pub struct Budget {
     left: i64,
     /// Measured bytes per ms (starts at 1 GB/s).
     rate: f64,
+    /// Wall-clock end of this frame's copies. The byte budget starts from the measured rate, which is optimistic
+    /// until a slow copy corrects it, so a phone would otherwise decode a whole zone before the rate moved.
+    until: Option<Instant>,
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Budget { left: 0, rate: 1e6 }
+        Budget { left: 0, rate: 1e6, until: None }
     }
 }
 
 impl Gpu {
-    /// Starts a frame's copies: `ms` of them at the measured rate.
+    /// Starts a frame's copies: `ms` of them at the measured rate, and no longer than `ms` on the clock.
     pub fn begin_uploads(&self, ms: f64) {
         if let Ok(mut b) = self.uploads.lock() {
             b.left = ((b.rate * ms) as i64).clamp(MIN_PIECE as i64, 64 << 20);
+            b.until = Instant::now().checked_add(std::time::Duration::from_secs_f64((ms / 1000.0).max(0.0)));
         }
     }
 
-    /// Bytes this frame may still copy.
+    /// Bytes this frame may still copy. Zero once the frame's time is spent.
     pub fn upload_room(&self) -> u64 {
-        self.uploads.lock().map_or(0, |b| b.left.max(0) as u64)
+        self.uploads
+            .lock()
+            .map_or(0, |b| if b.until.is_some_and(|t| Instant::now() >= t) { 0 } else { b.left.max(0) as u64 })
     }
 
     /// Runs one copy of `bytes`, charging it and measuring the rate.
@@ -55,6 +61,9 @@ impl Gpu {
     /// Room for a piece: up to the budget, rounded down to `unit` (at least one unit, so work always moves).
     pub fn piece(&self, remaining: u64, unit: u64) -> u64 {
         let room = self.upload_room().max(unit.max(1));
+        // One write has to finish before the clock is checked again. A whole texture here stalls the phone.
+        #[cfg(target_os = "android")]
+        let room = room.min((256 << 10).max(unit));
         remaining.min(room / unit.max(1) * unit.max(1)).max(unit.min(remaining))
     }
 }

@@ -458,6 +458,7 @@ const RETRY: Duration = Duration::from_secs(5);
 
 /// One poll of the pad that plays, from gilrs or SDL: the buttons held (VIRTUAL's numbers, sorted) and the sticks and
 /// triggers (lx, ly, rx, ry in -1 ..= 1, up positive; lt, rt in 0 ..= 1).
+#[derive(Clone)]
 pub struct Pad {
     pub buttons: Vec<u8>,
     pub axes: [f32; 6],
@@ -635,6 +636,8 @@ impl Gamepad {
             self.maps =
                 Some((padsin.to_string(), padexsin.to_string(), PadMap::parse(padsin), PadMap::parse(padexsin)));
         }
+        // NativeActivity's focus reports are unreliable: Android takes the pad regardless.
+        let focused = focused || cfg!(target_os = "android");
         let pad = match self.read_pad(&set, dt) {
             Some(p) if focused || set.background => p,
             _ => {
@@ -796,7 +799,8 @@ impl Gamepad {
             return;
         }
         let now = Instant::now();
-        if self.gilrs.is_none() && self.next_try.is_none_or(|t| now >= t) {
+        // gilrs has no Android backend; the patched winit feeds gamepad_android instead.
+        if !cfg!(target_os = "android") && self.gilrs.is_none() && self.next_try.is_none_or(|t| now >= t) {
             self.next_try = Some(now + RETRY);
             // No default filters (dead zone, jitter): read_pad keeps the d-pad one itself.
             match gilrs::GilrsBuilder::new().with_default_filters(false).set_update_state(false).build() {
@@ -841,6 +845,10 @@ impl Gamepad {
     /// The pad that plays: on Windows retail's (read_retail); else gilrs's (padguid's when connected, else the last
     /// one touched), else SDL's (Linux) or XInput's (Windows without DirectInput).
     fn read_pad(&mut self, set: &Settings, dt: f32) -> Option<Pad> {
+        #[cfg(target_os = "android")]
+        if let Some(p) = super::gamepad_android::state() {
+            return Some(p);
+        }
         #[cfg(windows)]
         if self.dinput.is_some() {
             return self.read_retail(set, dt);
@@ -1015,6 +1023,10 @@ impl Gamepad {
 
     /// The connected pads' names (gilrs's, else SDL's), the one that plays first.
     pub fn pads(&self) -> Vec<String> {
+        #[cfg(target_os = "android")]
+        if let Some(name) = super::gamepad_android::name() {
+            return vec![name];
+        }
         #[cfg(windows)]
         if let (true, Some(d)) = (self.di_plays, &self.dinput) {
             return vec![d.name.clone()];

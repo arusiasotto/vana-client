@@ -1,0 +1,11 @@
+name = "Character Capture"
+version = "0.1.10"
+description = "Captures a character snapshot for porting to Vanadreams: jobs, skills, bags, gear, currencies, quests and missions (the charcapture addon). Reads only; sends nothing."
+permissions = ["packets.read", "files.shared"]
+
+[commands.capture]
+help = "Writes a Vanadreams character snapshot JSON and prints a summary."
+args = ""
+forms = [
+  { args = "show", help = "Prints the last capture summary again." },
+]
