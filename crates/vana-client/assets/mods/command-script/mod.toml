@@ -1,0 +1,21 @@
+name = "Command Script"
+version = "1.0.15"
+description = "Named multi-line command scripts per job (and for every job): run them with //cs <word>. Lines can wait, chain with then after the previous spell or ability finishes, or burst for no link gap (from vanagear's command scripting, without gear)."
+authors = ["Arusia"]
+permissions = ["actions", "automation", "ui.native", "packets.read"]
+
+[settings.on]
+type = "bool"
+default = true
+label = "Command Script"
+help = "Lets //cs <word> run your saved scripts and opens the manager with //cs."
+
+[commands.cs]
+help = "Runs or edits named command scripts."
+args = "<word> | run <word> | stop | reload | list"
+forms = [
+  { args = "run <word>", help = "Runs a saved script.", params = [{ name = "word", type = "text" }] },
+  { args = "stop", help = "Stops the script that is running." },
+  { args = "reload", help = "Reads scripts from disk again." },
+  { args = "list", help = "Lists script words for this job." },
+]
