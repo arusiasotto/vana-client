@@ -51,6 +51,16 @@ Track implementation in the chat goal: **Action automation API (game.action_read
 - Changing server packets or LandSandBoat behaviour.
 - Catalogue / pending-actions UI redesign (chip can keep using the same core).
 
+## Status (Tier 1)
+
+Implemented in the client (`crates/vana-client/src/client/pending.rs`):
+
+- `game.action_ready()` — no cast bar / event timer / cutscene event.
+- `game.pending()` — outstanding ask from c2s 0x01A / 0x037 (same rules as pending-actions).
+- `actions.when_done(fn)` — one-shot callback when the ask resolves.
+
+**Command Script 1.0.16:** setting `use_client_pending` (default on) chains spells/JAs/WS via `game.pending` / `game.action_ready`; self-buffs still use `buff_gain`. Packet hooks stay available when the setting is off or the APIs are missing (mod tests).
+
 ## Branches
 
 - `feat/command-script` — Command Script mod (shipped).

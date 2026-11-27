@@ -22,6 +22,7 @@ mod monstrosity;
 mod netwait;
 mod objective;
 pub mod opening;
+mod pending;
 mod petrow;
 mod polmail;
 mod racing;
@@ -8634,6 +8635,8 @@ struct World {
     cam_keys: [u8; 2],
     /// The Lua mods of this session (docs/lua-mods.md).
     lua: lua::Host,
+    /// An outstanding spell, ability, weapon skill or item use (pending-actions rules).
+    pending_action: pending::Tracker,
     /// Misc. 4 chat filter lists (config 0xce).
     spam: spamfilter::SpamFilter,
 }
@@ -11141,6 +11144,7 @@ impl App {
                             padcfg: padcfg::PadCfg::default(),
                             cam_keys: [self.cfg.cam_keys_y as u8, self.cfg.cam_keys_x as u8],
                             lua: std::mem::take(&mut self.lobby_mods),
+                            pending_action: Default::default(),
                             spam: spamfilter::SpamFilter::new(self.cfg.ffxi_dir()),
                         }));
                         if let Phase::World(w) = &mut self.phase {
@@ -12710,6 +12714,7 @@ impl App {
                     world.lua.raise("party_buffs", vec![]);
                 }
                 NetEvent::Battle(m) => {
+                    world.pending_action.on_battle_message(world.my_id, m.message, m.data[0] as u32, m.actor);
                     world.lua.raise(
                         "battle_message",
                         vec![m.actor.into(), m.target.into(), m.message.into(), m.data[0].into(), m.data[1].into()],
@@ -12880,6 +12885,7 @@ impl App {
                 NetEvent::Monstrosity { kind, data } => monstrosity::on_data(world, kind, data),
                 NetEvent::SkillBase(s) => world.skill_base = Some(s),
                 NetEvent::Action(a) => {
+                    world.pending_action.on_action(world.my_id, &a);
                     world.lua.raise("action", vec![lua::action_json(&a)]);
                     combat::on_action(world, &a);
                 }
@@ -12891,6 +12897,7 @@ impl App {
                     combat::on_magic_scheduler(world, ids, indices, file, kind)
                 }
                 NetEvent::SystemMessage { id, para, para2 } => {
+                    world.pending_action.on_system_message(id);
                     combat::on_system_message(world, id, [para as i32, para2 as i32])
                 }
                 // One transfer at a time (DAT_10487f08): the ranking's while it runs.

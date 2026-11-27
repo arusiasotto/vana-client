@@ -342,6 +342,8 @@ pub struct Host {
     pub(in crate::client) synth_enter: bool,
     /// actions.choose's pick, held until the event's menu takes input (5 s at most).
     pub(in crate::client) choose: Option<(usize, std::time::Instant)>,
+    /// `actions.when_done` handlers waiting on `pending.resolve`.
+    pub(in crate::client) pending_waiters: Vec<(usize, mlua::RegistryKey)>,
     /// Every loaded mod, for mods.list / call / emit.
     dir: runtime::Shared,
     /// Sounds the mods asked for, for the app's mixer.
@@ -1271,9 +1273,36 @@ fn emit_mod_events(vm: &Vm, events: &[(String, &'static str, Vec<serde_json::Val
     }
 }
 
+fn fire_pending_when_done(w: &mut World) {
+    let waiters = std::mem::take(&mut w.lua.pending_waiters);
+    for (i, key) in waiters {
+        let Some(vm) = w.lua.vms.get(i) else { continue };
+        if vm.suspended.is_some() {
+            continue;
+        }
+        lend(vm, w, |vm| {
+            let t = match w.pending_action.result_table(&vm.lua) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::warn!("lua: pending when_done: {e}");
+                    return;
+                }
+            };
+            let Ok(f) = vm.lua.registry_value::<mlua::Function>(&key) else { return };
+            vm.call(f, t);
+        });
+    }
+    w.pending_action.clear_resolve();
+}
+
 pub(super) fn frame(w: &mut World, gu: Option<&super::game_ui::GameUi>) {
     if !w.lua.opt_owners.is_empty() {
         release_options(w);
+    }
+    let now = std::time::Instant::now();
+    w.pending_action.tick(now);
+    if w.pending_action.resolve {
+        fire_pending_when_done(w);
     }
     let mut host = Host::park(&mut w.lua);
     host.gu = gu.map(|g| g as *const _);
@@ -1467,6 +1496,10 @@ pub(super) fn frame(w: &mut World, gu: Option<&super::game_ui::GameUi>) {
                     vm.emit("frame", dt);
                 }
             });
+        }
+        for (i, vm) in host.vms.iter().enumerate() {
+            let keys = std::mem::take(&mut vm.st.borrow_mut().when_done);
+            host.pending_waiters.extend(keys.into_iter().map(|k| (i, k)));
         }
     }
     for vm in &host.vms {

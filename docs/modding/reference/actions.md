@@ -1961,3 +1961,22 @@ end)
 ```
 
 The direction is kept to 256 steps a circle. You keep facing it while you stand still, until you move, lock on, or the camera turns you.
+
+## `actions.when_done`
+
+```lua
+actions.when_done(fn) -> nil
+```
+
+Registers `fn` to run once when the current [`game.pending()`](game.md#gamepending) ask is answered on the wire, refused, or times out. The argument is a table with `state` (`answered`, `refused`, `quiet`, or `idle` if nothing was pending when it fired).
+
+**Needs** `actions` or `automation`, like other `actions.*` calls.
+
+**Example**
+
+```lua
+actions.cast(spell_id, "<me>")
+actions.when_done(function(r)
+  if r.state == "answered" then chat.add("Cast landed.") end
+end)
+```

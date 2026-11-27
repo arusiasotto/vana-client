@@ -1243,6 +1243,20 @@ pub const FUNCS: &[Func] = &[
     },
     Func {
         ns: "game",
+        name: "action_ready",
+        doc: "True when the client is not blocked by a cast bar, an event timer, or a cutscene event — safe to queue another spell, ability, weapon skill or item.",
+        params: &[],
+        ret: "boolean",
+    },
+    Func {
+        ns: "game",
+        name: "pending",
+        doc: "The outstanding spell, weapon skill, job ability or item use the client is waiting on (same rules as the Pending Actions mod): {kind, id, target, state ('waiting' | 'refused' | 'quiet'), why?, waiting, age}, or nil when none or still inside the short hide-after-ask window.",
+        params: &[],
+        ret: "table?",
+    },
+    Func {
+        ns: "game",
         name: "cast",
         doc: "Our cast bar while it shows: {spell (none for an event's bar), total and left (seconds), progress 0..1, event}.",
         params: &[],
@@ -1652,6 +1666,13 @@ pub const FUNCS: &[Func] = &[
         name: "turn",
         doc: "Faces a heading (entity.heading's units).",
         params: &[("heading", "number", "")],
+        ret: "",
+    },
+    Func {
+        ns: "actions",
+        name: "when_done",
+        doc: "Runs the function once after the current `game.pending()` ask is answered, refused, or times out (same frame the client learns it). The argument is {state, kind?, id?, target?, why?}: state is answered, refused, quiet, or idle when nothing was pending.",
+        params: &[("fn", "function", "")],
         ret: "",
     },
     Func {

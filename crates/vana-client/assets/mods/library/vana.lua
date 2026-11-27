@@ -1117,6 +1117,14 @@ function game.raycast(from, to) end
 ---@return number?
 function game.floor(x, z, y) end
 
+--- True when not blocked by a cast bar, event timer, or cutscene event.
+---@return boolean
+function game.action_ready() end
+
+--- Outstanding spell / ws / ability / item waiting on the server, or nil.
+---@return table?
+function game.pending() end
+
 --- Our cast bar while it shows: {spell (none for an event's bar), total and left (seconds), progress 0..1, event}.
 ---@return table?
 function game.cast() end
@@ -1385,6 +1393,10 @@ function actions.stop() end
 --- Faces a heading (entity.heading's units).
 ---@param heading number 
 function actions.turn(heading) end
+
+--- Runs once when the current pending action finishes (see game.pending).
+---@param fn fun(result: table)
+function actions.when_done(fn) end
 
 --- A zone's dialogue entry by its id in the install, as the file holds it: Shift-JIS bytes with the game's codes (text.from_shift_jis reads it); nil when there is none.
 ---@param zone integer 
