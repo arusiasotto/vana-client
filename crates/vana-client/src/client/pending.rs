@@ -110,12 +110,7 @@ impl Tracker {
         ask.state = AskState::Refused;
         ask.since = Instant::now();
         ask.why.clear();
-        self.last = Some(LastResult::Refused {
-            kind: ask.kind,
-            id: ask.id,
-            target: ask.target,
-            why: ask.why.clone(),
-        });
+        self.last = Some(LastResult::Refused { kind: ask.kind, id: ask.id, target: ask.target, why: ask.why.clone() });
         self.resolve = true;
     }
 
@@ -131,12 +126,7 @@ impl Tracker {
         ask.state = AskState::Refused;
         ask.since = Instant::now();
         ask.why.clear();
-        self.last = Some(LastResult::Refused {
-            kind: ask.kind,
-            id: ask.id,
-            target: ask.target,
-            why: String::new(),
-        });
+        self.last = Some(LastResult::Refused { kind: ask.kind, id: ask.id, target: ask.target, why: String::new() });
         self.resolve = true;
     }
 
@@ -260,12 +250,8 @@ fn action_id(a: &Action) -> Option<u16> {
 }
 
 fn answers(ask: &Ask, a: &Action) -> bool {
-    const ANSWERS: [(Kind, &[u8]); 4] = [
-        (Kind::Spell, &[4, 8]),
-        (Kind::Ws, &[3, 7, 11]),
-        (Kind::Ability, &[6, 14, 15]),
-        (Kind::Item, &[5, 9]),
-    ];
+    const ANSWERS: [(Kind, &[u8]); 4] =
+        [(Kind::Spell, &[4, 8]), (Kind::Ws, &[3, 7, 11]), (Kind::Ability, &[6, 14, 15]), (Kind::Item, &[5, 9])];
     let Some(cats) = ANSWERS.iter().find(|(k, _)| *k == ask.kind).map(|(_, c)| *c) else {
         return false;
     };
@@ -309,8 +295,10 @@ fn ws_refusal(id: u16, param: u32) -> bool {
 }
 
 fn ability_refusal(id: u16, param: u32, named: bool) -> bool {
-    ids!(id, 4, 5, 12, 71, 72, 78, 87, 88, 94, 154, 155, 192, 199, 215, 216, 235, 307, 315, 316, 328, 336, 337, 347, 356, 428, 429, 446, 523, 524, 525, 561, 574, 662, 666, 745)
-        && (param == 0 || named)
+    ids!(
+        id, 4, 5, 12, 71, 72, 78, 87, 88, 94, 154, 155, 192, 199, 215, 216, 235, 307, 315, 316, 328, 336, 337, 347,
+        356, 428, 429, 446, 523, 524, 525, 561, 574, 662, 666, 745
+    ) && (param == 0 || named)
 }
 
 fn item_refusal(id: u16, param: u32, named: bool) -> bool {
@@ -320,8 +308,10 @@ fn item_refusal(id: u16, param: u32, named: bool) -> bool {
     if id == 0 && named {
         return true;
     }
-    ids!(id, 12, 55, 56, 62, 78, 92, 111, 155, 215, 246, 247, 308, 316, 356, 410, 443, 444, 445, 446, 514, 517, 518, 523, 580, 759)
-        && (param == 0 || named)
+    ids!(
+        id, 12, 55, 56, 62, 78, 92, 111, 155, 215, 246, 247, 308, 316, 356, 410, 443, 444, 445, 446, 514, 517, 518,
+        523, 580, 759
+    ) && (param == 0 || named)
 }
 
 fn fill_pending(_lua: &mlua::Lua, t: &mlua::Table, a: &Ask) -> mlua::Result<()> {
@@ -344,12 +334,7 @@ mod tests {
     fn magic_finish_answers_spell_ask() {
         let mut t = Tracker::default();
         t.start(Kind::Spell, 247, 1);
-        let a = Action {
-            actor: 1,
-            category: 4,
-            arg: 247,
-            ..Action::default()
-        };
+        let a = Action { actor: 1, category: 4, arg: 247, ..Action::default() };
         t.on_action(1, &a);
         assert!(!t.is_waiting());
         assert!(matches!(t.last, Some(LastResult::Answered { id: 247, .. })));
