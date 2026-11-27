@@ -13,8 +13,48 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// The list's format this client reads.
 const FORMAT: u32 = 1;
 
-/// In a folder the catalogue installed: the version.
+/// In a folder the catalogue installed: line 1 version, line 2 `standard` or `server`.
 const MARK: &str = ".catalogue";
+
+fn write_mark(dir: &Path, version: &str, source: Source) {
+    let tag = if source == Source::Server { "server" } else { "standard" };
+    let _ = std::fs::write(dir.join(MARK), format!("{version}\n{tag}"));
+}
+
+fn mark_version(text: &str) -> &str {
+    text.lines().next().unwrap_or("").trim()
+}
+
+fn mark_source(text: &str) -> Option<Source> {
+    match text.lines().nth(1).map(str::trim) {
+        Some("server") => Some(Source::Server),
+        Some("standard") => Some(Source::Standard),
+        _ => None,
+    }
+}
+
+fn server_cache_key(server_keys: &[String]) -> String {
+    server_keys.first().cloned().unwrap_or_else(|| "_default".into())
+}
+
+fn cache_path(source: Source, list: List, server_keys: &[String]) -> std::path::PathBuf {
+    match source {
+        Source::Standard => crate::config::catalogue_dir().join(source.cache_name(list)),
+        Source::Server => {
+            crate::config::catalogue_dir().join("server").join(server_cache_key(server_keys)).join(list.file())
+        }
+    }
+}
+
+fn fetch_http_text(url: &str) -> Result<String> {
+    match super::updater::get_text(url) {
+        Ok(t) => Ok(t),
+        Err(e) => {
+            let alt = url.replace("/master/", "/main/");
+            if alt != url { super::updater::get_text(&alt).map_err(|_| e) } else { Err(e) }
+        }
+    }
+}
 
 /// Hosts an archive may come from (VANA_MOD_CATALOGUE lifts this for test lists).
 const HOSTS: [&str; 3] = ["https://github.com/", "https://raw.githubusercontent.com/", "https://codeload.github.com/"];
@@ -85,9 +125,26 @@ pub enum List {
     Mods,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Source {
+    Standard,
+    Server,
+}
+
+impl Source {
+    fn cache_name(self, list: List) -> &'static str {
+        match (self, list) {
+            (Source::Standard, List::Mods) => "standard/mods.json",
+            (Source::Standard, List::Dats) => "standard/dats.json",
+            (Source::Server, List::Mods) => "server/mods.json",
+            (Source::Server, List::Dats) => "server/dats.json",
+        }
+    }
+}
+
 impl List {
     /// Its file in catalogue/ (and the copy kept from the last fetch).
-    fn file(self) -> &'static str {
+    pub fn file(self) -> &'static str {
         match self {
             List::Dats => "dats.json",
             List::Mods => "mods.json",
@@ -99,6 +156,13 @@ impl List {
         match self {
             List::Dats => "VANA_DAT_CATALOGUE",
             List::Mods => "VANA_MOD_CATALOGUE",
+        }
+    }
+
+    fn server_env(self) -> &'static str {
+        match self {
+            List::Dats => "VANA_SERVER_DAT_CATALOGUE",
+            List::Mods => "VANA_SERVER_MOD_CATALOGUE",
         }
     }
 }
@@ -156,36 +220,74 @@ pub fn parse(text: &str, any_host: bool) -> Result<Vec<Entry>> {
         .collect())
 }
 
-/// A list: fetched, else the copy kept from the last fetch; only its kind's entries (packs or Lua mods).
-/// VANA_DAT_CATALOGUE / VANA_MOD_CATALOGUE: another list (a URL or a file).
-pub fn fetch(list: List) -> Result<Vec<Entry>> {
+pub fn fetch_from(source: Source, list: List, server_keys: &[String]) -> Result<Vec<Entry>> {
     let want = |e: &Entry| (e.kind != "lua") == (list == List::Dats);
-    fetch_all(list).map(|v| v.into_iter().filter(want).collect())
+    fetch_all(source, list, server_keys).map(|v| v.into_iter().filter(want).collect())
 }
 
-fn fetch_all(list: List) -> Result<Vec<Entry>> {
-    let over = std::env::var(list.env()).ok();
-    let kept = crate::config::catalogue_dir().join(list.file());
-    let got = match over.as_deref() {
-        Some(p) if !p.starts_with("http") => std::fs::read_to_string(p).with_context(|| p.to_string()),
-        Some(u) => super::updater::get_text(u),
-        None => super::updater::get_text(&url(list)),
+fn migrate_flat_cache(list: List) {
+    let dir = crate::config::catalogue_dir();
+    let flat = dir.join(list.file());
+    let standard = dir.join("standard").join(list.file());
+    if flat.is_file() && !standard.is_file() {
+        let _ = std::fs::create_dir_all(standard.parent().unwrap_or(Path::new(".")));
+        let _ = std::fs::rename(&flat, &standard);
+    }
+}
+
+fn resolve_url(source: Source, list: List, server_keys: &[String]) -> (Option<String>, bool) {
+    match source {
+        Source::Standard => {
+            let over = std::env::var(list.env()).ok();
+            (over.clone().or_else(|| Some(url(list))), over.is_some())
+        }
+        Source::Server => {
+            if let Ok(over) = std::env::var(list.server_env()) {
+                return (Some(over), true);
+            }
+            let store = crate::config::ServerCatalogues::load();
+            let u = store.url_for(server_keys, list.file());
+            (u.clone(), u.is_some())
+        }
+    }
+}
+
+fn fetch_all(source: Source, list: List, server_keys: &[String]) -> Result<Vec<Entry>> {
+    if source == Source::Standard {
+        migrate_flat_cache(list);
+    }
+    let (resolved, any_host) = resolve_url(source, list, server_keys);
+    let Some(fetch_url) = resolved else {
+        return Ok(Vec::new());
     };
+    let kept = cache_path(source, list, server_keys);
+    let got = if !fetch_url.starts_with("http") {
+        std::fs::read_to_string(&fetch_url).with_context(|| fetch_url.clone())
+    } else {
+        fetch_http_text(&fetch_url)
+    };
+    let keep = source == Source::Standard && std::env::var(list.env()).is_err()
+        || source == Source::Server && std::env::var(list.server_env()).is_err();
     match got {
         Ok(text) => {
-            let list = parse(&text, over.is_some())?;
-            if over.is_none() {
+            let entries = parse(&text, any_host)?;
+            if keep {
                 let _ = std::fs::create_dir_all(kept.parent().unwrap_or(Path::new(".")));
                 let _ = std::fs::write(&kept, &text);
             }
-            Ok(list)
+            Ok(entries)
         }
-        Err(e) if over.is_none() => {
-            log::info!("mod catalogue: {e:#}; using the last copy");
-            parse(&std::fs::read_to_string(&kept).map_err(|_| e)?, false)
+        Err(e) if keep => {
+            log::info!("mod catalogue ({source:?}): {e:#}; using the last copy");
+            parse(&std::fs::read_to_string(&kept).map_err(|_| e)?, any_host)
         }
         Err(e) => Err(e),
     }
+}
+
+pub fn clear_cache(source: Source, list: List, server_keys: &[String]) {
+    let path = cache_path(source, list, server_keys);
+    let _ = std::fs::remove_file(&path);
 }
 
 /// The material pack's id: its folder in the data folder (material::dir).
@@ -203,10 +305,22 @@ pub fn installed(root: &Path, id: &str) -> Option<String> {
         return None;
     }
     if let Ok(v) = std::fs::read_to_string(dir.join(MARK)) {
-        return Some(v.trim().to_string());
+        return Some(mark_version(&v).to_string());
     }
     let text = std::fs::read_to_string(dir.join("mod.toml")).ok();
     Some(text.and_then(|t| modpack::lua_manifest(&t, id).ok()).map_or_else(String::new, |m| m.1))
+}
+
+/// Which catalogue installed the folder (`standard` unless the mark says `server`).
+pub fn installed_source(root: &Path, id: &str) -> Option<Source> {
+    let dir = root.join(id);
+    if !dir.is_dir() {
+        return None;
+    }
+    let Ok(text) = std::fs::read_to_string(dir.join(MARK)) else {
+        return Some(Source::Standard);
+    };
+    mark_source(&text).or(Some(Source::Standard))
 }
 
 /// Whether to offer the entry: Some(false) to install, Some(true) to update (a newer version than `have`).
@@ -262,7 +376,7 @@ fn fetch_files(e: &Entry, work: &Path, progress: &AtomicU32) -> Result<()> {
 /// Downloads, checks and unpacks an entry's archives (or puts its files) into `root/<id>` (an older copy replaced).
 /// `progress` counts per mille: each archive's download is four fifths of its share, its unpacking the rest. A standard
 /// Lua mod is given the permissions it asks for. Returns the folder's name.
-pub fn install(e: &Entry, root: &Path, progress: &AtomicU32) -> Result<String> {
+pub fn install(e: &Entry, root: &Path, progress: &AtomicU32, source: Source) -> Result<String> {
     if e.files.iter().any(|f| f.path.is_some()) {
         std::fs::create_dir_all(root)?;
         let work = modpack::work_dir(root, &e.id)?;
@@ -270,9 +384,11 @@ pub fn install(e: &Entry, root: &Path, progress: &AtomicU32) -> Result<String> {
             let _ = std::fs::remove_dir_all(&work);
             return Err(err);
         }
-        std::fs::write(work.join(MARK), &e.version)?;
+        write_mark(&work, &e.version, source);
         modpack::place(&work, &root.join(&e.id))?;
-        super::lua::grant_manifest(&root.join(&e.id));
+        if source == Source::Standard {
+            super::lua::grant_manifest(&root.join(&e.id));
+        }
         progress.store(1000, Ordering::Relaxed);
         log::info!("mods: installed {} {} from the standard mods", e.id, e.version);
         return Ok(e.id.clone());
@@ -319,10 +435,11 @@ pub fn install(e: &Entry, root: &Path, progress: &AtomicU32) -> Result<String> {
         let _ = std::fs::remove_dir_all(&work);
         return Err(err);
     }
-    std::fs::write(work.join(MARK), &e.version)?;
+    write_mark(&work, &e.version, source);
     modpack::place(&work, &root.join(&e.id))?;
     progress.store(1000, Ordering::Relaxed);
-    log::info!("mods: installed {} {} from the catalogue", e.id, e.version);
+    let from = if source == Source::Server { "a server catalogue" } else { "the standard mods" };
+    log::info!("mods: installed {} {} from {}", e.id, e.version, from);
     Ok(e.id.clone())
 }
 

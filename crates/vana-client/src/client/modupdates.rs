@@ -17,9 +17,10 @@ pub(super) fn frame(w: &mut World) {
             return;
         }
         w.mod_updates.started = true;
+        let keys = w.catalogue_keys.clone();
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let _ = tx.send((updates(List::Mods), updates(List::Dats)));
+            let _ = tx.send((updates(List::Mods, &keys), updates(List::Dats, &keys)));
         });
         w.mod_updates.rx = Some(rx);
         return;
@@ -38,15 +39,19 @@ pub(super) fn frame(w: &mut World) {
 }
 
 /// How many of the list's entries are installed here at an older version.
-fn updates(list: List) -> usize {
-    let Ok(entries) = catalogue::fetch(list) else { return 0 };
-    entries
-        .iter()
-        .filter(|e| {
-            let have = catalogue::installed(&catalogue::root_of(e), &e.id);
-            catalogue::offer(e, have.as_deref()) == Some(true)
-        })
-        .count()
+fn updates(list: List, server_keys: &[String]) -> usize {
+    let mut ids = std::collections::HashSet::new();
+    for source in [catalogue::Source::Standard, catalogue::Source::Server] {
+        let keys = if source == catalogue::Source::Server { server_keys } else { &[] as &[String] };
+        let Ok(entries) = catalogue::fetch_from(source, list, keys) else { continue };
+        for e in entries {
+            let have = catalogue::installed(&catalogue::root_of(&e), &e.id);
+            if catalogue::offer(&e, have.as_deref()) == Some(true) {
+                ids.insert(e.id);
+            }
+        }
+    }
+    ids.len()
 }
 
 /// The line for `mods` Lua mod and `packs` DAT pack updates; none when there are none.
