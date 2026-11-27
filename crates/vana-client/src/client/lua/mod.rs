@@ -344,6 +344,8 @@ pub struct Host {
     pub(in crate::client) choose: Option<(usize, std::time::Instant)>,
     /// `actions.when_done` handlers waiting on `pending.resolve`.
     pub(in crate::client) pending_waiters: Vec<(usize, mlua::RegistryKey)>,
+    /// `actions.when_done` with no ask outstanding: fired at the start of the next frame.
+    pub(in crate::client) pending_idle_waiters: Vec<(usize, mlua::RegistryKey)>,
     /// Every loaded mod, for mods.list / call / emit.
     dir: runtime::Shared,
     /// Sounds the mods asked for, for the app's mixer.
@@ -1273,11 +1275,37 @@ fn emit_mod_events(vm: &Vm, events: &[(String, &'static str, Vec<serde_json::Val
     }
 }
 
-fn fire_pending_when_done(w: &mut World) {
-    let waiters = std::mem::take(&mut w.lua.pending_waiters);
+fn fire_pending_idle_waiters(w: &mut World) {
+    let waiters = std::mem::take(&mut w.lua.pending_idle_waiters);
+    let mut leftover = Vec::new();
     for (i, key) in waiters {
         let Some(vm) = w.lua.vms.get(i) else { continue };
         if vm.suspended.is_some() {
+            leftover.push((i, key));
+            continue;
+        }
+        lend(vm, w, |vm| {
+            let t = match super::pending::Tracker::idle_table(&vm.lua) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::warn!("lua: pending when_done (idle): {e}");
+                    return;
+                }
+            };
+            let Ok(f) = vm.lua.registry_value::<mlua::Function>(&key) else { return };
+            vm.call(f, t);
+        });
+    }
+    w.lua.pending_idle_waiters = leftover;
+}
+
+fn fire_pending_when_done(w: &mut World) {
+    let waiters = std::mem::take(&mut w.lua.pending_waiters);
+    let mut leftover = Vec::new();
+    for (i, key) in waiters {
+        let Some(vm) = w.lua.vms.get(i) else { continue };
+        if vm.suspended.is_some() {
+            leftover.push((i, key));
             continue;
         }
         lend(vm, w, |vm| {
@@ -1292,13 +1320,18 @@ fn fire_pending_when_done(w: &mut World) {
             vm.call(f, t);
         });
     }
-    w.pending_action.clear_resolve();
+    let done = leftover.is_empty();
+    w.lua.pending_waiters = leftover;
+    if done {
+        w.pending_action.clear_resolve();
+    }
 }
 
 pub(super) fn frame(w: &mut World, gu: Option<&super::game_ui::GameUi>) {
     if !w.lua.opt_owners.is_empty() {
         release_options(w);
     }
+    fire_pending_idle_waiters(w);
     let now = std::time::Instant::now();
     w.pending_action.tick(now);
     if w.pending_action.resolve {
@@ -1498,8 +1531,11 @@ pub(super) fn frame(w: &mut World, gu: Option<&super::game_ui::GameUi>) {
             });
         }
         for (i, vm) in host.vms.iter().enumerate() {
-            let keys = std::mem::take(&mut vm.st.borrow_mut().when_done);
+            let mut st = vm.st.borrow_mut();
+            let keys = std::mem::take(&mut st.when_done);
             host.pending_waiters.extend(keys.into_iter().map(|k| (i, k)));
+            let idle = std::mem::take(&mut st.when_done_idle);
+            host.pending_idle_waiters.extend(idle.into_iter().map(|k| (i, k)));
         }
     }
     for vm in &host.vms {

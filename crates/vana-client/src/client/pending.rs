@@ -186,6 +186,13 @@ impl Tracker {
     pub fn clear_resolve(&mut self) {
         self.resolve = false;
     }
+
+    /// Callback argument when nothing was waiting at `actions.when_done` registration.
+    pub fn idle_table(lua: &mlua::Lua) -> mlua::Result<mlua::Table> {
+        let t = lua.create_table()?;
+        t.set("state", "idle")?;
+        Ok(t)
+    }
 }
 
 pub struct PendingView<'a> {
