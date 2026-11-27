@@ -111,10 +111,27 @@ pub fn rb(w: &mut World) {
     if w.game.get(0xc9) == 0 || w.swkbd.is_some() {
         return;
     }
+    open_over_field(w);
+}
+
+fn open_over_field(w: &mut World) {
     if !super::text_field_open(w) {
         w.typing = true;
     }
     w.swkbd = Some(Keyboard { page: first_page(5), cursor: 8, at: Default::default() });
+}
+
+/// Android system Back: dismiss the keyboard, or open it like the pad's RB without config 0xc9 (phones have no RB).
+pub fn android_back(w: &mut World) -> bool {
+    if w.swkbd.is_some() {
+        close(w);
+        return true;
+    }
+    if w.ui_hidden || super::event::active(w) {
+        return false;
+    }
+    open_over_field(w);
+    w.swkbd.is_some()
 }
 
 fn key_event(key: egui::Key, pressed: bool) -> egui::Event {

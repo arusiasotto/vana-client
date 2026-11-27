@@ -19,6 +19,42 @@ pub fn data_dir() -> PathBuf {
     app_dir(dirs::data_dir())
 }
 
+/// Android's shared storage. The game files and the installer volumes live here: app storage (`$HOME`, set by
+/// android_main) goes with the app and has no room for them.
+#[cfg(target_os = "android")]
+const SHARED_STORAGE: &str = "/storage/emulated/0";
+
+/// Where a first start installs the game files.
+pub fn default_game_dir() -> PathBuf {
+    #[cfg(target_os = "android")]
+    return PathBuf::from(SHARED_STORAGE).join("Game").join("FFXI");
+    #[cfg(not(target_os = "android"))]
+    data_dir().join("game")
+}
+
+/// `path` is in Android's app storage.
+#[cfg(target_os = "android")]
+pub fn in_app_storage(path: &std::path::Path) -> bool {
+    dirs::home_dir().is_some_and(|h| path.starts_with(h))
+}
+
+/// The Downloads folder: mod packs, Install from File, and on Android the installer volumes.
+pub fn downloads_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        let root = PathBuf::from(SHARED_STORAGE);
+        for name in ["Download", "Downloads"] {
+            let p = root.join(name);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+        return Some(root.join("Download"));
+    }
+    #[cfg(not(target_os = "android"))]
+    dirs::download_dir()
+}
+
 /// The PlayOnline Viewer's files, kept as its update leaves them (never run): its patch.ver gates a PlayOnline log-in.
 pub fn viewer_dir() -> PathBuf {
     data_dir().join("PlayOnlineViewer")
@@ -88,6 +124,163 @@ pub fn known_servers_path() -> PathBuf {
         Some(p) => PathBuf::from(p).with_file_name("known_servers.json"),
         None => data_dir().join("known_servers.json"),
     }
+}
+
+pub fn server_catalogues_path() -> PathBuf {
+    match std::env::var_os("FFXI_CONFIG") {
+        Some(p) => PathBuf::from(p).with_file_name("server_catalogues.json"),
+        None => data_dir().join("server_catalogues.json"),
+    }
+}
+
+pub fn server_catalogue_key_search(ip: std::net::Ipv4Addr, port: u16) -> String {
+    format!("{ip}-{port}")
+}
+
+pub fn server_catalogue_key_login(host: &str, auth_port: u16) -> String {
+    format!("{}-{auth_port}", host.trim().to_ascii_lowercase())
+}
+
+pub fn active_server_keys(cfg: &Config, search: Option<(std::net::Ipv4Addr, u16)>) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some((ip, port)) = search {
+        keys.push(server_catalogue_key_search(ip, port));
+    }
+    let login = server_catalogue_key_login(&cfg.server, cfg.auth_port);
+    if keys.first().is_some_and(|s| *s != login) {
+        keys.push(login);
+    } else if search.is_none() && !cfg.server.trim().is_empty() {
+        keys.push(login);
+    }
+    keys
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerCatalogueEntry {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mods: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dats: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerCatalogues {
+    #[serde(default = "server_catalogues_format")]
+    format: u32,
+    #[serde(default)]
+    servers: std::collections::BTreeMap<String, ServerCatalogueEntry>,
+}
+
+fn server_catalogues_format() -> u32 {
+    1
+}
+
+impl ServerCatalogues {
+    pub fn load() -> Self {
+        let path = server_catalogues_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(e) => {
+                log::warn!("server catalogues: {}: {e}", path.display());
+                return Self::default();
+            }
+        };
+        serde_json::from_str(&text).unwrap_or_else(|e| {
+            log::warn!("server catalogues: {} does not read ({e}); ignored", path.display());
+            Self::default()
+        })
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = server_catalogues_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        let mut f = std::fs::File::create(&tmp)?;
+        use std::io::Write;
+        f.write_all(serde_json::to_string_pretty(self)?.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    pub fn get(&self, key: &str) -> Option<&ServerCatalogueEntry> {
+        self.servers.get(key)
+    }
+
+    pub fn set(&mut self, key: &str, entry: ServerCatalogueEntry) {
+        if entry.repo.is_empty() && entry.mods.is_none() && entry.dats.is_none() {
+            self.servers.remove(key);
+        } else {
+            self.servers.insert(key.to_string(), entry);
+        }
+    }
+
+    pub fn clear(&mut self, key: &str) {
+        self.servers.remove(key);
+    }
+
+    pub fn list(&self) -> impl Iterator<Item = (&String, &ServerCatalogueEntry)> {
+        self.servers.iter()
+    }
+
+    pub fn url_for(&self, keys: &[String], list_file: &str) -> Option<String> {
+        for key in keys {
+            let Some(e) = self.servers.get(key) else { continue };
+            let raw = if list_file == "mods.json" {
+                e.mods.clone().or_else(|| (!e.repo.is_empty()).then(|| e.repo.clone()))
+            } else {
+                e.dats.clone().or_else(|| (!e.repo.is_empty()).then(|| e.repo.clone()))
+            };
+            let Some(v) = raw.filter(|s| !s.is_empty()) else { continue };
+            if v.starts_with("http") {
+                return Some(v);
+            }
+            if let Some(u) = expand_server_catalogue(&v, list_file) {
+                return Some(u);
+            }
+            if v.starts_with('/') || v.contains(std::path::MAIN_SEPARATOR) {
+                return Some(v);
+            }
+        }
+        None
+    }
+}
+
+pub fn expand_server_catalogue(repo: &str, list_file: &str) -> Option<String> {
+    let mut s = repo.trim().trim_end_matches('/').trim_end_matches(".git").to_string();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(rest) = s.strip_prefix("https://raw.githubusercontent.com/") {
+        let base = rest.trim_end_matches('/');
+        if base.ends_with("/master") {
+            return Some(format!("https://raw.githubusercontent.com/{base}/catalogue/{list_file}"));
+        }
+        return Some(format!("https://raw.githubusercontent.com/{base}/master/catalogue/{list_file}"));
+    }
+    if let Some(rest) = s.strip_prefix("https://github.com/") {
+        s = rest.to_string();
+    }
+    if s.contains("://") {
+        return None;
+    }
+    if s.starts_with('/') || (cfg!(windows) && s.contains(':')) {
+        return Some(PathBuf::from(s).join("catalogue").join(list_file).to_string_lossy().into_owned());
+    }
+    if s.contains('/') && !s.starts_with('/') {
+        return Some(format!("https://raw.githubusercontent.com/{s}/master/catalogue/{list_file}"));
+        // `fetch_http_text` tries `main` when `master` 404s.
+    }
+    None
 }
 
 /// The change notes an update left for the restarted client (client/notes.rs): in the data dir, or beside an
@@ -592,7 +785,7 @@ pub const FRAME_LIMITS: [u32; 14] = [30, 60, 75, 90, 100, 120, 144, 165, 180, 20
 impl Default for Config {
     fn default() -> Self {
         Self {
-            game_dir: data_dir().join("game"),
+            game_dir: default_game_dir(),
             installed: false,
             server: "127.0.0.1".into(),
             username: String::new(),
@@ -1105,6 +1298,29 @@ mod tests {
     fn regime_moved_with_a_config_copy() {
         assert_eq!(super::regime_moved(false), None);
         assert_eq!(super::regime_moved(true), Some(super::data_dir().join("regime")));
+    }
+
+    #[test]
+    fn expand_github_owner_repo_to_raw_url() {
+        let u = super::expand_server_catalogue("arusiasotto/vana-server-catalogue-template", "mods.json").unwrap();
+        assert_eq!(
+            u,
+            "https://raw.githubusercontent.com/arusiasotto/vana-server-catalogue-template/master/catalogue/mods.json"
+        );
+    }
+
+    #[test]
+    fn server_catalogue_url_for_repo_not_local_path() {
+        let mut store = super::ServerCatalogues::default();
+        store.set(
+            "login:example:54030",
+            super::ServerCatalogueEntry {
+                repo: "arusiasotto/vana-server-catalogue-template".into(),
+                ..Default::default()
+            },
+        );
+        let url = store.url_for(&["login:example:54030".into()], "mods.json").unwrap();
+        assert!(url.starts_with("https://raw.githubusercontent.com/"));
     }
 
     #[test]
