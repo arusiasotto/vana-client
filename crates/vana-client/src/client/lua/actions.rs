@@ -776,13 +776,7 @@ pub(super) fn install(lua: &Lua, g: &Table) -> mlua::Result<()> {
         lua.create_function(|lua, f: mlua::Function| {
             super::api::need_action(lua)?;
             let key = lua.create_registry_value(f)?;
-            let waiting = super::api::world(lua).map(|w| w.pending_action.is_waiting())?;
-            let vm_st = super::api::state(lua);
-            if waiting {
-                vm_st.borrow_mut().when_done.push(key);
-            } else {
-                vm_st.borrow_mut().when_done_idle.push(key);
-            }
+            super::api::state(lua).borrow_mut().when_done.push(key);
             Ok(())
         })?,
     )?;

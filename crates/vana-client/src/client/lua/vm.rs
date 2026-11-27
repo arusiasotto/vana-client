@@ -178,8 +178,6 @@ pub(super) struct ModState {
     pub sock_tx: Option<std::sync::mpsc::Sender<super::sock::Msg>>,
     /// One-shot handlers for `actions.when_done` (moved to the host each mod phase).
     pub when_done: Vec<RegistryKey>,
-    /// `when_done` registered with nothing waiting (idle on the next frame).
-    pub when_done_idle: Vec<RegistryKey>,
 }
 
 impl ModState {

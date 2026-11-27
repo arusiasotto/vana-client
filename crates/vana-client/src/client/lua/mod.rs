@@ -346,6 +346,8 @@ pub struct Host {
     pub(in crate::client) pending_waiters: Vec<(usize, mlua::RegistryKey)>,
     /// `actions.when_done` with no ask outstanding: fired at the start of the next frame.
     pub(in crate::client) pending_idle_waiters: Vec<(usize, mlua::RegistryKey)>,
+    /// Handlers from this mod phase; split into waiters vs idle after ops run.
+    pub(in crate::client) pending_deferred_when_done: Vec<(usize, mlua::RegistryKey)>,
     /// Every loaded mod, for mods.list / call / emit.
     dir: runtime::Shared,
     /// Sounds the mods asked for, for the app's mixer.
@@ -1531,11 +1533,8 @@ pub(super) fn frame(w: &mut World, gu: Option<&super::game_ui::GameUi>) {
             });
         }
         for (i, vm) in host.vms.iter().enumerate() {
-            let mut st = vm.st.borrow_mut();
-            let keys = std::mem::take(&mut st.when_done);
-            host.pending_waiters.extend(keys.into_iter().map(|k| (i, k)));
-            let idle = std::mem::take(&mut st.when_done_idle);
-            host.pending_idle_waiters.extend(idle.into_iter().map(|k| (i, k)));
+            let keys = std::mem::take(&mut vm.st.borrow_mut().when_done);
+            host.pending_deferred_when_done.extend(keys.into_iter().map(|k| (i, k)));
         }
     }
     for vm in &host.vms {
@@ -1620,6 +1619,13 @@ pub(super) fn frame(w: &mut World, gu: Option<&super::game_ui::GameUi>) {
     }
     for op in ops {
         apply(w, gu, op);
+    }
+    for (i, key) in std::mem::take(&mut w.lua.pending_deferred_when_done) {
+        if w.pending_action.is_waiting() {
+            w.lua.pending_waiters.push((i, key));
+        } else {
+            w.lua.pending_idle_waiters.push((i, key));
+        }
     }
     actions::choose_pending(w);
     for line in bind_lines {
