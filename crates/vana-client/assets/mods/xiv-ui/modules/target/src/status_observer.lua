@@ -1,4 +1,5 @@
 -- Distinguish status-valued results from damage/roll/ability-valued results.
+-- Landing message ids align with vana-client mod target-debuffs (assets/mods/target-debuffs/init.lua).
 local data=require('src.status_map')
 local M={}
 local direct={}

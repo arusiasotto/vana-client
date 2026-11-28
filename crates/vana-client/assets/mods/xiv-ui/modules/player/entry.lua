@@ -1,4 +1,4 @@
--- XIV player vitals strip: native hud.bar meters (same API as the Player Bars mod).
+-- XIV player vitals strip: native hud.bar meters (vana-client pattern; see assets/mods/player-bars/).
 local X=require('src.xiv')
 local model=require('src.vitals')
 local R=X.renderer()

@@ -37,15 +37,24 @@ With the matching `mod_*` toggles on, panels hide or redraw the usual combat HUD
 
 The client **Timers** edge window (especially **recast** lists) is **not** replaced — keep Timers or another mod if you want recasts.
 
-## Third-party attributions
+## Attributions
 
-- **Party trust job hints** (`modules/party/src/trusts.lua`): NPC name → job table derived from [Tylas11/XivParty](https://github.com/Tylas11/XivParty) `jobs.lua` (also shipped in [maybeLynd/XivUI](https://github.com/maybeLynd/XivUI)). The file includes the upstream BSD-3 notice block from `jobs.lua`. XIV-UI is not affiliated with, sponsored by, or endorsed by XivParty or XivUI.
-- **Job badge art** (`img/jobs/*.png`): rasterized from this repository’s modern job pictograms at `crates/vana-client/assets/modern/svg/jobs/*.svg` (vana-client catalogue assets; same glyphs as the native party list). Not from XivUI or third-party addon art.
-- **Player vitals strip**: native `hud.bar` HP/MP/TP (same API as the bundled `player-bars` mod); no `m5_*` fill PNGs.
-- **Party list vitals / cast strips**: native `hud.bar`; job badges use `img/jobs/`.
-- **Target, focus/last, cast, XP bars**: native `hud.bar`; no bar track/fill PNGs.
-- **XP mog-house marker**: rounded `hud.rect` (Vana’diel moon % tints fill).
-- **XP gain / rate math** (`modules/exp/src/points.lua`): adapted from bundled **[xp-tracker](crates/vana-client/assets/mods/xp-tracker/)** in this repo (not third-party).
+### vana-client (this repository, MIT)
+
+Reused or aligned with other **vana-client** catalogue assets — not third-party.
+
+| What | Where in xiv-ui | vana-client source |
+|------|-----------------|-------------------|
+| Job badge PNGs | `img/jobs/*.png` | [`assets/modern/svg/jobs/*.svg`](../../modern/svg/jobs/) — see [`img/jobs/README.md`](img/jobs/README.md) |
+| EXP / merit / JP gain math | `modules/exp/src/points.lua` | [`assets/mods/xp-tracker/init.lua`](../../mods/xp-tracker/init.lua) (v1.0.2) |
+| Player HP/MP/TP strip | `modules/player/` (`hud.bar`) | Same client **`hud.bar`** pattern as [`assets/mods/player-bars/init.lua`](../../mods/player-bars/init.lua); layout/UI differ |
+| Status land / expire heuristics | `modules/target/src/status_observer.lua` | Battle message ids aligned with [`assets/mods/target-debuffs/init.lua`](../../mods/target-debuffs/init.lua); logic is suite-specific |
+| Action → status fact tables | `modules/target/src/budget_data/*.lua` | Compiled from **vana-client** game/action data (in-repo export; sharded for M18 budget) |
+| Bars, icons, chrome | all panels | Client **`hud.bar`**, **`hud.icon`**, **`hud.rect`** (no shipped bar/status PNG dumps) |
+
+### Third-party (external)
+
+- **Party trust job hints** (`modules/party/src/trusts.lua`): NPC name → job table derived from [Tylas11/XivParty](https://github.com/Tylas11/XivParty) `jobs.lua`. Full **BSD-3** notice in file. XIV-UI is not affiliated with XivParty.
 
 ## Manual check before merge
 

@@ -1,4 +1,4 @@
--- Static facts, bounded compile unit; derived byte-for-value from B20.
+-- Static facts, bounded compile unit; vana-client game/action export (B20 shard).
 return {
 {[1]="actions",[2]="ability",[3]=51,[4]={[1]={["effect"]=64,["formula"]="FIXED",["landed"]={[115]=true},["param"]="E",["target"]="self"}}},
 {[1]="actions",[2]="ability",[3]=52,[4]={[1]={["effect"]=11,["formula"]="JA_CHARM_BIND",["landed"]={[127]=true},["param"]="E",["target"]="enemy"}}},

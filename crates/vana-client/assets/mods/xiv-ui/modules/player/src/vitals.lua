@@ -1,4 +1,4 @@
--- Pure real-value normalization. TP display fills at XI's 1000 readiness point.
+-- Pure real-value normalization (vana-client player vitals; TP ready at 1000 / cap 3000 like player-bars).
 local M={}
 local function number(v)return type(v)=='number' and v==v and v>=0 and v<math.huge and v or nil end
 function M.read(p)

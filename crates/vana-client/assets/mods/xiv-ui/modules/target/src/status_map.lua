@@ -1,4 +1,5 @@
 -- Aggregation only: all leaves are loaded in separate entry slices.
+-- budget_data/* tables: vana-client action/status facts (in-repo compile; sharded for M18 budget).
 local out={actions={ability={},pet={},spell={},ws={}},ends={}}
 for _,r in ipairs(require('src.budget_data.src_status_map_000')) do if r[1]=='actions' then out.actions[r[2]][r[3]]=r[4] else out.ends[r[2]]=r[3] end end
 for _,r in ipairs(require('src.budget_data.src_status_map_001')) do if r[1]=='actions' then out.actions[r[2]][r[3]]=r[4] else out.ends[r[2]]=r[3] end end
