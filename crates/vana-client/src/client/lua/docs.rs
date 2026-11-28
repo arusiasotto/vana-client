@@ -1244,14 +1244,14 @@ pub const FUNCS: &[Func] = &[
     Func {
         ns: "game",
         name: "action_ready",
-        doc: "True when the client is not blocked by a cast bar, an event timer, or a cutscene event — safe to queue another spell, ability, weapon skill or item.",
+        doc: "True when the client is not blocked by an outstanding action ask, a cast bar, an event timer, or a cutscene event — safe to queue another spell, ability, weapon skill or item.",
         params: &[],
         ret: "boolean",
     },
     Func {
         ns: "game",
         name: "pending",
-        doc: "The outstanding spell, weapon skill, job ability or item use the client is waiting on (same rules as the Pending Actions mod): {kind, id, target, state ('waiting' | 'refused' | 'quiet'), why?, waiting, age}, or nil when none or still inside the short hide-after-ask window.",
+        doc: "The outstanding spell, weapon skill, job ability or item use the client is waiting on: {kind, id, target, state ('waiting' | 'casting' | 'refused' | 'quiet'), why?, waiting, age}, or nil when none or still inside the short hide-after-ask window.",
         params: &[],
         ret: "table?",
     },
@@ -1671,7 +1671,7 @@ pub const FUNCS: &[Func] = &[
     Func {
         ns: "actions",
         name: "when_done",
-        doc: "Runs the function once after the current `game.pending()` ask is answered, refused, or times out (same frame the client learns it). The argument is {state, kind?, id?, target?, why?}: state is answered, refused, quiet, or idle when nothing was pending.",
+        doc: "Runs the function once after the current `game.pending()` ask completes: answered (finish packet for spells and weapon skills), interrupted, refused, quiet, or replaced. The argument is {state, kind?, id?, target?, why?}: state is answered, interrupted, refused, quiet, replaced, or idle when nothing was pending.",
         params: &[("fn", "function", "")],
         ret: "",
     },

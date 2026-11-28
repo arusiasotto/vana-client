@@ -1968,7 +1968,7 @@ The direction is kept to 256 steps a circle. You keep facing it while you stand 
 actions.when_done(fn) -> nil
 ```
 
-Registers `fn` to run once when the current [`game.pending()`](game.md#gamepending) ask is answered on the wire, refused, or times out. The argument is a table with `state` (`answered`, `refused`, `quiet`, or `idle` if nothing was pending when it fired).
+Registers `fn` to run once when the current [`game.pending()`](game.md#gamepending) ask finishes on the wire: the action completes (`answered`), is interrupted (`interrupted`), refused, times out (`quiet`), or is superseded (`replaced`). For spells and weapon skills, `answered` means the finish packet, not the cast/skill start. The argument is a table with `state` (`answered`, `interrupted`, `refused`, `quiet`, `replaced`, or `idle` if nothing was pending when it fired).
 
 **Needs** `actions` or `automation`, like other `actions.*` calls.
 
@@ -1977,6 +1977,6 @@ Registers `fn` to run once when the current [`game.pending()`](game.md#gamependi
 ```lua
 actions.cast(spell_id, "<me>")
 actions.when_done(function(r)
-  if r.state == "answered" then chat.add("Cast landed.") end
+  if r.state == "answered" then chat.add("Cast finished.") end
 end)
 ```

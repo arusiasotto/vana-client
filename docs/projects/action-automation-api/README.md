@@ -55,7 +55,7 @@ Track implementation in the chat goal: **Action automation API (game.action_read
 
 Implemented in the client (`crates/vana-client/src/client/pending.rs`):
 
-- `game.action_ready()` — no cast bar / event timer / cutscene event.
+- `game.action_ready()` — no outstanding ask, cast bar, event timer, or cutscene event.
 - `game.pending()` — outstanding ask from c2s 0x01A / 0x037 (same rules as pending-actions).
 - `actions.when_done(fn)` — one-shot callback when the ask resolves.
 

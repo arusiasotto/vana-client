@@ -1311,7 +1311,7 @@ end
 game.action_ready() -> boolean
 ```
 
-True when no cast bar, event timer, or cutscene event is blocking player commands.
+True when no outstanding action ask (`game.pending()` waiting), cast bar, event timer, or cutscene event is blocking player commands.
 
 ## `game.pending`
 
@@ -1326,7 +1326,8 @@ The outstanding spell, weapon skill, job ability or item use the client asked fo
 | `kind` | `"spell"`, `"ws"`, `"ability"`, or `"item"`. |
 | `id` | Spell, ability or item id (abilities use the name-table id). |
 | `target` | Target server id. |
-| `state` | `"waiting"`, `"refused"`, or `"quiet"` (no answer within the timeout). |
+| `state` | `"waiting"`, `"casting"` (accepted, not finished yet), `"refused"`, or `"quiet"` (no answer within the timeout). |
+| `why` | Refusal line text when `state` is `"refused"` (same as `res.message` for the battle message). Omitted when empty (e.g. system message 225). |
 | `waiting` | Whether the ask is still open. |
 | `age` | Seconds since the ask went out. |
 

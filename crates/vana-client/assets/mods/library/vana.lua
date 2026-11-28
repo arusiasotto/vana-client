@@ -1117,11 +1117,11 @@ function game.raycast(from, to) end
 ---@return number?
 function game.floor(x, z, y) end
 
---- True when the client is not blocked by a cast bar, an event timer, or a cutscene event — safe to queue another spell, ability, weapon skill or item.
+--- True when the client is not blocked by an outstanding action ask, a cast bar, an event timer, or a cutscene event — safe to queue another spell, ability, weapon skill or item.
 ---@return boolean
 function game.action_ready() end
 
---- The outstanding spell, weapon skill, job ability or item use the client is waiting on (same rules as the Pending Actions mod): {kind, id, target, state ('waiting' | 'refused' | 'quiet'), why?, waiting, age}, or nil when none or still inside the short hide-after-ask window.
+--- The outstanding spell, weapon skill, job ability or item use the client is waiting on: {kind, id, target, state ('waiting' | 'casting' | 'refused' | 'quiet'), why?, waiting, age}, or nil when none or still inside the short hide-after-ask window.
 ---@return table?
 function game.pending() end
 
@@ -1394,7 +1394,7 @@ function actions.stop() end
 ---@param heading number 
 function actions.turn(heading) end
 
---- Runs the function once after the current `game.pending()` ask is answered, refused, or times out (same frame the client learns it). The argument is {state, kind?, id?, target?, why?}: state is answered, refused, quiet, or idle when nothing was pending.
+--- Runs the function once after the current `game.pending()` ask completes: answered (finish packet for spells and weapon skills), interrupted, refused, quiet, or replaced. The argument is {state, kind?, id?, target?, why?}: state is answered, interrupted, refused, quiet, replaced, or idle when nothing was pending.
 ---@param fn function 
 function actions.when_done(fn) end
 

@@ -12714,7 +12714,15 @@ impl App {
                     world.lua.raise("party_buffs", vec![]);
                 }
                 NetEvent::Battle(m) => {
-                    world.pending_action.on_battle_message(world.my_id, m.message, m.data[0] as u32, m.actor);
+                    let refusal_why =
+                        pending::refusal_text(world, m.actor, m.target, m.message, m.data[0] as u32, m.data[1] as u32);
+                    world.pending_action.on_battle_message(
+                        world.my_id,
+                        m.actor,
+                        m.message,
+                        m.data[0] as u32,
+                        refusal_why,
+                    );
                     world.lua.raise(
                         "battle_message",
                         vec![m.actor.into(), m.target.into(), m.message.into(), m.data[0].into(), m.data[1].into()],
