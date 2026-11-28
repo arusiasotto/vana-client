@@ -199,7 +199,6 @@ function M.step(state)
   if state.phase == "entry" then
     _ENV.settings = state.opts.settings
     _ENV.bridge = state.bridge
-    _ENV.__xiv_panel_alias = prefix
     local ok, run_err = pcall(function()
       local text = fs.read(mod_dir .. "/entry.lua")
       local body, err = load(text, "@" .. mod_dir .. "/entry.lua", "t", _ENV)
@@ -208,7 +207,6 @@ function M.step(state)
     end)
     _ENV.require = state.saved_req
     _ENV.settings = state.saved_settings
-    _ENV.__xiv_panel_alias = nil
     if state.unwrap then state.unwrap(); state.unwrap = nil end
     if ok and state.bridge.get_config then
       local api = state.bridge.get_config(prefix)
