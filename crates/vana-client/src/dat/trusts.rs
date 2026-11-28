@@ -10,8 +10,8 @@ const TRUST_SPELL_HI: i64 = 1023;
 const POOL_BASE: i64 = 5000;
 
 static JOB: [&str; 23] = [
-    "?", "WAR", "MNK", "WHM", "BLM", "RDM", "THF", "PLD", "DRK", "BST", "BRD", "RNG", "SAM", "NIN", "DRG", "SMN", "BLU",
-    "COR", "PUP", "DNC", "SCH", "GEO", "RUN",
+    "?", "WAR", "MNK", "WHM", "BLM", "RDM", "THF", "PLD", "DRK", "BST", "BRD", "RNG", "SAM", "NIN", "DRG", "SMN",
+    "BLU", "COR", "PUP", "DNC", "SCH", "GEO", "RUN",
 ];
 
 /// One row per trust spell / mob pool (party `packet_name`, main job, entity model id).
@@ -53,11 +53,9 @@ fn n(v: &str) -> i64 {
 
 fn decode_model(blob: &str) -> Result<u16> {
     let hex = blob.strip_prefix("0x").or_else(|| blob.strip_prefix("0X")).context("modelid blob")?;
-    let bytes: Vec<u8> = (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
-        .collect::<Result<_, _>>()?;
-  Ok(match parse_look(&bytes)? {
+    let bytes: Vec<u8> =
+        (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16)).collect::<Result<_, _>>()?;
+    Ok(match parse_look(&bytes)? {
         NpcLook::Model(m) => m,
         NpcLook::Equipped(_) => bail!("equipped look in trust pool"),
     })
@@ -98,12 +96,7 @@ pub fn generate(lsb: &Path, out: &Path) -> Result<()> {
         let model = decode_model(&r[4])?;
         by_pool.insert(
             pool as u16,
-            TrustRow {
-                spell: (pool - POOL_BASE) as u16,
-                name: r[2].clone(),
-                job: JOB[m_job].to_string(),
-                model,
-            },
+            TrustRow { spell: (pool - POOL_BASE) as u16, name: r[2].clone(), job: JOB[m_job].to_string(), model },
         );
     }
 
@@ -118,15 +111,10 @@ pub fn generate(lsb: &Path, out: &Path) -> Result<()> {
         }
     }
     if !missing.is_empty() {
-        bail!(
-            "spell_list trusts without mob_pools row (pool = spell + 5000): {:?}",
-            missing
-        );
+        bail!("spell_list trusts without mob_pools row (pool = spell + 5000): {:?}", missing);
     }
 
-    let mut text = String::from(
-        "-- Trust party job hints when main_job is 0 (generated; do not edit by hand).\n",
-    );
+    let mut text = String::from("-- Trust party job hints when main_job is 0 (generated; do not edit by hand).\n");
     text.push_str("-- vana-client trust-gen from LandSandBoat sql/spell_list.sql and mob_pools.sql\n");
     text.push_str("-- Regenerate: vana-client trust-gen --lsb <landsandboat-checkout>\n");
     text.push_str("return {\n");
