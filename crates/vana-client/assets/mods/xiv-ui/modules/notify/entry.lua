@@ -13,6 +13,7 @@ local cfg=hud_config.new(settings,require('src.config_schema'),{
  busy=requests.busy,
 })
 local settings=cfg.settings
+requests.bind_settings(settings)
 local queue,active={},{}
 local toasts_shown=false
 local preview_toast={text='PREVIEW · Inventory + Potion × 3',source='Synthetic sample'}

@@ -1,6 +1,6 @@
--- Shared FFXIV-style tooltip helper.
--- Based on XivUI's lib/tooltip.lua (permission granted by the maintainer),
--- rewritten for vana-client's hud API. Copy into each fork's src/ folder.
+-- Compact tooltip helper for vitals/status text.
+-- Layout adapted from maybeLynd/XivUI lib/tooltip.lua; upstream repo has no SPDX license.
+-- Maintainer permission for redistribution: link required in suite README (third-party section).
 
 local style = require("src.style")
 

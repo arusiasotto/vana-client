@@ -3732,12 +3732,12 @@
           "help": "Real points strip, clearly labelled samples, native job/time/point details and confirmed volatile-rate reset."
         }
       },
-      "description": "FFXIV-style HUD suite (target, focus, cast, player, buff, XP, party, notify). Enable per-panel mod_* toggles, then /lua reload xiv-ui when needed.",
+      "description": "Compact modern HUD suite (target, focus, cast, player, buff, XP, party, notify). Enable per-panel mod_* toggles, then /lua reload xiv-ui when needed.",
       "files": [
         {
           "path": "README.md",
-          "sha256": "766725453a94cf8c293a34c8882f1ce420f7ee882a1120275ca5c762989f37af",
-          "size": 4088,
+          "sha256": "f3d1c6ec98b17dc695f9c0f453edec2fccb7860e2ef614dfbb6a0f3b7095fa57",
+          "size": 3992,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/README.md"
         },
         {
@@ -3886,8 +3886,8 @@
         },
         {
           "path": "mod.toml",
-          "sha256": "9c7d3ee4788d7f6420bcf7ad1f618204f53f354efc4eb5b9f5d428198dd48838",
-          "size": 9937,
+          "sha256": "e6a2d5f533433921080fb07605783c91b180eda467101be01f834c93e6956212",
+          "size": 9940,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/mod.toml"
         },
         {
@@ -3934,8 +3934,8 @@
         },
         {
           "path": "modules/exp/entry.lua",
-          "sha256": "0f68dace016c420ce7f889d66496ec382b9982c0365c0800e63c7d6aa0c531c1",
-          "size": 12142,
+          "sha256": "7aa72e4b176be1cb7889d41fe8ae9bcf2e262186844fad5b95968046821fa1a0",
+          "size": 12182,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/exp/entry.lua"
         },
         {
@@ -3994,8 +3994,8 @@
         },
         {
           "path": "modules/notify/entry.lua",
-          "sha256": "a49adc6cbcd128fe6e446c6e426b69aa10899ab48918c7c1fa4621294d8b393a",
-          "size": 6802,
+          "sha256": "06dc08b4d29a375b501fe5da41bf3a2aa64d0c100b4e097f67a835dddc7960e0",
+          "size": 6835,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/notify/entry.lua"
         },
         {
@@ -4024,8 +4024,8 @@
         },
         {
           "path": "modules/notify/src/requests.lua",
-          "sha256": "39820d9a165e26e1f04cfa900c4cdf6891af4ae2d9908956be280ac0cfdde073",
-          "size": 5605,
+          "sha256": "63630055510a9cb1d921104ea8fa2fae79f4c0b50aaee31f52fa0c708ba0e634",
+          "size": 5598,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/notify/src/requests.lua"
         },
         {
@@ -4048,8 +4048,8 @@
         },
         {
           "path": "modules/party/src/config_schema.lua",
-          "sha256": "9905190e0a83b07d1309b2638e55d7dc80af930f1ecd852e2caeee8813686706",
-          "size": 1374,
+          "sha256": "fbd0f96259dd1f90638717669d33f188aaa4463ed0152624e3f8303560039d84",
+          "size": 1369,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/party/src/config_schema.lua"
         },
         {
@@ -4078,8 +4078,8 @@
         },
         {
           "path": "modules/player/src/config_schema.lua",
-          "sha256": "46f63221ebb0b634a457a6e2c57194ef584afcf71b15b17bc640b861cea0c471",
-          "size": 919,
+          "sha256": "58e978963ba7fc8f54f5a2e0306154f82b6ae0cef4da33e71cef5a0e064483aa",
+          "size": 915,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/player/src/config_schema.lua"
         },
         {
@@ -4096,8 +4096,8 @@
         },
         {
           "path": "modules/player/src/tooltip.lua",
-          "sha256": "dfbbfe8d5fe9ca4b2a92dc3c8d3161b037e1f3556fac54a7ef011481de4502f0",
-          "size": 4791,
+          "sha256": "900edeb648d3b287b0df16b23fdcc2d3701d95ea5193d9cc8c70428f51f2b090",
+          "size": 4841,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/player/src/tooltip.lua"
         },
         {
@@ -4336,8 +4336,8 @@
         },
         {
           "path": "modules/target/src/config_schema.lua",
-          "sha256": "5e12c94a416cafdc119319e7a7d75f6ee0cb1196f74655ec606cb483b64c3e0e",
-          "size": 846,
+          "sha256": "f14f46abb173fd9d421719cf4f949ef3d6e5901075351dac2b8b07e1fac6282b",
+          "size": 859,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/target/src/config_schema.lua"
         },
         {
@@ -4372,45 +4372,9 @@
         },
         {
           "path": "modules/target/src/tooltip.lua",
-          "sha256": "dfbbfe8d5fe9ca4b2a92dc3c8d3161b037e1f3556fac54a7ef011481de4502f0",
-          "size": 4791,
+          "sha256": "03cd50bdbddc89f8e609b4ff627114872a3906bc83e79027b66c1e8dbd3e83e9",
+          "size": 4916,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/target/src/tooltip.lua"
-        },
-        {
-          "path": "scripts/README.md",
-          "sha256": "104fb830ddc31523d2c636fb698458191fb78fddac8b212ad5b11fd913d1ae56",
-          "size": 4821,
-          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/scripts/README.md"
-        },
-        {
-          "path": "scripts/dedup_img.py",
-          "sha256": "efe73c37d2e7488cedf7514bf2d9a0af77db7edbd85f72db056df01ee6780ac2",
-          "size": 5771,
-          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/scripts/dedup_img.py"
-        },
-        {
-          "path": "scripts/integrate_module.py",
-          "sha256": "4225ad356dc1539bbee9e4d50b3580c5c1f415a630d4085a0c8f6164f8e269ae",
-          "size": 4463,
-          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/scripts/integrate_module.py"
-        },
-        {
-          "path": "scripts/merge_mod_toml.py",
-          "sha256": "8a9e33a93b72c6ec5772feb942277c6efa0cd257bbcf93609f1bcff881becb9d",
-          "size": 3214,
-          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/scripts/merge_mod_toml.py"
-        },
-        {
-          "path": "scripts/regen_all_m18.py",
-          "sha256": "d4e15f4739dbd39fab95232ac6a5bee89d88dc3f945a2e7ea6f110cca0326014",
-          "size": 5004,
-          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/scripts/regen_all_m18.py"
-        },
-        {
-          "path": "scripts/regroup_mod_toml.py",
-          "sha256": "5152fbd329862eb9bfdb5a018f16c97d3a2b96bc77c2c0cafc3a31caf851e2f3",
-          "size": 5738,
-          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/scripts/regroup_mod_toml.py"
         },
         {
           "path": "src/assets.lua",
@@ -4450,15 +4414,15 @@
         },
         {
           "path": "src/xiv_renderer.lua",
-          "sha256": "0737e0bed51e03aedf03ba89288d4e5b9f42b246ccad620c2c9382837e52a3df",
-          "size": 19252,
+          "sha256": "d701919c186b686d75557a8a4bfbcbeaf3d2788820b421c0caca6a56fd2c14b7",
+          "size": 19245,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/src/xiv_renderer.lua"
         }
       ],
       "id": "xiv-ui",
       "kind": "lua",
       "name": "XIV-UI",
-      "version": "0.4.25"
+      "version": "0.4.26"
     },
     {
       "authors": [],

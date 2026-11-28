@@ -1,8 +1,8 @@
 # XIV-UI (suite mod)
 
-One mod bundles eight FFXIV-style HUD panels (target, focus, cast, player, buff, experience, party, notify) behind per-panel **`mod_<panel>`** toggles in a single `mod.toml`.
+One mod bundles eight compact modern HUD panels (target, focus, cast, player, buff, experience, party, notify) behind per-panel **`mod_<panel>`** toggles in a single `mod.toml`.
 
-The catalogue lists **`xiv-ui` only** — not separate per-panel mod ids. All panel code ships under `modules/<panel>/` inside this tree. `scripts/` helpers take arbitrary folder names on a maintainer machine when porting; they are not loaded at runtime.
+The catalogue lists **`xiv-ui` only** — not separate per-panel mod ids. All panel code ships under `modules/<panel>/` inside this tree.
 
 ## Using the suite
 
@@ -27,7 +27,7 @@ The catalogue lists **`xiv-ui` only** — not separate per-panel mod ids. All pa
 | `modules/<panel>/src/` | Panel Lua loaded at runtime |
 | `img/` | Retained PNGs only: `jobs/` (22); vitals, notify, and mog indicator use `hud` primitives |
 | `src/` | Shared bridge, bootstrap, `xiv_renderer` (`src.xiv` per panel), `hud_config_factory`, `hud_drag` |
-| `scripts/` | Manifest / integration tools — see `scripts/README.md` |
+| `tests/` | Mod VM tests run by `cargo test -p vana-client mod_tests` |
 
 Panel **`entry.lua`** files are the runtime entry points; there is no separate `modules/*/init.lua` in the suite.
 
@@ -40,15 +40,15 @@ The client **Timers** edge window (especially **recast** lists) is **not** repla
 ## Third-party attributions
 
 - **Party trust job hints** (`modules/party/src/trusts.lua`): NPC name → job table derived from [Tylas11/XivParty](https://github.com/Tylas11/XivParty) `jobs.lua` (also shipped in [maybeLynd/XivUI](https://github.com/maybeLynd/XivUI)). The file includes the upstream BSD-3 notice block from `jobs.lua`. XIV-UI is not affiliated with, sponsored by, or endorsed by XivParty or XivUI.
-- **Tooltip helper** (`modules/*/src/tooltip.lua` where present): adapted from XivUI with maintainer permission; vana `hud` API.
-- **Job badge art** (`img/jobs/*.png`): rasterized from vana-client modern pack SVGs (same pictograms as the native party list), not FFXIV/Windower job portrait assets.
+- **Tooltip helper** (`modules/*/src/tooltip.lua` where present): layout adapted from [maybeLynd/XivUI](https://github.com/maybeLynd/XivUI) `lib/tooltip.lua` (no upstream SPDX license). **Permission to redistribute:** maintainer must supply a public issue/comment URL in the PR before merge (same standard as the XivParty table).
+- **Job badge art** (`img/jobs/*.png`): rasterized from vana-client modern pack SVGs (same pictograms as the native party list).
 - **Player vitals strip**: native `hud.bar` HP/MP/TP (same API as the bundled `player-bars` mod); no `m5_*` fill PNGs.
-- **Party list vitals / cast strips**: native `hud.bar` (no row/track PNG chrome); job badges still use `img/jobs/`.
-- **Target, focus/last, cast, XP bars**: native `hud.bar` (palette `colour` or built-in kinds); no bar track/fill PNGs.
-- **XP mog-house marker**: rounded `hud.rect` (Vana’diel moon % tints fill); not an FFXIV rested-XP asset.
+- **Party list vitals / cast strips**: native `hud.bar`; job badges use `img/jobs/`.
+- **Target, focus/last, cast, XP bars**: native `hud.bar`; no bar track/fill PNGs.
+- **XP mog-house marker**: rounded `hud.rect` (Vana’diel moon % tints fill).
 
-## Before you open a PR / ship
+## Manual check before merge
 
-- Edit `modules/<panel>/src/` or `entry.lua`; changes apply on `/lua reload xiv-ui` (no chunk regen).
 - `/lua reload xiv-ui` with several `mod_*` panels enabled — no `no setting … in mod.toml` errors.
 - Drag player / target; party cast strips with target on; buff click-cancel; XP attach to player bars when enabled.
+- `VANA_MOD_TEST=xiv-ui cargo test -p vana-client mod_tests`

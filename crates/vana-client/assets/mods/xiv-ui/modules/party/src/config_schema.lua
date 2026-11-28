@@ -1,6 +1,6 @@
 -- Generated whitelist from owning mod settings + explicit native layout fields.
 return {
-  {key="on",type="bool",label="XIV Party List",help="Draws an FFXIV-style party frame on the left of the screen.",default=true},
+  {key="on",type="bool",label="XIV Party List",help="Draws a compact party frame on the left of the screen.",default=true},
   {key="offset_x",type="int",label="Left offset",help="Distance from the left edge of the screen.",default=16,min=0,max=1200,step=4},
   {key="offset_y",type="int",label="Top offset",help="Distance from the top of the screen.",default=120,min=0,max=1200,step=4},
   {key="scale",type="int",label="Party Scale",help="",default=100,min=50,max=150,step=10},

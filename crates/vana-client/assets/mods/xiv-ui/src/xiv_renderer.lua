@@ -67,7 +67,7 @@ function X.native(piece, hidden, force)
   native_state[piece]={hidden=hidden,at=clock(),ok=ok}
   if ok then warnings[piece] = nil
   elseif not warnings[piece] then
-    chat.add("XIV HUD: native " .. piece .. " replacement unavailable; check ui.native permission/client support.")
+    chat.add("XIV HUD: native " .. piece .. " hide unavailable; check ui.native permission/client support.")
     warnings[piece] = true
   end
   return ok

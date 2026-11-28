@@ -179,7 +179,7 @@ local function draw()
     local mw,mh=24*u,24*u
     local mx,my=x+w+4*u,math.max(0,y-8*u)
     local pct=X.clamp(tonumber(t and t.moon) or 100,0,100)
-    local tip={title='Mog House indicator',text='Not an FFXIV rested XP bonus.'..(t and t.moon~=nil and ('\nMoon: '..t.moon..'%') or '')}
+    local tip={title='Mog House indicator',text='Shows Vana’diel mog-house moon fill, not a foreign rested-XP meter.'..(t and t.moon~=nil and ('\nMoon: '..t.moon..'%') or '')}
     R:rect('xxp_mog_moon',mx,my,mw,mh,10,{255,245,191,math.floor(50+205*pct/100)},{round=mh*0.5,line=1.2*scale,tip=tip})
   end
   X.native('experience',not preview);R:finish()

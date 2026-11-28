@@ -1,6 +1,6 @@
 name = "XIV-UI"
-version = "0.4.25"
-description = "FFXIV-style HUD suite (target, focus, cast, player, buff, XP, party, notify). Enable per-panel mod_* toggles, then /lua reload xiv-ui when needed."
+version = "0.4.26"
+description = "Compact modern HUD suite (target, focus, cast, player, buff, XP, party, notify). Enable per-panel mod_* toggles, then /lua reload xiv-ui when needed."
 authors = ["Nitsu"]
 permissions = ["ui.native", "actions"]
 

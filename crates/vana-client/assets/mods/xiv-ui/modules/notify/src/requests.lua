@@ -3,10 +3,11 @@
 local X=require('src.xiv')
 local style=require('src.style')
 -- Invite reminder offsets and toggles are manifest keys (notify_* in mod.toml).
-local settings_proxy=settings
-local settings={get=function(key)return settings_proxy.get(key)end}
+local panel_settings
 local R=X.renderer()
 local M={window='xn_requests'}
+function M.bind_settings(s) panel_settings = s end
+local function setting(key) return panel_settings and panel_settings.get(key) end
 local latest,sequence,hovered=nil,0,false
 local preview=false
 local busy_until=0
@@ -33,8 +34,7 @@ function M.open()
   local info=game.info()
   if info.menu_open then chat.add('XIV Notify: close the current game menu first.');return end
   for _, owner in ipairs({ "target", "party" }) do
-    local ok, busy = pcall(mods.call, owner, "busy")
-    if ok and busy then chat.add("XIV Notify: close the current detail window first."); return end
+    if X.call(owner, "busy") then chat.add("XIV Notify: close the current detail window first."); return end
   end
   local request=current()
   if not request then chat.add('XIV Notify: no recent invite reminder. Use the native Party menu to check invitations.');return end
@@ -75,12 +75,12 @@ function M.draw(show,scale)
   if w>s.width-8 or h>s.height-8 then hide();return end
   local alpha=banner and not preview and clock()-banner.at<3 and math.floor(255*(1-(clock()-banner.at)/3)) or false
   local key={request.sequence,preview,hovered,s.width,s.height,s.ui_scale,scale,
-    settings.get('request_offset_x') or 0,settings.get('request_offset_y') or 0,alpha}
+    setting('request_offset_x') or 0,setting('request_offset_y') or 0,alpha}
   if same_key(last_presentation,key) and R:ready() then return end
   R:begin();shown=true
   -- Default centre placement avoids the fixed right-hand alliance panels.
-  local x=X.clamp((s.width-w)/2+(settings.get('request_offset_x') or 0)*u,0,s.width-w)
-  local y=X.clamp(s.height*0.38+(settings.get('request_offset_y') or 0)*u,0,math.max(0,s.height-h))
+  local x=X.clamp((s.width-w)/2+(setting('request_offset_x') or 0)*u,0,s.width-w)
+  local y=X.clamp(s.height*0.38+(setting('request_offset_y') or 0)*u,0,math.max(0,s.height-h))
   local tip={title='Recent '..request.kind..' invite',text='Not verified pending state. Open the native Party menu to respond.'}
   local round=h*0.5
   R:rect('xr_pill',x,y,w,h,45,hovered and style.colour.bg or style.colour.bg_dim,
