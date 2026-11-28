@@ -40,7 +40,6 @@ The client **Timers** edge window (especially **recast** lists) is **not** repla
 ## Third-party attributions
 
 - **Party trust job hints** (`modules/party/src/trusts.lua`): NPC name → job table derived from [Tylas11/XivParty](https://github.com/Tylas11/XivParty) `jobs.lua` (also shipped in [maybeLynd/XivUI](https://github.com/maybeLynd/XivUI)). The file includes the upstream BSD-3 notice block from `jobs.lua`. XIV-UI is not affiliated with, sponsored by, or endorsed by XivParty or XivUI.
-- **Tooltip helper** (`modules/*/src/tooltip.lua` where present): layout adapted from [maybeLynd/XivUI](https://github.com/maybeLynd/XivUI) `lib/tooltip.lua` (no upstream SPDX license). **Permission to redistribute:** maintainer must supply a public issue/comment URL in the PR before merge (same standard as the XivParty table).
 - **Job badge art** (`img/jobs/*.png`): rasterized from vana-client modern pack SVGs (same pictograms as the native party list).
 - **Player vitals strip**: native `hud.bar` HP/MP/TP (same API as the bundled `player-bars` mod); no `m5_*` fill PNGs.
 - **Party list vitals / cast strips**: native `hud.bar`; job badges use `img/jobs/`.
