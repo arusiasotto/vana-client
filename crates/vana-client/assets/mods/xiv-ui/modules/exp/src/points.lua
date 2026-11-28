@@ -1,4 +1,5 @@
--- Read-only counter model adapted from native XP Tracker 1.0.2.
+-- Read-only counter model adapted from bundled mod `xp-tracker`
+-- (`crates/vana-client/assets/mods/xp-tracker/init.lua`, same repo / MIT).
 -- Same EXP/merit/JP rollover equations; monotonic time and per-job reset.
 local M={};local Tracker={};Tracker.__index=Tracker
 local function valid(n)return type(n)=='number' and n==n and n>=0 and n<math.huge end

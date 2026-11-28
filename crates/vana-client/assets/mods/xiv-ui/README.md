@@ -40,11 +40,12 @@ The client **Timers** edge window (especially **recast** lists) is **not** repla
 ## Third-party attributions
 
 - **Party trust job hints** (`modules/party/src/trusts.lua`): NPC name → job table derived from [Tylas11/XivParty](https://github.com/Tylas11/XivParty) `jobs.lua` (also shipped in [maybeLynd/XivUI](https://github.com/maybeLynd/XivUI)). The file includes the upstream BSD-3 notice block from `jobs.lua`. XIV-UI is not affiliated with, sponsored by, or endorsed by XivParty or XivUI.
-- **Job badge art** (`img/jobs/*.png`): rasterized from vana-client modern pack SVGs (same pictograms as the native party list).
+- **Job badge art** (`img/jobs/*.png`): rasterized from this repository’s modern job pictograms at `crates/vana-client/assets/modern/svg/jobs/*.svg` (vana-client catalogue assets; same glyphs as the native party list). Not from XivUI or third-party addon art.
 - **Player vitals strip**: native `hud.bar` HP/MP/TP (same API as the bundled `player-bars` mod); no `m5_*` fill PNGs.
 - **Party list vitals / cast strips**: native `hud.bar`; job badges use `img/jobs/`.
 - **Target, focus/last, cast, XP bars**: native `hud.bar`; no bar track/fill PNGs.
 - **XP mog-house marker**: rounded `hud.rect` (Vana’diel moon % tints fill).
+- **XP gain / rate math** (`modules/exp/src/points.lua`): adapted from bundled **[xp-tracker](crates/vana-client/assets/mods/xp-tracker/)** in this repo (not third-party).
 
 ## Manual check before merge
 
