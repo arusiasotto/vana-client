@@ -46,20 +46,16 @@ fn standard_ids_for_server_hide() -> Option<std::collections::HashSet<String>> {
     Some(mods.iter().chain(&dats).map(|e| e.id.clone()).collect())
 }
 
-fn counts_as_update(e: &Entry, source: Source, hide: Option<&std::collections::HashSet<String>>) -> bool {
+fn counts_as_update(
+    e: &Entry,
+    source: Source,
+    hide: Option<&std::collections::HashSet<String>>,
+    server_keys: &[String],
+) -> bool {
     if source == Source::Server && hide.is_none_or(|ids| ids.contains(&e.id)) {
         return false;
     }
-    let root = catalogue::root_of(e);
-    let have = catalogue::installed(&root, &e.id);
-    let inst_src = catalogue::installed_source(&root, &e.id);
-    let offer = match (have.as_deref(), inst_src) {
-        (None, _) => catalogue::offer(e, None),
-        (Some(v), Some(s)) if s == source => catalogue::offer(e, Some(v)),
-        (Some(v), None) if source == Source::Standard => catalogue::offer(e, Some(v)),
-        (Some(_), _) => None,
-    };
-    offer == Some(true)
+    catalogue::entry_status(e, source, server_keys) == Some(true)
 }
 
 /// How many of the list's entries are installed here at an older version (Modmgr's source rules).
@@ -73,7 +69,8 @@ fn updates(list: List, server_keys: &[String], hide: Option<&std::collections::H
         let Ok(entries) = catalogue::fetch_from(source, list, keys) else {
             continue;
         };
-        n += entries.iter().filter(|e| counts_as_update(e, source, hide)).count();
+        let keys = if source == Source::Server { server_keys } else { &[] as &[String] };
+        n += entries.iter().filter(|e| counts_as_update(e, source, hide, keys)).count();
     }
     n
 }

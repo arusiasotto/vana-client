@@ -76,21 +76,11 @@ fn statuses(
     list: Vec<Entry>,
     source: catalogue::Source,
     hide_ids: Option<&std::collections::HashSet<String>>,
+    server_keys: &[String],
 ) -> Vec<(Entry, Option<bool>)> {
     list.into_iter()
         .filter(|e| hide_ids.is_none_or(|ids| !ids.contains(&e.id)))
-        .map(|e| {
-            let root = catalogue::root_of(&e);
-            let have = catalogue::installed(&root, &e.id);
-            let inst_src = catalogue::installed_source(&root, &e.id);
-            let st = match (have.as_deref(), inst_src) {
-                (None, _) => catalogue::offer(&e, None),
-                (Some(v), Some(s)) if s == source => catalogue::offer(&e, Some(v)),
-                (Some(v), None) if source == catalogue::Source::Standard => catalogue::offer(&e, Some(v)),
-                (Some(_), _) => None,
-            };
-            (e, st)
-        })
+        .map(|e| (e.clone(), catalogue::entry_status(&e, source, server_keys)))
         .collect()
 }
 
@@ -115,14 +105,14 @@ impl Mods {
         std::thread::spawn(move || {
             let _ = ltx.send(
                 catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Mods, &[])
-                    .map(|v| statuses(v, catalogue::Source::Standard, None)),
+                    .map(|v| statuses(v, catalogue::Source::Standard, None, &[])),
             );
         });
         let (dtx, drx) = channel();
         std::thread::spawn(move || {
             let _ = dtx.send(
                 catalogue::fetch_from(catalogue::Source::Standard, catalogue::List::Dats, &[])
-                    .map(|v| statuses(v, catalogue::Source::Standard, None)),
+                    .map(|v| statuses(v, catalogue::Source::Standard, None, &[])),
             );
         });
         let sk = server_keys.clone();
@@ -130,14 +120,14 @@ impl Mods {
         std::thread::spawn(move || {
             let _ = sltx.send(
                 catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Mods, &sk)
-                    .map(|v| statuses(v, catalogue::Source::Server, None)),
+                    .map(|v| statuses(v, catalogue::Source::Server, None, &sk)),
             );
         });
         let (sdtx, sdrx) = channel();
         std::thread::spawn(move || {
             let _ = sdtx.send(
                 catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Dats, &keys)
-                    .map(|v| statuses(v, catalogue::Source::Server, None)),
+                    .map(|v| statuses(v, catalogue::Source::Server, None, &keys)),
             );
         });
         Self {
@@ -209,14 +199,14 @@ impl Mods {
         std::thread::spawn(move || {
             let _ = ltx.send(
                 catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Mods, &sk)
-                    .map(|v| statuses(v, catalogue::Source::Server, None)),
+                    .map(|v| statuses(v, catalogue::Source::Server, None, &sk)),
             );
         });
         let (dtx, drx) = channel();
         std::thread::spawn(move || {
             let _ = dtx.send(
                 catalogue::fetch_from(catalogue::Source::Server, catalogue::List::Dats, &keys)
-                    .map(|v| statuses(v, catalogue::Source::Server, None)),
+                    .map(|v| statuses(v, catalogue::Source::Server, None, &keys)),
             );
         });
         self.server_list = Some(lrx);
@@ -365,7 +355,19 @@ impl Mods {
                 let by = if e.authors.is_empty() { String::new() } else { format!(" By {}.", e.authors.join(", ")) };
                 let size = if e.size() > 0 { format!(" {}.", bytes(e.size())) } else { String::new() };
                 let what = if e.kind == "lua" { "It starts at the next login." } else { "Takes effect on restart." };
-                let verb = if update { "Update" } else { "Install" };
+                let replace = !server
+                    && !update
+                    && matches!(
+                        catalogue::installed_source(&catalogue::root_of(e), &e.id),
+                        Some(catalogue::Source::Server)
+                    );
+                let verb = if update {
+                    "Update"
+                } else if replace {
+                    "Replace"
+                } else {
+                    "Install"
+                };
                 let help = format!(
                     "{}{by}{size} {verb} downloads version {} from GitHub into the mods folder. {what}",
                     e.description.trim(),
@@ -548,8 +550,9 @@ impl Mods {
         let pr = progress.clone();
         let id = e.id.clone();
         let src = if server { catalogue::Source::Server } else { catalogue::Source::Standard };
+        let keys = if server { self.server_keys.clone() } else { Vec::new() };
         std::thread::spawn(move || {
-            let _ = tx.send(catalogue::install(&e, &catalogue::root_of(&e), &pr, src));
+            let _ = tx.send(catalogue::install(&e, &catalogue::root_of(&e), &pr, src, &keys));
         });
         self.installing = Some((id, progress, rx));
         true

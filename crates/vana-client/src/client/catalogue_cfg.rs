@@ -68,6 +68,7 @@ pub fn clear_repo(keys: &[String]) -> Option<Vec<String>> {
         log::warn!("server catalogues: {e:#}");
         return None;
     }
+    super::catalogue::clear_server_cache_for_keys(keys);
     Some(keys.to_vec())
 }
 
@@ -76,6 +77,7 @@ pub fn clear_repo(keys: &[String]) -> Option<Vec<String>> {
 pub fn save_repo(login: &str, keys: &[String], text: &str) -> Option<Vec<String>> {
     let trimmed = text.trim();
     let repo = normalize_repo(text);
+    let prior_repo = repo_for_keys(keys);
     let mut store = ServerCatalogues::load();
     if repo.is_empty() {
         if !trimmed.is_empty() {
@@ -98,6 +100,11 @@ pub fn save_repo(login: &str, keys: &[String], text: &str) -> Option<Vec<String>
     if let Err(e) = store.save() {
         log::warn!("server catalogues: {e:#}");
         return None;
+    }
+    if !repo.is_empty() && repo != prior_repo {
+        super::catalogue::clear_server_cache_for_keys(keys);
+    } else if repo.is_empty() && !prior_repo.is_empty() {
+        super::catalogue::clear_server_cache_for_keys(keys);
     }
     pair_search_to_login(login, keys);
     Some(keys.to_vec())

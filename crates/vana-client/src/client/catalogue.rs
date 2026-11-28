@@ -13,15 +13,48 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// The list's format this client reads.
 const FORMAT: u32 = 1;
 
-/// In a folder the catalogue installed: the version and install source (see `write_mark`).
+/// Version the catalogue installed (one line; older clients read only this).
 const MARK: &str = ".catalogue";
+const MARK_SOURCE: &str = ".catalogue-source";
+const MARK_LIST: &str = ".catalogue-list";
 
-fn write_mark(work: &Path, version: &str, source: Source) -> std::io::Result<()> {
+fn parse_source_tag(tag: &str) -> Option<Source> {
+    match tag.trim() {
+        "standard" => Some(Source::Standard),
+        "server" => Some(Source::Server),
+        _ => None,
+    }
+}
+
+/// Saved `owner/repo` for `keys`, or the first key when no repo is set.
+pub fn server_list_identity(keys: &[String]) -> String {
+    let repo = super::catalogue_cfg::repo_for_keys(keys);
+    if !repo.is_empty() {
+        return repo;
+    }
+    keys.first().cloned().unwrap_or_default()
+}
+
+fn write_mark(work: &Path, version: &str, source: Source, list_id: Option<&str>) -> std::io::Result<()> {
+    std::fs::write(work.join(MARK), version)?;
     let tag = match source {
         Source::Standard => "standard",
         Source::Server => "server",
     };
-    std::fs::write(work.join(MARK), format!("{version}\n{tag}"))
+    std::fs::write(work.join(MARK_SOURCE), tag)?;
+    if source == Source::Server {
+        if let Some(id) = list_id.filter(|s| !s.is_empty()) {
+            std::fs::write(work.join(MARK_LIST), id)?;
+        }
+    } else {
+        let _ = std::fs::remove_file(work.join(MARK_LIST));
+    }
+    Ok(())
+}
+
+fn cache_url_path(cache_file: &Path) -> PathBuf {
+    let name = format!("{}.url", cache_file.file_name().and_then(|n| n.to_str()).unwrap_or("list.json"));
+    cache_file.with_file_name(name)
 }
 
 /// Hosts an archive may come from (VANA_MOD_CATALOGUE lifts this for test lists).
@@ -258,10 +291,21 @@ fn fetch_all(source: Source, list: List, server_keys: &[String]) -> Result<Vec<E
             if keep {
                 let _ = std::fs::create_dir_all(kept.parent().unwrap_or(Path::new(".")));
                 let _ = std::fs::write(&kept, &text);
+                if source == Source::Server {
+                    let _ = std::fs::write(cache_url_path(&kept), &fetch_url);
+                }
             }
             Ok(entries)
         }
         Err(e) if keep => {
+            if source == Source::Server {
+                let url_file = cache_url_path(&kept);
+                let cached_url = std::fs::read_to_string(&url_file).unwrap_or_default();
+                if cached_url.trim() != fetch_url {
+                    log::info!("mod catalogue ({source:?}): {e:#}; cached list is for another repo");
+                    return Err(e);
+                }
+            }
             log::info!("mod catalogue ({source:?}): {e:#}; using the last copy");
             parse(&std::fs::read_to_string(&kept).map_err(|_| e)?, any_host)
         }
@@ -270,7 +314,16 @@ fn fetch_all(source: Source, list: List, server_keys: &[String]) -> Result<Vec<E
 }
 
 pub fn clear_cache(source: Source, list: List, server_keys: &[String]) {
-    let _ = std::fs::remove_file(source.cache_path(list, server_keys));
+    let kept = source.cache_path(list, server_keys);
+    let _ = std::fs::remove_file(&kept);
+    let _ = std::fs::remove_file(cache_url_path(&kept));
+}
+
+/// Drops cached server lists for `keys` (after the saved repo URL changes).
+pub fn clear_server_cache_for_keys(keys: &[String]) {
+    for list in [List::Mods, List::Dats] {
+        clear_cache(Source::Server, list, keys);
+    }
 }
 
 /// The material pack's id: its folder in the data folder (material::dir).
@@ -286,18 +339,49 @@ pub fn installed_source(root: &Path, id: &str) -> Option<Source> {
     if !dir.is_dir() {
         return None;
     }
+    if let Ok(tag) = std::fs::read_to_string(dir.join(MARK_SOURCE)) {
+        return parse_source_tag(&tag);
+    }
     let Ok(mark) = std::fs::read_to_string(dir.join(MARK)) else {
         return None;
     };
-    match mark.lines().nth(1)? {
-        "standard" => Some(Source::Standard),
-        "server" => Some(Source::Server),
-        _ => None,
+    mark.lines().nth(1).and_then(parse_source_tag)
+}
+
+pub fn installed_server_list_id(root: &Path, id: &str) -> Option<String> {
+    let dir = root.join(id);
+    if !dir.is_dir() {
+        return None;
     }
+    std::fs::read_to_string(dir.join(MARK_LIST)).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 pub fn installed_source_for_id(id: &str) -> Option<Source> {
     installed_source(&crate::config::mods_dir(), id).or_else(|| installed_source(&crate::config::data_dir(), id))
+}
+
+/// Install, update or installed-as-is for one catalogue row (Settings, Modmgr, login update count).
+pub fn entry_status(e: &Entry, source: Source, server_keys: &[String]) -> Option<bool> {
+    let root = root_of(e);
+    let have = installed(&root, &e.id);
+    let inst_src = installed_source(&root, &e.id);
+    match (have.as_deref(), inst_src) {
+        (None, _) => offer(e, None),
+        (Some(v), Some(s)) if s == source => {
+            if source == Source::Server {
+                let cur = server_list_identity(server_keys);
+                match installed_server_list_id(&root, &e.id) {
+                    Some(inst) if inst != cur => None,
+                    _ => offer(e, Some(v)),
+                }
+            } else {
+                offer(e, Some(v))
+            }
+        }
+        (Some(v), None) if source == Source::Standard => offer(e, Some(v)),
+        (Some(v), Some(Source::Server)) if source == Source::Standard => offer(e, Some(v)).or(Some(false)),
+        (Some(_), _) => None,
+    }
 }
 
 /// The version installed in `root/id`: the catalogue's mark, else its mod.toml's; "" for a folder with neither.
@@ -381,7 +465,11 @@ fn require_manifest_id(work: &Path, catalogue_id: &str, source: Source) -> Resul
 /// `progress` counts per mille: each archive's download is four fifths of its share, its unpacking the rest. Standard
 /// catalogue Lua mods are given the permissions they ask for at install; server mods are not (prompt on first load).
 /// Returns the folder's name.
-pub fn install(e: &Entry, root: &Path, progress: &AtomicU32, source: Source) -> Result<String> {
+pub fn install(e: &Entry, root: &Path, progress: &AtomicU32, source: Source, server_keys: &[String]) -> Result<String> {
+    let list_id = (source == Source::Server).then(|| server_list_identity(server_keys));
+    if source == Source::Server {
+        super::lua::clear_grants_for_mod(&e.id);
+    }
     if e.files.iter().any(|f| f.path.is_some()) {
         std::fs::create_dir_all(root)?;
         let work = modpack::work_dir(root, &e.id)?;
@@ -393,7 +481,7 @@ pub fn install(e: &Entry, root: &Path, progress: &AtomicU32, source: Source) -> 
             let _ = std::fs::remove_dir_all(&work);
             return Err(err);
         }
-        write_mark(&work, &e.version, source)?;
+        write_mark(&work, &e.version, source, list_id.as_deref())?;
         modpack::place(&work, &root.join(&e.id))?;
         if source == Source::Standard {
             super::lua::grant_manifest(&root.join(&e.id));
@@ -448,7 +536,7 @@ pub fn install(e: &Entry, root: &Path, progress: &AtomicU32, source: Source) -> 
         let _ = std::fs::remove_dir_all(&work);
         return Err(err);
     }
-    write_mark(&work, &e.version, source)?;
+    write_mark(&work, &e.version, source, list_id.as_deref())?;
     modpack::place(&work, &root.join(&e.id))?;
     if source == Source::Standard {
         super::lua::grant_manifest(&root.join(&e.id));
@@ -631,5 +719,12 @@ mod tests {
         assert_eq!(offer(&e, Some("")), None);
         assert_eq!(ext("https://github.com/a/b/releases/download/v1/x.7z"), "7z");
         assert_eq!(ext("https://codeload.github.com/a/b/zip/refs/tags/v1"), "zip");
+    }
+
+    #[test]
+    fn source_tag_parsed() {
+        assert_eq!(parse_source_tag("standard"), Some(Source::Standard));
+        assert_eq!(parse_source_tag("server"), Some(Source::Server));
+        assert!(parse_source_tag("other").is_none());
     }
 }

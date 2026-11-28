@@ -4099,6 +4099,14 @@ pub(in crate::client) fn colour_value(rgb: [u8; 3], old: &serde_json::Value) -> 
     serde_json::json!([rgb[0], rgb[1], rgb[2], a])
 }
 
+/// Removes every saved permission for `id` (a server catalogue install replaces an older copy).
+pub(in crate::client) fn clear_grants_for_mod(id: &str) {
+    let mut g = grants();
+    if g.remove(id).is_some() {
+        save_grants(&g);
+    }
+}
+
 /// Gives an installed mod every permission its manifest asks for (a standard mod installed from our list).
 pub(in crate::client) fn grant_manifest(dir: &std::path::Path) {
     let Ok(m) = manifest::read(dir) else { return };
