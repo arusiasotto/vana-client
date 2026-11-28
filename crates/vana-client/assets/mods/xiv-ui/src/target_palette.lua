@@ -1,5 +1,4 @@
--- The FFXIV-style reference target palette, shared verbatim with Focus/Last XIV.
--- Colour is based on target type, not remaining HP.
+-- Target bar colours by entity kind (shared by target and focus panels).
 local P = {
   enemy = { track = { 80, 15, 15, 255 }, fill = { 255, 186, 183, 255 }, border = { 255, 140, 140, 255 }, text = { 255, 186, 183, 255 } },
   player = { track = { 8, 45, 82, 255 }, fill = { 226, 255, 255, 255 }, border = { 80, 180, 250, 255 }, text = { 226, 255, 255, 255 } },

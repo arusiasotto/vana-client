@@ -20,7 +20,7 @@ return {
     "src.budget_data.src_status_map_032", "src.budget_data.src_status_map_033",
     "src.budget_data.src_status_map_034",
     "src.status_map", "src.status_observer", "src.hud_config",
-    "src.combat", "src.config_schema", "src.target_palette",
+    "src.combat", "src.config_schema",
   },
   stagger = "target",
 }

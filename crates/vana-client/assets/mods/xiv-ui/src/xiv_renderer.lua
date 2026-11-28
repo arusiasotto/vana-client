@@ -8,7 +8,7 @@ local colours = { tank = { 55, 100, 200, 255 }, healer = { 50, 150, 65, 255 },
   support = { 50, 150, 65, 255 }, dps = { 185, 55, 50, 255 } }
 function X.role(code) return code and colours[roles[code] or "dps"] or { 128, 128, 128, 255 } end
 function X.clamp(v, lo, hi) return math.max(lo, math.min(hi, tonumber(v) or lo)) end
--- The game and XivUI show 59, 1m, 1h rather than raw seconds once a minute has passed.
+-- Compact durations like the modern UI: 59, 1m, 1h rather than raw seconds past a minute.
 function X.fmt_time(seconds)
   local n = tonumber(seconds)
   if not n or n < 0 then return nil end

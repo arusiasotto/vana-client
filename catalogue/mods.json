@@ -3886,7 +3886,7 @@
         },
         {
           "path": "mod.toml",
-          "sha256": "ecb55ad3e2af758f5dbd36d19f453c774a602d1c8b855d9be02bce2d4819bfe5",
+          "sha256": "ed06dba59a37a282f58fb3d2c63f8f0dd8d72334c903961f9db1c5c5624ee63f",
           "size": 9940,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/mod.toml"
         },
@@ -3970,8 +3970,8 @@
         },
         {
           "path": "modules/focus/manifest.lua",
-          "sha256": "c98f2db4049297bec6192b5042b6db030d9cc483ad2433a2129f06d0d3c3893d",
-          "size": 142,
+          "sha256": "4b9abe14932d022bc60bf2283452eaceadb764a9ea2941a6872c29bf9f992993",
+          "size": 116,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/focus/manifest.lua"
         },
         {
@@ -3985,12 +3985,6 @@
           "sha256": "4c4f07efae6109d3c2fd8f71fa5f2f952c12e444f2bbef95d5f7f80a4cec24fc",
           "size": 302,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/focus/src/hud_config.lua"
-        },
-        {
-          "path": "modules/focus/src/target_palette.lua",
-          "sha256": "f278ea82e5900dc4be199fcd003f3d3ebf3cc92693655b0c58e86d66d8d4426c",
-          "size": 948,
-          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/focus/src/target_palette.lua"
         },
         {
           "path": "modules/notify/entry.lua",
@@ -4036,8 +4030,8 @@
         },
         {
           "path": "modules/party/entry.lua",
-          "sha256": "1bc716e1c4f1059635e2a1b30b0c527c5b7d12b42434af8f1b809844ece21d5c",
-          "size": 47601,
+          "sha256": "fecfe59979501159ba957566f14ee4ce6982b0a2885cd4b0926d9bc77af89322",
+          "size": 47709,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/party/entry.lua"
         },
         {
@@ -4102,8 +4096,8 @@
         },
         {
           "path": "modules/target/manifest.lua",
-          "sha256": "49c3b0d40e31e08701833d20572e4a3d7a4b4d8ca20d347809c1eee108fe7184",
-          "size": 1600,
+          "sha256": "f21cd9071f8de8e8d901e53effd1435af6a0dcfb78ca6d0b06e7efd1544f02c9",
+          "size": 1578,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/target/manifest.lua"
         },
         {
@@ -4347,12 +4341,6 @@
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/target/src/status_observer.lua"
         },
         {
-          "path": "modules/target/src/target_palette.lua",
-          "sha256": "f278ea82e5900dc4be199fcd003f3d3ebf3cc92693655b0c58e86d66d8d4426c",
-          "size": 948,
-          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/modules/target/src/target_palette.lua"
-        },
-        {
           "path": "src/assets.lua",
           "sha256": "a142227b58a01f80fd36445b2f839ff0208ddd281f6b8c36a03e6b8b08d3486c",
           "size": 5386,
@@ -4360,8 +4348,8 @@
         },
         {
           "path": "src/bootstrap.lua",
-          "sha256": "81eecb32c7ba71d0651884d93c8fbb28f54f58f6d7096ba601f7ed28b0522921",
-          "size": 7360,
+          "sha256": "fd51fac2a11c0e4d45bc4589142a3a422c90a58ca7cc52bc0e919512361ed12e",
+          "size": 7413,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/src/bootstrap.lua"
         },
         {
@@ -4389,16 +4377,22 @@
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/src/settings_proxy.lua"
         },
         {
+          "path": "src/target_palette.lua",
+          "sha256": "15a7d4e5085c4e909ffccf4f23e6b2f2231773e14f823874709ea7eb7e94b3fe",
+          "size": 886,
+          "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/src/target_palette.lua"
+        },
+        {
           "path": "src/xiv_renderer.lua",
-          "sha256": "d701919c186b686d75557a8a4bfbcbeaf3d2788820b421c0caca6a56fd2c14b7",
-          "size": 19245,
+          "sha256": "aff542fe5d7863af4502779f901c489903f1ec4fd5cdf3aa99a6ca24d9ac52aa",
+          "size": 19248,
           "url": "https://raw.githubusercontent.com/lenonk/vana-client/master/crates/vana-client/assets/mods/xiv-ui/src/xiv_renderer.lua"
         }
       ],
       "id": "xiv-ui",
       "kind": "lua",
       "name": "XIV-UI",
-      "version": "0.4.29"
+      "version": "0.4.30"
     },
     {
       "authors": [],

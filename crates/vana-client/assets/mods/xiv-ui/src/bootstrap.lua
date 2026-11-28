@@ -32,6 +32,7 @@ local SUITE_SHARED = {
   ["src.hud_drag"] = "src/hud_drag.lua",
   ["src.hud_config_factory"] = "src/hud_config_factory.lua",
   ["src.xiv"] = "src/xiv_renderer.lua",
+  ["src.target_palette"] = "src/target_palette.lua",
 }
 
 local function inject_suite_shared(state)

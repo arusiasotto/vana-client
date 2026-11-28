@@ -197,8 +197,12 @@ for id,name in ipairs(job_names) do job_ids[name:upper()]=id end
 local function trust_index_add(name,entry)
   local key=(name or ''):lower()
   if key=='' then return end
-  trust_index[key]=trust_index[key] or {}
-  trust_index[key][#trust_index[key]+1]=entry
+  local bucket=trust_index[key] or {}
+  for _,existing in ipairs(bucket) do
+    if existing==entry then trust_index[key]=bucket;return end
+  end
+  bucket[#bucket+1]=entry
+  trust_index[key]=bucket
 end
 for _,entry in ipairs(trust_book) do
   trust_index_add(entry.name,entry)
@@ -394,7 +398,7 @@ local function statuses(m, raw, count)
         if left==nil or left>0 then
           timers[id]={left=left,total=e.secs or e.total}
           -- Countdown labels are not drawn on rows: only active membership,
-          -- names and tooltip sources belong to this static icon revision.
+          -- names and status sources belong to this static icon revision.
           parts[#parts+1]=table.concat({tostring(id),tostring(e.name or ''),tostring(e.source or ''),tostring(left~=nil)},'\30')
         end
       end
