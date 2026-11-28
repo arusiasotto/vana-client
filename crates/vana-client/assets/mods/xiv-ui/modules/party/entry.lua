@@ -189,13 +189,23 @@ local function member_cast(id)
   return nil
 end
 -- Native res.job is a fixed 1..22 table. Reuse it as data; no 22-RPC scan for
--- each unmapped trust hint (e.g. SPC) and no job/resource calls per cold badge.
+-- each unmapped trust hint and no job/resource calls per cold badge (see src/trusts.lua).
 local job_names={'war','mnk','whm','blm','rdm','thf','pld','drk','bst','brd','rng',
   'sam','nin','drg','smn','blu','cor','pup','dnc','sch','geo','run'}
 local trust_index,job_ids={},{}
 for id,name in ipairs(job_names) do job_ids[name:upper()]=id end
+local function trust_index_add(name,entry)
+  local key=(name or ''):lower()
+  if key=='' then return end
+  trust_index[key]=trust_index[key] or {}
+  trust_index[key][#trust_index[key]+1]=entry
+end
 for _,entry in ipairs(trust_book) do
-  local key=entry.name:lower();trust_index[key]=trust_index[key] or {};trust_index[key][#trust_index[key]+1]=entry
+  trust_index_add(entry.name,entry)
+  if entry.spell and res.spell then
+    local spell=res.spell(entry.spell)
+    if spell and spell.name and spell.name~='' then trust_index_add(spell.name,entry) end
+  end
 end
 local pet_ids,pet_at={},-1
 local pet_token,pet_scanning,pet_started=0,false,0

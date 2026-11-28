@@ -283,6 +283,7 @@ pub mod recasts;
 pub mod roe;
 pub mod sched;
 pub mod skillchains;
+pub mod trusts;
 pub mod statusinfo;
 pub mod tables;
 pub mod texmip;

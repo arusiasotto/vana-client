@@ -50,11 +50,12 @@ Reused or aligned with other **vana-client** catalogue assets — not third-part
 | Player HP/MP/TP strip | `modules/player/` (`hud.bar`) | Same client **`hud.bar`** pattern as [`assets/mods/player-bars/init.lua`](../../mods/player-bars/init.lua); layout/UI differ |
 | Status land / expire heuristics | `modules/target/src/status_observer.lua` | Battle message ids aligned with [`assets/mods/target-debuffs/init.lua`](../../mods/target-debuffs/init.lua); logic is suite-specific |
 | Action → status fact tables | `modules/target/src/budget_data/*.lua` | Compiled from **vana-client** game/action data (in-repo export; sharded for M18 budget) |
+| Trust job badges (party) | `modules/party/src/trusts.lua` | **`vana-client trust-gen`** from LandSandBoat SQL (see below); not third-party mod code |
 | Bars, icons, chrome | all panels | Client **`hud.bar`**, **`hud.icon`**, **`hud.rect`** (no shipped bar/status PNG dumps) |
 
-### Third-party (external)
+### Generated (LandSandBoat SQL)
 
-- **Party trust job hints** (`modules/party/src/trusts.lua`): NPC name → job table derived from [Tylas11/XivParty](https://github.com/Tylas11/XivParty) `jobs.lua`. Full **BSD-3** notice in file. XIV-UI is not affiliated with XivParty.
+- **Party trust job hints** (`modules/party/src/trusts.lua`): generated with `vana-client trust-gen --lsb <checkout>` from LandSandBoat `spell_list` + `mob_pools` (trust `poolid = spellid + 5000`, same join as retail/LSB). Regenerate when trusts are added upstream.
 
 ## Manual check before merge
 
